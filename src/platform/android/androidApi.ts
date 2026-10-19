@@ -322,7 +322,11 @@ export function createAndroidPlatform(deps: AndroidApiDeps): AndroidPlatform {
         // user's answer on the prompt, never a caller's standing decision: a
         // supplied accept-once/accept-always is ignored; only reject is kept.
         const standing: TofuDecision | undefined = payload.tofuDecision === 'reject' ? 'reject' : undefined;
-        return hub.connect(target, standing, deps.hosts.labelFor(payload));
+        const hostLabel = deps.hosts.labelFor({
+          ...payload,
+          user: payload.user || target.username,
+        });
+        return hub.connect(target, standing, hostLabel);
       },
       // Android asks before trusting a first-contact key: the shared store
       // registers its prompt here and stops dialling with a standing

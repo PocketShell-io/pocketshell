@@ -171,9 +171,11 @@ export class AndroidHostStore {
       };
     }
     if (this.legacy.length === 0) this.legacy = await this.options.readLegacyHosts().catch(() => []);
+    const atLegacyAddress = (host: ImportedLegacyHost) => host.hostname === request.host && host.port === port;
     const legacyMatch =
       (request.hostAlias ? this.legacy.find((host) => host.name === request.hostAlias) : undefined) ??
-      this.legacy.find((host) => host.hostname === request.host && host.port === port);
+      (request.user ? this.legacy.find((host) => atLegacyAddress(host) && host.username === request.user) : undefined) ??
+      this.legacy.find(atLegacyAddress);
     if (legacyMatch) {
       // The native plugin resolves the imported key's handle; no key bytes in JS.
       return makeLegacySshHostTarget(legacyMatch, '');
@@ -186,11 +188,21 @@ export class AndroidHostStore {
    * imported host's name, matched like {@link resolve}), for prompts such as
    * the host-key decision. Falls back to the hostname.
    */
-  labelFor(request: { host: string; port?: number; hostAlias?: string }): string {
+  labelFor(request: { host: string; port?: number; user?: string; hostAlias?: string }): string {
     if (request.hostAlias) return request.hostAlias;
     const port = request.port ?? 22;
-    const match = (host: { hostname: string; port: number }) => host.hostname === request.host && host.port === port;
-    return this.readSaved().find(match)?.name ?? this.legacy.find(match)?.name ?? request.host;
+    const saved = this.readSaved();
+    const atAddress = (host: SavedHost) => host.hostname === request.host && host.port === port;
+    const savedMatch =
+      (request.user ? saved.find((host) => atAddress(host) && host.user === request.user) : undefined) ??
+      saved.find(atAddress);
+    if (savedMatch) return savedMatch.name;
+
+    const atLegacyAddress = (host: ImportedLegacyHost) => host.hostname === request.host && host.port === port;
+    const legacyMatch =
+      (request.user ? this.legacy.find((host) => atLegacyAddress(host) && host.username === request.user) : undefined) ??
+      this.legacy.find(atLegacyAddress);
+    return legacyMatch?.name ?? request.host;
   }
 
   private readSaved(): SavedHost[] {

@@ -368,6 +368,15 @@
         "clears hosts whose key is gone from the vault"
       ]
     },
+    "tests/unit/androidHostSharedAddress.test.ts": {
+      "suite": "Android hosts sharing an address (#3068)",
+      "tests": [
+        "labelFor resolves by address and user when two saved hosts share an address",
+        "labelFor and resolve match legacy imported hosts by user when sharing an address",
+        "trust prompt and un-trusted error name the resolved host when two saved hosts share an address",
+        "changed host key error names the resolved host when two saved hosts share an address"
+      ]
+    },
     "tests/unit/androidKeyManager.test.ts": {
       "suite": "shared Android key manager",
       "tests": [
