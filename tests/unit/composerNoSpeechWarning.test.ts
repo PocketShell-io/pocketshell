@@ -233,6 +233,8 @@ describe('composer warns when listening hears no words (#3062)', () => {
     await flush();
     expect(textContent(findByTestId(surface, 'composer-no-speech-warning')!))
       .toContain('Sound, but no words. Check the language or speak closer.');
+    expect(textContent(findByTestId(surface, 'composer-no-speech-warning')!))
+      .toContain('—');
     expect(drafts.draftFor(targetKey)).toBe('typed before');
 
     recognizer.emit('partial', 'finally some words');

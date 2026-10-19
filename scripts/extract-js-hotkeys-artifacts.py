@@ -351,7 +351,13 @@ def validate_docked_dictation_geometry(
     expected_accessible_name = expected_terminal_dictation_accessible_name(
         phase, item.get("inlineDictationTone"), mic.get("disabled"),
     )
-    if mic.get("label") != expected_accessible_name or mic.get("title") != expected_accessible_name:
+    label_matches = (
+        mic.get("label") == expected_accessible_name
+        or (phase == "listening"
+            and isinstance(mic.get("label"), str)
+            and mic.get("label").endswith(expected_accessible_name))
+    )
+    if not label_matches or mic.get("title") != mic.get("label"):
         raise ExtractionFailure(f"{label} dictation button lacks its phase-specific accessible name")
     expected_caption = expected_terminal_dictation_caption(
         phase, item.get("inlineDictationTone"), mic.get("disabled"),

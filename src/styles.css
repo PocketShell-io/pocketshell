@@ -751,26 +751,26 @@ button { color: inherit; }
   .app-shell[data-keyboard-visible="true"]:is([data-fast-keys-main="true"], [data-fast-keys-ctrl="true"], [data-inline-dictation-status="true"]) .live-workspace .terminal-panel {
     gap: 2px;
   }
-  .app-shell[data-keyboard-visible="true"][data-fast-keys-ctrl="true"][data-inline-dictation-status="true"] .live-workspace {
+  .app-shell[data-keyboard-visible="true"]:is([data-fast-keys-main="true"], [data-fast-keys-ctrl="true"])[data-inline-dictation-status="true"] .live-workspace {
     gap: 0;
   }
-  .app-shell[data-keyboard-visible="true"][data-fast-keys-ctrl="true"][data-inline-dictation-status="true"] .live-workspace .terminal-panel {
+  .app-shell[data-keyboard-visible="true"]:is([data-fast-keys-main="true"], [data-fast-keys-ctrl="true"])[data-inline-dictation-status="true"] .live-workspace .terminal-panel {
     gap: 1px;
     padding-block: 1px;
   }
-  .app-shell[data-keyboard-visible="true"][data-fast-keys-ctrl="true"][data-inline-dictation-status="true"] .panel-heading--terminal {
+  .app-shell[data-keyboard-visible="true"]:is([data-fast-keys-main="true"], [data-fast-keys-ctrl="true"])[data-inline-dictation-status="true"] .panel-heading--terminal {
     min-height: 24px;
   }
-  .app-shell[data-keyboard-visible="true"][data-fast-keys-ctrl="true"][data-inline-dictation-status="true"] .panel-heading--terminal h2 {
+  .app-shell[data-keyboard-visible="true"]:is([data-fast-keys-main="true"], [data-fast-keys-ctrl="true"])[data-inline-dictation-status="true"] .panel-heading--terminal h2 {
     font-size: 12px;
     line-height: 16px;
   }
-  .app-shell[data-keyboard-visible="true"][data-fast-keys-ctrl="true"][data-inline-dictation-status="true"] .panel-heading--terminal .state-tag {
+  .app-shell[data-keyboard-visible="true"]:is([data-fast-keys-main="true"], [data-fast-keys-ctrl="true"])[data-inline-dictation-status="true"] .panel-heading--terminal .state-tag {
     padding: 1px 4px;
     font-size: 9px;
     line-height: 1.1;
   }
-  .app-shell[data-keyboard-visible="true"][data-fast-keys-ctrl="true"][data-inline-dictation-status="true"] .home-screen--workspace {
+  .app-shell[data-keyboard-visible="true"]:is([data-fast-keys-main="true"], [data-fast-keys-ctrl="true"])[data-inline-dictation-status="true"] .home-screen--workspace {
     padding-block: 0;
   }
   .app-shell[data-keyboard-visible="true"][data-inline-dictation-status="true"] .live-workspace > .composer-panel {

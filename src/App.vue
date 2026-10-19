@@ -1214,20 +1214,20 @@ function updateInlineDictationState(next: InlineDictationState) {
 }
 
 async function resizeTerminal(size: TerminalResizeRequest, attachEpochForAck?: number) {
-  if (!controller || !isLive.value) return;
+  if (!controller || !isLive.value || homeSurface.value !== 'live') return;
+  if (!Number.isInteger(size.cols) || !Number.isInteger(size.rows) || size.cols < 1 || size.rows < 1) return;
+  const selected = controller.getSnapshot().selectedSession;
+  if (!selected) return;
   const requestId = size.requestId ?? allocateTerminalResizeRequestId();
   const attachEpoch = terminalAttachEpoch.value;
   terminalResizeStatus.value = `${size.cols} × ${size.rows} (local fit)`;
   terminalResizePending.value += 1;
   try {
-    const selected = controller.getSnapshot().selectedSession;
-    const result = selected
-      ? await controller.resizeTerminal(selected, size.cols, size.rows).catch((error: unknown) => {
-        recordFailure('ssh-bridge-failed', 'resize-terminal', error);
-        connectionMessage.value = error instanceof Error ? error.message : String(error);
-        return null;
-      })
-      : null;
+    const result = await controller.resizeTerminal(selected, size.cols, size.rows).catch((error: unknown) => {
+      recordFailure('ssh-bridge-failed', 'resize-terminal', error);
+      connectionMessage.value = error instanceof Error ? error.message : String(error);
+      return null;
+    });
     const evidenceWindow = window as ComposerSmokeEvidenceWindow;
     if (evidenceWindow.__ps2884CaptureResizeFitEvidence) {
       const events = evidenceWindow.__ps2884ResizeAckEvents
@@ -1243,18 +1243,24 @@ async function resizeTerminal(size: TerminalResizeRequest, attachEpochForAck?: n
       });
       if (events.length > 100) events.shift();
     }
-    if (attachEpoch !== terminalAttachEpoch.value || (result && !result.ok && result.reason === 'superseded')) return;
-    terminalResizeStatus.value = result?.ok
+    if (
+      attachEpoch !== terminalAttachEpoch.value
+      || !result
+      || (!result.ok && (result.reason === 'superseded' || result.reason === 'not-connected'))
+    ) {
+      return;
+    }
+    terminalResizeStatus.value = result.ok
       ? `${size.cols} × ${size.rows} accepted by SSH`
-      : `resize failed: ${result && 'message' in result ? result.message : 'native bridge error'}`;
-    if (result?.ok) {
+      : `resize failed: ${'message' in result ? result.message : 'native bridge error'}`;
+    if (result.ok) {
       terminalResizeAckCount.value += 1;
       if (attachEpochForAck === terminalAttachEpoch.value) terminalAttachResizeAckEpoch.value = attachEpochForAck;
     }
     else {
       terminalResizeFailure.value = { ...size, requestId };
       terminalResizeFailureCount.value += 1;
-      if (result) recordOperationFailure('resize-terminal');
+      recordOperationFailure('resize-terminal');
     }
   } finally {
     terminalResizePending.value -= 1;
@@ -1958,7 +1964,7 @@ onBeforeUnmount(() => {
         >
           <TerminalViewport
             ref="terminal"
-            :enabled="isLive"
+            :enabled="isLive && homeSurface === 'live'"
             :resize-failure="terminalResizeFailure"
             :autofocus-allowed="terminalAutofocusAllowed"
             :theme="activeTheme.terminal"

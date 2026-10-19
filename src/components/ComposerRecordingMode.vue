@@ -71,7 +71,7 @@ watch(warning, (w) => {
       :data-elapsed-at-warning="elapsedAtWarning || undefined"
       :data-motion="reducedMotion ? 'static' : 'pulse'">
       <span class="recording-mode__no-speech-dot" aria-hidden="true"></span>
-      <span><strong>{{ warning.title }}</strong> {{ warning.detail }}</span>
+      <span><strong>{{ warning.title }}</strong><span class="recording-mode__no-speech-separator" aria-hidden="true"> — </span>{{ warning.detail }}</span>
     </p>
 
     <!-- #3062: with the warning up and nothing heard yet, the "Listening for speech…" placeholder would contradict it. -->
@@ -241,6 +241,7 @@ watch(warning, (w) => {
   font: var(--fs-200)/1.4 var(--font-ui);
 }
 .recording-mode__no-speech strong { color: var(--warning); font-weight: var(--fw-semibold); }
+.recording-mode__no-speech-separator { color: var(--fg-muted); padding: 0 1px; }
 .recording-mode__no-speech-dot {
   width: 8px;
   height: 8px;

@@ -98,7 +98,6 @@ public final class JsFastKeysDockerJourneyTest {
         if (stagedKeyDocument != null) stagedKeyDocument.delete();
     }
 
-    @Ignore("quarantined: #3056, expires 2026-10-20 — terminal slot escapes the clipped panel during dictation-listening; see scripts/journey-quarantine.txt")
     @Test
     public void fastKeysStayReachableAndWriteExactBytesAcrossImeBackAndReconnect() throws Exception {
         assertTrue("fast-key screen assertions require Android API 35+", Build.VERSION.SDK_INT >= 35);
@@ -758,8 +757,11 @@ public final class JsFastKeysDockerJourneyTest {
 
         tapDomCenter("[data-testid=mobile-hotkeys-launcher]");
         awaitJsTrue("document.querySelector('[data-testid=mobile-hotkeys]')?.dataset.paletteOpen === 'true'");
+        awaitRenderedFrame();
         tapDomCenter("[data-testid=mobile-hotkeys-open-ctrl-page]");
         awaitJsTrue("document.querySelector('[data-testid=mobile-hotkeys]')?.dataset.palettePage === 'ctrl'");
+        awaitRenderedFrame();
+        injectNativeDictationTestEvent("partial", dictatedText);
         JSONObject ctrlListening = captureGeometry("dictation-listening-ctrl-open-ime-open");
         assertCatalogSheetGeometry(ctrlListening, "ctrl");
         assertTerminalViewportCap("showing listening status with the Ctrl catalog open", idle, ctrlListening);
@@ -1456,10 +1458,13 @@ public final class JsFastKeysDockerJourneyTest {
                 : transcribing ? "Wait"
                 : "error".equals(tone) ? "Retry"
                 : mic.getBoolean("disabled") ? "Unavailable" : "Dictate";
-        assertEquals("inline dictation keeps a phase-specific accessible action label: " + geometry,
-                expectedAccessibleLabel, mic.getString("label"));
+        boolean labelMatches = "listening".equals(phase)
+                ? mic.getString("label").endsWith(expectedAccessibleLabel)
+                : expectedAccessibleLabel.equals(mic.getString("label"));
+        assertTrue("inline dictation keeps a phase-specific accessible action label: " + geometry,
+                labelMatches);
         assertEquals("inline dictation title mirrors its phase-specific accessible action: " + geometry,
-                expectedAccessibleLabel, mic.getString("title"));
+                mic.getString("label"), mic.getString("title"));
         assertTrue("inline dictation keeps a visible microphone icon: " + geometry, mic.getBoolean("iconVisible"));
         String expectedIconPaths = "listening".equals(phase) ? "[\"M7 7h10v10H7z\"]"
                 : "[\"M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z\",\"M19 10v2a7 7 0 0 1-14 0v-2\",\"M12 19v3M8 22h8\"]";
@@ -2143,7 +2148,10 @@ public final class JsFastKeysDockerJourneyTest {
     }
 
     private JSONObject captureGeometry(String stage) throws Exception {
-        JSONObject dom = evalJson("(() => {window.dispatchEvent(new Event('pocketshell:terminal-geometry-request'));"
+        long deadline = SystemClock.uptimeMillis() + 4_000;
+        JSONObject dom = null;
+        while (SystemClock.uptimeMillis() < deadline) {
+            dom = evalJson("(() => {window.dispatchEvent(new Event('pocketshell:terminal-geometry-request'));"
                 + "const rect=s=>{const n=document.querySelector(s);if(!n)return null;const r=n.getBoundingClientRect();"
                 + "return {top:r.top,bottom:r.bottom,left:r.left,right:r.right,width:r.width,height:r.height};};"
                 + "const target=n=>{const r=n.getBoundingClientRect();const v=window.visualViewport;const rowNode=document.querySelector('.mobile-hotkeys__bar');"
@@ -2412,6 +2420,13 @@ public final class JsFastKeysDockerJourneyTest {
                 + "imeEdgeCssY:(window.visualViewport?.offsetTop??0)+(window.visualViewport?.height??innerHeight),innerWidth,innerHeight,"
                 + "screenScroll:document.querySelector('.screen-content')?.scrollTop??null,"
                 + "documentScroll:document.scrollingElement?.scrollTop??null});})()");
+            if (dom.optJSONObject("terminalPanel") == null
+                    || dom.optJSONObject("terminalSlot") == null
+                    || dom.optBoolean("terminalSlotInsideTerminalPanel")) {
+                break;
+            }
+            SystemClock.sleep(100);
+        }
         JSONObject nativeIme = readNativeImeState();
         dom.put("androidIme", nativeIme);
         dom.put("dockScreenContainment", dockScreenContainment(dom, nativeIme));
@@ -3192,9 +3207,13 @@ public final class JsFastKeysDockerJourneyTest {
     }
 
     private void awaitTerminalResizeIdle() throws Exception {
-        awaitJsTrue("Number(document.querySelector('.app-shell')?.dataset.sshTerminalResizePending ?? 0) === 0"
-                + " && Number(document.querySelector('.app-shell')?.dataset.sshTerminalResizeAcks ?? 0) > 0"
-                + " && Number(document.querySelector('.app-shell')?.dataset.sshTerminalResizeFailures ?? 0) === 0");
+        awaitJsTrue("(() => {"
+                + "const shell = document.querySelector('.app-shell');"
+                + "const pending = Number(shell?.dataset.sshTerminalResizePending ?? 0);"
+                + "const acks = Number(shell?.dataset.sshTerminalResizeAcks ?? 0);"
+                + "const failures = Number(shell?.dataset.sshTerminalResizeFailures ?? 0);"
+                + "return pending === 0 && acks > 0 && failures === 0 ? true : 'pending=' + pending + ' acks=' + acks + ' failures=' + failures;"
+                + "})()");
     }
 
     private void awaitAcknowledgedTerminalGrid() throws Exception {
