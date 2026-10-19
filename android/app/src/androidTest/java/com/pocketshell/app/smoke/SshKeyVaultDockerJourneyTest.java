@@ -32,6 +32,7 @@ import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 
+import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.nio.charset.StandardCharsets;
@@ -50,7 +51,7 @@ public final class SshKeyVaultDockerJourneyTest {
     private ActivityScenario<MainActivity> scenario;
     private File stagedEncryptedKey;
     private File screenshotDirectory;
-    private Bitmap previousScreenshot;
+    private ScreenshotGuard.Frame lastScreenshot;
 
     @Before public void launchPackagedShell() {
         Intents.init();
@@ -61,7 +62,7 @@ public final class SshKeyVaultDockerJourneyTest {
         if (scenario != null) scenario.close();
         Intents.release();
         if (stagedEncryptedKey != null) stagedEncryptedKey.delete();
-        if (previousScreenshot != null) previousScreenshot.recycle();
+        lastScreenshot = null;
     }
 
     @Test public void importsEncryptedDocumentConnectsAndKeepsSecretsOutOfWebViewState() throws Exception {
@@ -751,22 +752,27 @@ public final class SshKeyVaultDockerJourneyTest {
     }
 
     private void captureScreenshot(String name) throws Exception {
-        Bitmap bitmap = null;
-        for (int attempt = 0; attempt < 3; attempt++) {
+        ScreenshotGuard.Frame capture = null;
+        for (int attempt = 0; attempt < 5; attempt++) {
             waitForWebViewVisualState();
-            bitmap = InstrumentationRegistry.getInstrumentation().getUiAutomation().takeScreenshot();
-            assertNotNull("Android must provide an in-session screenshot", bitmap);
-            if (previousScreenshot == null || !bitmap.sameAs(previousScreenshot)) break;
+            Bitmap bitmap = InstrumentationRegistry.getInstrumentation().getUiAutomation().takeScreenshot();
+            assertNotNull("Android must provide an in-session screenshot: " + name, bitmap);
+            byte[] contentDigest = ScreenshotGuard.computeContentDigest(bitmap);
+            ByteArrayOutputStream stream = new ByteArrayOutputStream();
+            assertTrue("Android screenshot must be a PNG: " + name, bitmap.compress(Bitmap.CompressFormat.PNG, 100, stream));
             bitmap.recycle();
-            bitmap = null;
+            byte[] bytes = stream.toByteArray();
+            capture = new ScreenshotGuard.Frame(bytes, contentDigest);
+            if (!capture.isStaleRelativeTo(lastScreenshot)) break;
+            capture = null;
+            Thread.sleep(250);
         }
-        assertNotNull("the new screen must not reuse the previous captured frame: " + name, bitmap);
+        assertNotNull("the new screen must not reuse the previous captured frame: " + name, capture);
+        lastScreenshot = capture;
         File output = new File(screenshotDirectory, name);
         try (FileOutputStream stream = new FileOutputStream(output)) {
-            assertTrue("Android screenshot must be a PNG", bitmap.compress(Bitmap.CompressFormat.PNG, 100, stream));
+            stream.write(capture.bytes);
         }
-        if (previousScreenshot != null) previousScreenshot.recycle();
-        previousScreenshot = bitmap;
         assertTrue("screenshot must be present for later visual review", output.isFile() && output.length() > 0);
     }
 
