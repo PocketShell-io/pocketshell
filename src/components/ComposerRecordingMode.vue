@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { DictationNoSpeech } from '@pocketshell/core';
-import { computed } from 'vue';
+import { computed, ref, watch } from 'vue';
 import { noSpeechWarningCopy } from '../session/dictationNoSpeech';
 import { usePrefersReducedMotion } from './prefersReducedMotion';
 
@@ -15,6 +15,14 @@ const props = withDefaults(defineProps<{
 const emit = defineEmits<{ stop: [] }>();
 const reducedMotion = usePrefersReducedMotion();
 const warning = computed(() => props.noSpeech && props.state !== 'transcribing' ? noSpeechWarningCopy(props.noSpeech) : null);
+const elapsedAtWarning = ref<string>('');
+watch(warning, (w) => {
+  if (w && !elapsedAtWarning.value) {
+    elapsedAtWarning.value = props.elapsedLabel;
+  } else if (!w) {
+    elapsedAtWarning.value = '';
+  }
+});
 </script>
 
 <template>
@@ -60,6 +68,7 @@ const warning = computed(() => props.noSpeech && props.state !== 'transcribing' 
       :class="{ 'recording-mode__no-speech--static': reducedMotion }"
       data-testid="composer-no-speech-warning" role="status" aria-live="polite"
       :data-no-speech-reason="noSpeech?.reason" :data-no-speech-audio="noSpeech?.audio"
+      :data-elapsed-at-warning="elapsedAtWarning || undefined"
       :data-motion="reducedMotion ? 'static' : 'pulse'">
       <span class="recording-mode__no-speech-dot" aria-hidden="true"></span>
       <span><strong>{{ warning.title }}</strong> {{ warning.detail }}</span>

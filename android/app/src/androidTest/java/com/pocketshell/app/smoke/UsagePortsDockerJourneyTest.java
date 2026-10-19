@@ -27,7 +27,6 @@ import org.json.JSONObject;
 import org.json.JSONTokener;
 import org.junit.After;
 import org.junit.Before;
-import org.junit.Ignore;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 
@@ -93,7 +92,6 @@ public final class UsagePortsDockerJourneyTest {
         if (stagedKeyDocument != null) stagedKeyDocument.delete();
     }
 
-    @Ignore("quarantined: #3076, expires 2026-10-23 — typed remote output row never renders in the terminal viewport on the hosted emulator; see scripts/journey-quarantine.txt")
     @Test
     public void usageAndPortForwardingPoliciesUseDockerAndNativePlugin() throws Exception {
         try {
@@ -184,7 +182,7 @@ public final class UsagePortsDockerJourneyTest {
         // through the packaged composer like the stop command below.
         sendComposerCommandAndAwaitMarker(
                 "python3 -m http.server " + httpRemotePort + " --bind 127.0.0.1 >" + stem
-                        + ".log 2>&1 & echo $! > " + stem + ".pid; sleep 0.5; printf '%s\\n' '"
+                        + ".log 2>&1 & disown $!; echo $! > " + stem + ".pid; sleep 0.5; printf '%s\\n' '"
                         + serverStartedMarker + "'",
                 serverStartedMarker, "start test HTTP service", sessionTag, "HTTP_START",
                 /* bestEffortAfterFailure= */ false);
@@ -409,6 +407,7 @@ public final class UsagePortsDockerJourneyTest {
                 + "case \"$a\" in *'python3 -m http.server " + remotePort + " --bind 127.0.0.1'*) "
                 + "echo decision=matched-kill >>\"$c\"; kill \"$p\" || { echo exitDecision=kill-failed >>\"$c\"; exit 1; };; "
                 + "*) echo decision=identity-mismatch >>\"$c\"; exit 1;; esac; "
+                + "wait \"$p\" 2>/dev/null; disown \"$p\" 2>/dev/null; "
                 + "for i in 1 2 3 4 5; do [ ! -e /proc/$p ] && break; sleep .2; done; "
                 + "s=$(awk '{print $3}' /proc/$p/stat 2>/dev/null); "
                 + "if [ -e /proc/$p ] && [ \"$s\" != Z ]; then echo exitDecision=still-running >>\"$c\"; exit 1; fi; "

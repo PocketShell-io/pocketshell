@@ -110,6 +110,14 @@ const dictationWaveformBars = [8, 15, 11, 21, 13, 18, 9, 16, 11, 20, 12, 17];
 const dictationNoSpeech = computed(() => props.dictationState.phase === 'listening' && props.dictationState.noSpeech
   ? noSpeechWarningCopy(props.dictationState.noSpeech)
   : null);
+const dictationElapsedAtWarning = ref<string>('');
+watch(dictationNoSpeech, (w) => {
+  if (w && !dictationElapsedAtWarning.value) {
+    dictationElapsedAtWarning.value = dictationElapsedLabel.value;
+  } else if (!w) {
+    dictationElapsedAtWarning.value = '';
+  }
+});
 const reducedMotion = usePrefersReducedMotion();
 const dictationListeningLabel = computed(() => dictationNoSpeech.value
   ? `Terminal listening. ${dictationNoSpeech.value.title}. ${dictationNoSpeech.value.detail}`
@@ -312,6 +320,7 @@ defineExpose({
           }"
           data-testid="inline-dictation-status" data-dictation-tone="quiet" data-dictation-phase="listening"
           :data-no-speech="dictationNoSpeech ? 'true' : 'false'"
+          :data-elapsed-at-warning="dictationElapsedAtWarning || undefined"
           :data-motion="dictationNoSpeech ? (reducedMotion ? 'static' : 'pulse') : undefined"
           role="status" aria-live="polite" :aria-label="dictationListeningLabel">
           <span class="mobile-hotkeys__recording-heading">

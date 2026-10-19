@@ -146,6 +146,8 @@ def validate_results(results_dir: Path, quarantine_file: Path = DEFAULT_QUARANTI
             raise GateFailure(f"{REQUIRED_CLASS}#{REQUIRED_METHOD} was skipped and no unexpired quarantine row sanctions it: {why}")
         issue, expires = sanction
         print(f"QUARANTINED (policy D36): {REQUIRED_KEY} skipped; tracked {issue}, expires {expires.isoformat()} ({quarantine_file})")
+        return False
+    return True
 
 
 def self_test() -> int:
@@ -250,11 +252,14 @@ def main() -> int:
     if args.self_test:
         return self_test()
     try:
-        validate_results(args.results_dir, args.quarantine_file)
+        executed = validate_results(args.results_dir, args.quarantine_file)
     except GateFailure as exc:
         print(f"BLOCK: {exc}", file=sys.stderr)
         return 1
-    print(f"PASS: exactly one packaged fast-key Docker journey passed ({REQUIRED_CLASS}#{REQUIRED_METHOD})")
+    if executed:
+        print(f"PASS: exactly one packaged fast-key Docker journey passed ({REQUIRED_CLASS}#{REQUIRED_METHOD})")
+    else:
+        print(f"PASS (QUARANTINED): {REQUIRED_KEY} reported exactly once as a D36-sanctioned skip")
     return 0
 
 

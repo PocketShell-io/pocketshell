@@ -204,6 +204,9 @@ finish_composer_run() {
   local exit_status=$?
   set +e
   stop_asset_logcat
+  if [[ -f "$asset_logcat" ]]; then
+    grep 'PS3062NoSpeech' "$asset_logcat" > "$evidence_dir/no-speech-steps.txt" 2>/dev/null || true
+  fi
   if [[ -d "$RESULTS_DIR" ]]; then
     shopt -s nullglob
     local report

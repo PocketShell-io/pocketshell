@@ -383,7 +383,8 @@ public final class SshKeyVaultDockerJourneyTest {
         // live connection.
         String liveHost = "testuser@" + host + ":" + port;
         click("[data-testid=open-connection]");
-        awaitJsTrue("!!document.querySelector('[data-testid=ssh-host]')");
+        awaitJsTrue("document.querySelector('.app-shell')?.dataset.homeSurface === 'connection'"
+                + " && !!document.querySelector('[data-testid=ssh-host]')");
         setValue("[data-testid=ssh-host]", "other-host.invalid");
         setValue("[data-testid=ssh-port]", "2299");
         setValue("[data-testid=ssh-username]", "intruder");
@@ -544,7 +545,8 @@ public final class SshKeyVaultDockerJourneyTest {
     private void awaitConnectedTrustingHostKey() throws Exception {
         awaitJsTrue("!!document.querySelector('[data-testid=trust-host-key]') || ['connected','listing'].includes(document.querySelector('.app-shell')?.dataset.sshPhase) || !!document.querySelector('[data-testid=ssh-message]')");
         if ("true".equals(evalString("String(!!document.querySelector('[data-testid=trust-host-key]'))"))) click("[data-testid=trust-host-key]");
-        awaitJsTrue("['connected','listing'].includes(document.querySelector('.app-shell')?.dataset.sshPhase)");
+        awaitJsTrue("['connected','listing'].includes(document.querySelector('.app-shell')?.dataset.sshPhase)"
+                + " && ['sessions','live'].includes(document.querySelector('.app-shell')?.dataset.homeSurface)");
     }
 
     private static String fingerprintOf(String publicLine) throws Exception {

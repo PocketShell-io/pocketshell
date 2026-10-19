@@ -105,17 +105,18 @@ public final class JsComposerDockerJourneyTest {
 
     @After
     public void closeShell() {
-        try {
-            emitFocusTraceIfNeeded();
-        } catch (Exception error) {
-            Log.e("PS2891Focus", "could not emit composer tap trace before ActivityScenario teardown", error);
-        }
-        // #3062: a failure mid-dictation must not leave animating dictation UI
-        // behind, or scenario.close() waits forever for an idle main looper.
+        // #3062 / #3077: stop/cancel dictation FIRST before emitting focus trace or
+        // closing scenario, so a failure mid-dictation does not leave animating
+        // dictation UI behind causing scenario.onActivity/scenario.close to hang.
         try {
             quiesceDictationUiWithoutIdleSync("teardown");
         } catch (Throwable error) {
             Log.w(NO_SPEECH_TAG, "could not quiesce dictation UI before ActivityScenario teardown", error);
+        }
+        try {
+            emitFocusTraceIfNeeded();
+        } catch (Exception error) {
+            Log.e("PS2891Focus", "could not emit composer tap trace before ActivityScenario teardown", error);
         }
         if (scenario != null) scenario.close();
         if (stagedKeyDocument != null) stagedKeyDocument.delete();
@@ -600,7 +601,7 @@ public final class JsComposerDockerJourneyTest {
                 + "text:w.textContent.replace(/\\s+/g,' ').trim(),reason:w.dataset.noSpeechReason??'',"
                 + "audio:w.dataset.noSpeechAudio??'',motion:w.dataset.motion??'',"
                 + "dictationState:document.querySelector('[data-testid=prompt-composer]')?.dataset.dictationState??'',"
-                + "appTimer:document.querySelector('[data-testid=composer-recording-timer]')?.textContent.trim()??'',"
+                + "appTimer:(w?.dataset.elapsedAtWarning || document.querySelector('[data-testid=composer-recording-timer]')?.textContent.trim())??'',"
                 + "waveformWarning:!!wave?.classList.contains('recording-mode__waveform--no-speech'),"
                 + "stopEnabled:document.querySelector('[data-testid=composer-recording-stop]')?.disabled===false,"
                 + "draft:document.querySelector('[data-testid=prompt-draft]')?.value??null,"
@@ -658,8 +659,33 @@ public final class JsComposerDockerJourneyTest {
         raiseTerminalImeWithRetry();
         beginDictationStagesWithoutIdleSync();
         noSpeechStep("inline:ime-up");
-        tapDomCenter("[data-testid=inline-dictation-toggle]");
-        awaitJsTrue("document.querySelector('[data-testid=inline-dictation-bar]')?.dataset.phase === 'listening'");
+        String listeningCondition = "document.querySelector('[data-testid=inline-dictation-bar]')?.dataset.phase === 'listening'";
+        String inlineToggle = "[data-testid=inline-dictation-toggle]";
+        for (int attempt = 1; attempt <= 3; attempt += 1) {
+            awaitJsTrue("(() => {const node=document.querySelector(" + JSONObject.quote(inlineToggle) + ");"
+                    + "const rect=node?.getBoundingClientRect();return !!node && !node.disabled && rect.height > 0;})()");
+            tapDomCenter(inlineToggle);
+            long deadline = SystemClock.uptimeMillis() + 4_000;
+            while (SystemClock.uptimeMillis() < deadline) {
+                String phase = evalRaw("document.querySelector('[data-testid=inline-dictation-bar]')?.dataset.phase ?? 'idle'");
+                if ("\"listening\"".equals(phase) || "listening".equals(phase)) {
+                    noSpeechStep("inline:listening-started|attempt=" + attempt);
+                    break;
+                }
+                if ("\"starting\"".equals(phase) || "starting".equals(phase)) {
+                    // Tap registered and phase is advancing; do not re-tap
+                    break;
+                }
+                SystemClock.sleep(100);
+            }
+            String phase = evalRaw("document.querySelector('[data-testid=inline-dictation-bar]')?.dataset.phase ?? 'idle'");
+            if ("\"listening\"".equals(phase) || "listening".equals(phase)
+                    || "\"starting\"".equals(phase) || "starting".equals(phase)) {
+                break;
+            }
+            Log.w(NO_SPEECH_TAG, "INLINE_TAP_RETRY|" + inlineToggle + "|attempt=" + attempt + "|" + lastPhysicalTapEvidence);
+        }
+        awaitJsTrue(listeningCondition, 20_000);
         long listeningAt = SystemClock.uptimeMillis();
         noSpeechStep("inline:listening");
         injectNativeDictationEvent("audio", null, "silence");
@@ -678,7 +704,7 @@ public final class JsComposerDockerJourneyTest {
                 + "title:document.querySelector(" + JSONObject.quote(INLINE_NO_SPEECH_TITLE) + ")?.textContent.trim()??'',"
                 + "detail:d?.textContent.trim()??'',toggleNoSpeech:t?.dataset.noSpeech??'',toggleMicState:t?.dataset.micState??'',"
                 + "keyboardVisible:document.querySelector('.app-shell')?.dataset.keyboardVisible??'',"
-                + "appTimer:document.querySelector('[data-testid=inline-dictation-elapsed]')?.textContent.trim()??'',"
+                + "appTimer:(s?.dataset.elapsedAtWarning || document.querySelector('[data-testid=inline-dictation-elapsed]')?.textContent.trim())??'',"
                 + "rect:{top:r.top,bottom:r.bottom,left:r.left,right:r.right},"
                 + "viewport:{width:vv?.width??innerWidth,height:vv?.height??innerHeight}});})()");
         boolean imeVisible = isImeVisible();
