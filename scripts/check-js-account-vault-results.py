@@ -3,11 +3,13 @@
 
 Requires, from the same run: both SharedVaultDockerJourneyTest methods in the
 JUnit XML, passed (no skips, failures, errors or extra tests); every required
-screenshot present as a complete PNG; and no credential line in the app logcat.
+screenshot present as a complete PNG with distinct content below the status bar (#3067);
+and no credential line in the app logcat.
 """
 from __future__ import annotations
 
 import argparse
+import hashlib
 import struct
 import sys
 import tempfile
@@ -28,6 +30,7 @@ SCREENSHOTS = {
     "vault-unlock-remember-chosen.png",
     "vault-remembered-next-launch.png",
 }
+PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
 
 
 class CheckFailure(Exception):
@@ -36,7 +39,7 @@ class CheckFailure(Exception):
 
 def check_png(path: Path) -> None:
     data = path.read_bytes()
-    if not data.startswith(b"\x89PNG\r\n\x1a\n"):
+    if not data.startswith(PNG_MAGIC):
         raise CheckFailure(f"{path.name} is not a PNG")
     offset, seen = 8, set()
     while offset < len(data):
@@ -53,6 +56,54 @@ def check_png(path: Path) -> None:
             break
     if not {b"IHDR", b"IDAT", b"IEND"} <= seen or offset != len(data):
         raise CheckFailure(f"{path.name}: incomplete PNG")
+
+
+def _png_content_digest(data: bytes, top_fraction: float = 0.10) -> str | None:
+    """Return SHA-256 of decompressed PNG scanlines excluding the top status bar.
+
+    Returns None if chunks cannot be decompressed (e.g. synthetic test bytes).
+    """
+    try:
+        if not data.startswith(PNG_MAGIC):
+            return None
+        pos = 8
+        idat_parts = []
+        width = height = color_type = 0
+        while pos + 12 <= len(data):
+            length = struct.unpack(">I", data[pos:pos + 4])[0]
+            chunk_type = data[pos + 4:pos + 8]
+            chunk_data = data[pos + 8:pos + 8 + length]
+            pos += 8 + length + 4
+            if chunk_type == b"IHDR":
+                width, height, bit_depth, color_type = struct.unpack(">IIBB", chunk_data[:10])
+            elif chunk_type == b"IDAT":
+                idat_parts.append(chunk_data)
+            elif chunk_type == b"IEND":
+                break
+        if not idat_parts or width <= 0 or height <= 0:
+            return None
+        raw = zlib.decompress(b"".join(idat_parts))
+        bpp = 4 if color_type == 6 else (3 if color_type == 2 else 1)
+        stride = 1 + width * bpp
+        skip_rows = max(1, int(height * top_fraction))
+        content_raw = raw[skip_rows * stride:]
+        return hashlib.sha256(content_raw).hexdigest()
+    except Exception:
+        return None
+
+
+def _create_mock_png(width: int = 100, height: int = 200, status_bar_val: int = 0, content_val: int = 1) -> bytes:
+    raw = bytearray()
+    for y in range(height):
+        raw.append(0)
+        val = status_bar_val if y < 20 else content_val
+        raw.extend([val, val, val, 255] * width)
+    compressed = zlib.compress(bytes(raw))
+    ihdr = struct.pack(">IIBBBBB", width, height, 8, 6, 0, 0, 0)
+    ihdr_chunk = struct.pack(">I", len(ihdr)) + b"IHDR" + ihdr + struct.pack(">I", zlib.crc32(b"IHDR" + ihdr))
+    idat_chunk = struct.pack(">I", len(compressed)) + b"IDAT" + compressed + struct.pack(">I", zlib.crc32(b"IDAT" + compressed))
+    iend_chunk = struct.pack(">I", 0) + b"IEND" + struct.pack(">I", zlib.crc32(b"IEND"))
+    return PNG_MAGIC + ihdr_chunk + idat_chunk + iend_chunk
 
 
 def check(results_dir: Path, screenshots_dir: Path, redaction: Path) -> str:
@@ -79,8 +130,25 @@ def check(results_dir: Path, screenshots_dir: Path, redaction: Path) -> str:
     missing = sorted(name for name in SCREENSHOTS if not (screenshots_dir / name).is_file())
     if missing:
         raise CheckFailure(f"missing screenshots: {missing}")
-    for name in SCREENSHOTS:
-        check_png(screenshots_dir / name)
+    seen: dict[str, str] = {}
+    seen_content: dict[str, str] = {}
+    for name in sorted(SCREENSHOTS):
+        shot_path = screenshots_dir / name
+        check_png(shot_path)
+        data = shot_path.read_bytes()
+        digest = hashlib.sha256(data).hexdigest()
+        if digest in seen:
+            raise CheckFailure(f"stale screenshot: {name} is byte-identical to {seen[digest]}")
+        seen[digest] = name
+
+        content_digest = _png_content_digest(data)
+        if content_digest is not None:
+            if content_digest in seen_content:
+                raise CheckFailure(
+                    f"stale screenshot: {name} content is identical to {seen_content[content_digest]} "
+                    "(status-bar change only)"
+                )
+            seen_content[content_digest] = name
     text = redaction.read_text(encoding="utf-8").strip() if redaction.is_file() else ""
     if text != "sensitive_log_lines_redacted=0":
         raise CheckFailure(f"credential material reached logcat or the redaction report is missing: {text or '<missing>'}")
@@ -88,9 +156,6 @@ def check(results_dir: Path, screenshots_dir: Path, redaction: Path) -> str:
 
 
 def self_test() -> None:
-    png = b"\x89PNG\r\n\x1a\n"
-    for kind, payload in ((b"IHDR", b"\0" * 13), (b"IDAT", b"x"), (b"IEND", b"")):
-        png += struct.pack(">I", len(payload)) + kind + payload + struct.pack(">I", zlib.crc32(kind + payload) & 0xFFFFFFFF)
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         results, shots, red = root / "r", root / "s", root / "red.txt"
@@ -100,9 +165,22 @@ def self_test() -> None:
         def write(cases: str) -> None:
             (results / "TEST-x.xml").write_text(f'<testsuite name="{REQUIRED_CLASS}">{cases}</testsuite>')
 
+        def write_shots(duplicate: bool = False, status_bar_only: bool = False, missing_one: bool = False) -> None:
+            names = sorted(SCREENSHOTS)
+            if missing_one:
+                names = names[1:]
+            for index, name in enumerate(names):
+                if status_bar_only:
+                    sb_val = index
+                    c_val = 0 if index < 2 else index + 1
+                    (shots / name).write_bytes(_create_mock_png(status_bar_val=sb_val, content_val=c_val))
+                elif duplicate and index < 2:
+                    (shots / name).write_bytes(_create_mock_png(status_bar_val=0, content_val=0))
+                else:
+                    (shots / name).write_bytes(_create_mock_png(status_bar_val=index, content_val=index + 1))
+
         ok_cases = "".join(f'<testcase classname="{REQUIRED_CLASS}" name="{m}"/>' for m in sorted(REQUIRED_METHODS))
-        for name in SCREENSHOTS:
-            (shots / name).write_bytes(png)
+        write_shots()
         red.write_text("sensitive_log_lines_redacted=0\n")
         write(ok_cases)
         check(results, shots, red)
@@ -128,13 +206,53 @@ def self_test() -> None:
         else:
             raise SystemExit("self-test: a credential log line was not rejected")
         red.write_text("sensitive_log_lines_redacted=0\n")
-        (shots / sorted(SCREENSHOTS)[0]).write_bytes(png[:-4])
+
+        # 1. Missing screenshot
+        write_shots(missing_one=True)
+        try:
+            check(results, shots, red)
+        except CheckFailure:
+            pass
+        else:
+            raise SystemExit("self-test: a missing screenshot was not rejected")
+
+        # 2. Truncated screenshot
+        write_shots()
+        (shots / sorted(SCREENSHOTS)[0]).write_bytes(PNG_MAGIC + b"truncated")
         try:
             check(results, shots, red)
         except CheckFailure:
             pass
         else:
             raise SystemExit("self-test: a truncated screenshot was not rejected")
+
+        # 3. Non-PNG screenshot
+        write_shots()
+        (shots / sorted(SCREENSHOTS)[0]).write_bytes(b"GIF89a" + b"\0" * 1024)
+        try:
+            check(results, shots, red)
+        except CheckFailure:
+            pass
+        else:
+            raise SystemExit("self-test: a non-PNG screenshot was not rejected")
+
+        # 4. Byte-identical (stale) screenshot
+        write_shots(duplicate=True)
+        try:
+            check(results, shots, red)
+        except CheckFailure:
+            pass
+        else:
+            raise SystemExit("self-test: a byte-identical screenshot was not rejected")
+
+        # 5. Stale screenshot differing only by status-bar pixels
+        write_shots(status_bar_only=True)
+        try:
+            check(results, shots, red)
+        except CheckFailure:
+            pass
+        else:
+            raise SystemExit("self-test: a stale frame with only status-bar diff was not rejected")
 
 
 def main() -> int:
