@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/bash
 # The gateway lane's host agent (pocketshell#3086 slice 3): the REAL
 # pocketshell-link, enrolled the way a user's host is (`pocketshell gateway
 # enroll` runs exactly this helper command), then kept connected with `run`.
@@ -8,6 +8,10 @@
 # and aborts unless it equals /enroll/host-key.pub, the key the runner read
 # from the host itself. A restart (the lane's "device offline" step) keeps the
 # enrolled state and only reconnects.
+#
+# Base is the local `pocketshell-test:agents` image (see docker-compose.yml):
+# bash + curl are guaranteed, wget/nc are not, so readiness probes use curl
+# and bash's /dev/tcp instead.
 set -eu
 
 GATEWAY=http://gateway:8080
@@ -17,13 +21,13 @@ CLI=/gw/pocketshell-link
 log() { printf '[gwlane-agent] %s\n' "$*"; }
 
 i=0
-until wget -qO- "$GATEWAY/healthz" 2>/dev/null | grep -q '"tunnel":"enabled"'; do
+until curl -fsS "$GATEWAY/healthz" 2>/dev/null | grep -q '"tunnel":"enabled"'; do
   i=$((i + 1))
   [ "$i" -lt 120 ] || { log "the gateway never reported its tunnel enabled"; exit 1; }
   sleep 1
 done
 i=0
-until nc -z 127.0.0.1 22 2>/dev/null; do
+until (exec 3<>/dev/tcp/127.0.0.1/22) 2>/dev/null; do
   i=$((i + 1))
   [ "$i" -lt 120 ] || { log "the host's sshd never listened on 127.0.0.1:22"; exit 1; }
   sleep 1

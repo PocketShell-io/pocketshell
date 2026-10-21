@@ -22,19 +22,36 @@
 #
 # Every variable is set by the runner; none has a default, so a fixture
 # started by hand without the runner fails instead of guessing.
-x-alpine: &alpine
-  image: public.ecr.aws/docker/library/alpine@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc
+#
+# Base image (durable, no registry): every service reuses the local
+# `pocketshell-test:agents` image (debian trixie-slim, sshd + pinned CLI +
+# aplexer), which the workflow builds before the emulator starts and which
+# the runner rebuilds locally when missing. jwks/gateway/tlsfront only run
+# the lane's static Go binaries, so any glibc base works; the agent only
+# needs bash/curl, both present in the agents image. `pull_policy: never`
+# keeps a missing image a fast fail-closed error instead of a registry
+# round-trip.
+#
+# History: the lane used to share one pinned alpine image from ECR Public.
+# 38455239496 failed on ECR "Rate exceeded", daf604e0a added backoff plus a
+# Docker Hub digest fallback, then 39569913209 failed on BOTH ("Data limit
+# exceeded" on 6 ECR attempts and on the Hub fallback) while the debian-based
+# agents build in the same job pulled fine. Pinning a second registry did
+# not help; not pulling at all does.
+x-gwlane-base: &gwlane-base
+  image: pocketshell-test:agents
+  pull_policy: never
 
 services:
   jwks:
-    <<: *alpine
+    <<: *gwlane-base
     entrypoint: ["/gw/gwfixture", "jwks", "-key", "/broker/broker-key.pem", "-listen", ":8088"]
     volumes:
       - ${GWLANE_BIN:?}:/gw:ro
       - ${GWLANE_STATE:?}/broker:/broker:ro
 
   gateway:
-    <<: *alpine
+    <<: *gwlane-base
     entrypoint: ["/gw/gateway"]
     command:
       - "-listen"
@@ -61,7 +78,7 @@ services:
       - jwks
 
   tlsfront:
-    <<: *alpine
+    <<: *gwlane-base
     entrypoint: ["/gw/gwfixture", "tlsfront", "-cert", "/tls/server.pem", "-key", "/tls/server.key", "-listen", ":8443", "-upstream", "gateway:8080"]
     ports:
       - "127.0.0.1:${GWLANE_TLS_PORT:?}:8443"
@@ -73,6 +90,7 @@ services:
 
   host:
     image: pocketshell-test:agents
+    pull_policy: never
     environment:
       POCKETSHELL_AGENT_FIXTURE_VERSION: ${POCKETSHELL_AGENT_FIXTURE_VERSION:-}
     # VERBOSE: sshd logs every connection the agent bridges ("Connection
@@ -81,10 +99,10 @@ services:
     entrypoint: ["/bin/sh", "-c", "printf '\\nLogLevel VERBOSE\\n' >> /etc/ssh/sshd_config && exec /usr/local/bin/pocketshell-agent-entrypoint"]
 
   agent:
-    <<: *alpine
+    <<: *gwlane-base
     # Production topology: the agent reaches ITS OWN sshd on loopback.
     network_mode: "service:host"
-    entrypoint: ["/bin/sh", "/gwlane/agent-entrypoint.sh"]
+    entrypoint: ["/bin/bash", "/gwlane/agent-entrypoint.sh"]
     environment:
       DEVICE_ID: ${GWLANE_DEVICE_ID:?}
     volumes:
