@@ -72,6 +72,12 @@ public final class SharedVaultDockerJourneyTest {
     private static final long WAIT_TIMEOUT_MILLIS = 20_000;
     /** Argon2id (32 MiB) in a swiftshader emulator WebView. */
     private static final long UNLOCK_TIMEOUT_MILLIS = 120_000;
+    /**
+     * Core's unlock sheet refreshes (dialog closes, hosts list) before the
+     * Keystore seal + prefs commit on the native worker resolves, so the
+     * sealed record can lag the listed hosts on a loaded emulator host.
+     */
+    private static final long REMEMBER_TIMEOUT_MILLIS = 30_000;
     static final String TOKEN_SIGNATURE = "FAKEIDTOKENW4VAULTSIGNATUREdoNotLeak";
     private static final String EMAIL = "vault-journey@example.com";
     /** Throwaway journey passphrase; the runner passes the same value to the fixture builder. */
@@ -192,7 +198,7 @@ public final class SharedVaultDockerJourneyTest {
         awaitAccountHostListed();
 
         File sealed = deviceKeyPrefs();
-        assertTrue("the remembered record is stored", sealed.exists() && hasRecord(sealed));
+        awaitRememberedRecord(sealed);
         String stored = new String(Files.readAllBytes(sealed.toPath()), StandardCharsets.UTF_8);
         assertFalse("the remembered record is sealed, never plain JSON", stored.contains("vaultId") || stored.contains("\"dek\""));
         assertFalse("the passphrase is never remembered", stored.contains(VAULT_PASSPHRASE));
@@ -317,6 +323,21 @@ public final class SharedVaultDockerJourneyTest {
 
     private static boolean hasRecord(File prefs) throws Exception {
         return new String(Files.readAllBytes(prefs.toPath()), StandardCharsets.UTF_8).contains("remembered:");
+    }
+
+    /**
+     * The unlock sheet lists the hosts as soon as core's store unlocks, while
+     * the Keystore seal + prefs commit still runs on the native worker: poll
+     * for the sealed bytes instead of asserting once. A record that never
+     * lands still fails, with the same message.
+     */
+    private void awaitRememberedRecord(File sealed) throws Exception {
+        long deadline = SystemClock.uptimeMillis() + REMEMBER_TIMEOUT_MILLIS;
+        while (SystemClock.uptimeMillis() < deadline) {
+            if (sealed.exists() && hasRecord(sealed)) return;
+            Thread.sleep(200);
+        }
+        assertTrue("the remembered record is stored", sealed.exists() && hasRecord(sealed));
     }
 
     // ---- fake edges ----------------------------------------------------------
