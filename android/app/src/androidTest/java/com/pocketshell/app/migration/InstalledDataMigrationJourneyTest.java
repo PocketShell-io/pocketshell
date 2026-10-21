@@ -233,6 +233,12 @@ public final class InstalledDataMigrationJourneyTest {
         String warning = evalString("document.querySelector('[data-testid=installed-data-migration-error]')?.textContent ?? ''");
         assertTrue("an unreadable key must be named and its preserved source explained: " + warning,
             warning.contains("original") && warning.contains("remains"));
+        // The host options render only after the separate async host-load that
+        // follows the published migration status (same guard as the
+        // migrated-host cycle above): driving the select first would no-op on
+        // an empty select, pass the empty key-selection check vacuously, and
+        // then time out waiting for the unavailable-key message.
+        awaitJsTrue("document.querySelector('[data-testid=legacy-host-select] option[value=\"41\"]')?.textContent.trim().length > 0");
         evalRaw("(() => {const select=document.querySelector('[data-testid=legacy-host-select]');"
             + "select.value='41';select.dispatchEvent(new Event('change',{bubbles:true}));return 'selected';})()");
         awaitJsTrue("document.querySelector('[data-testid=ssh-key-selection]')?.value === ''");
