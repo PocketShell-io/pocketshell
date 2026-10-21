@@ -28,7 +28,13 @@ SCREENSHOTS = {
     "vault-unlocked-account-host.png",
     "vault-connected-with-vault-key.png",
     "vault-unlock-remember-chosen.png",
-    "vault-remembered-next-launch.png",
+    # The sixth screenshot is the post-sign-out Account screen, not a second
+    # host-list capture: both vault methods legitimately render the same host
+    # list, so a second host-list shot would be byte-identical to
+    # vault-unlocked-account-host.png by design and rightly rejected (#3067).
+    # The silent next launch stays proven by the no-unlock-prompt assertion
+    # in the journey; the screenshot proves the sign-out half forgets.
+    "vault-signed-out-forgotten.png",
 }
 PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
 

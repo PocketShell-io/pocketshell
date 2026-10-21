@@ -218,15 +218,30 @@ trap collect_and_stop_fixture EXIT
 export_agents_fixture_version "$ROOT_DIR/android/app/build/outputs/apk/debug/app-debug.apk"
 docker image inspect pocketshell-test:agents >/dev/null 2>&1 \
   || docker compose -f "$ROOT_DIR/tests/docker/docker-compose.yml" build agents
-# jwks, gateway and tlsfront share one pinned alpine image from ECR Public,
+# jwks, gateway, tlsfront and agent share one pinned alpine image from ECR Public,
 # whose anonymous pulls are rate limited ("toomanyrequests: Rate exceeded"
-# failed both main attempts of 38455239496). Pull it once, with backoff,
+# failed both main attempts of 38455239496; "Data limit exceeded" failed
+# 39387788213 after the 5-attempt backoff below). Pull it once, with backoff,
 # before `up`, which then finds it present instead of pulling it 3x at once.
-for attempt in 1 2 3 4 5; do
-  compose pull --quiet jwks && break
-  [[ "$attempt" -lt 5 ]] || { echo "FAIL: could not pull the gateway lane alpine image after $attempt attempts" >&2; exit 1; }
-  sleep $((attempt * 15))
-done
+# When ECR Public stays throttled, fall back to the same pinned digest via
+# Docker Hub: pulling by digest verifies the content, so retagging it to the
+# pinned ECR reference keeps the supply-chain pin intact.
+PINNED_ALPINE="$(grep -o 'public\.ecr\.aws/docker/library/alpine@sha256:[0-9a-f]*' "$COMPOSE_FILE" | head -n 1)"
+[[ -n "$PINNED_ALPINE" ]] || fail 'could not read the pinned alpine image from the gateway compose file'
+if ! docker image inspect "$PINNED_ALPINE" >/dev/null 2>&1; then
+  pulled=0
+  for attempt in 1 2 3 4 5 6; do
+    if compose pull --quiet jwks; then pulled=1; break; fi
+    sleep $((attempt * 15))
+  done
+  if (( pulled == 0 )); then
+    hub_ref="docker.io/library/alpine@${PINNED_ALPINE##*@}"
+    if docker pull --quiet "$hub_ref" >/dev/null 2>&1; then
+      docker tag "$hub_ref" "$PINNED_ALPINE" >/dev/null 2>&1 && pulled=1 || pulled=0
+    fi
+  fi
+  (( pulled == 1 )) || fail "could not pull the gateway lane alpine image after 6 ECR attempts plus the Docker Hub fallback ($PINNED_ALPINE)"
+fi
 compose up -d jwks gateway tlsfront host
 for attempt in $(seq 1 90); do
   if curl -fsS --cacert "$STATE/tls/ca.pem" "https://localhost:$TLS_PORT/healthz" 2>/dev/null | grep -q '"tunnel":"enabled"'; then

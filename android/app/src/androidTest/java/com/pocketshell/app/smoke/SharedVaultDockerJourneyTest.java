@@ -200,7 +200,6 @@ public final class SharedVaultDockerJourneyTest {
         relaunch();
         awaitAccountHostListed();
         assertEquals("a remembered vault asks for nothing on launch", "false", evalRaw("!!document.querySelector('" + UNLOCK + "')"));
-        captureScreenshot("vault-remembered-next-launch.png", ".picker .group-label");
         connectAccountHost();
         assertNoKeyPickerEverShown();
 
@@ -211,6 +210,11 @@ public final class SharedVaultDockerJourneyTest {
         awaitJsTrue("!!document.querySelector('[data-testid=android-account] .account-identity .btn-ghost:not([disabled])')");
         tapDomCenter("[data-testid=android-account] .account-identity .btn-ghost");
         awaitJsTrue("!!document.querySelector('[data-testid=android-account] .account-login')");
+        // The post-sign-out Account screen is the sixth screenshot: a second
+        // host-list capture here would be byte-identical to
+        // vault-unlocked-account-host.png by design (same hosts, same route),
+        // which the result checker rightly rejects as stale (#3067).
+        captureScreenshot("vault-signed-out-forgotten.png", "[data-testid=android-account] .account-login");
         assertFalse("sign-out forgets the remembered vault", sealed.exists() && hasRecord(sealed));
         assertNoPrivateKeyAtRest();
         assertNoSecretsInLogcat();
