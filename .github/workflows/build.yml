@@ -36,10 +36,37 @@ jobs:
           node-version: 22
           package-manager-cache: false
 
+      # CI run 39741853313: a single-shot `corepack prepare` hard-failed the
+      # whole suite when one ~30s fetch of the pnpm linux-x64 binary from the
+      # npm registry timed out. Cache the downloaded binary and retry
+      # activation with backoff so a transient registry blip no longer reds
+      # the run; `pnpm --version` proves the binary is on disk before the
+      # frozen install step runs.
+      - name: Cache Corepack pnpm binary
+        uses: actions/cache@v5
+        with:
+          path: ~/.cache/node/corepack
+          key: ${{ runner.os }}-corepack-pnpm-12.5.1
+          restore-keys: |
+            ${{ runner.os }}-corepack-pnpm-
+
       - name: Activate pnpm
         run: |
-          corepack enable
-          corepack prepare pnpm@12.5.1 --activate
+          set -euo pipefail
+          export COREPACK_ENABLE_DOWNLOAD_PROMPT=0
+          for attempt in 1 2 3 4 5; do
+            if corepack enable && corepack prepare pnpm@12.5.1 --activate; then
+              break
+            fi
+            if [[ "$attempt" == 5 ]]; then
+              echo 'FAIL: could not activate pnpm@12.5.1 after 5 attempts' >&2
+              exit 1
+            fi
+            delay=$((attempt * 10))
+            echo "pnpm activation attempt $attempt failed; retrying in ${delay}s" >&2
+            sleep "$delay"
+          done
+          pnpm --version
 
       - name: Set up JDK 21
         uses: actions/setup-java@v5
