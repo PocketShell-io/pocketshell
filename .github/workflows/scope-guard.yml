@@ -1,0 +1,26 @@
+name: Scope boundary
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited, labeled, unlabeled]
+permissions:
+  contents: read
+jobs:
+  scope:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      # Execute trusted base code only; never execute candidate scripts or install dependencies.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Inspect candidate Git objects
+        env:
+          CANDIDATE_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          git fetch --no-tags origin "$CANDIDATE_SHA"
+          python3 scripts/ci/scope_guard.py --product pocketshell --head "$CANDIDATE_SHA"
+          python3 -m unittest discover -s scripts/ci -p 'test_scope_guard.py'
