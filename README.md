@@ -1,12 +1,15 @@
 # PocketShell
 
+See [SCOPE.md](SCOPE.md) for ownership and product boundaries.
+
 PocketShell is a voice-first Android SSH client with an app UI that follows the
 shared PocketShell desktop design. The `main` branch is the
 0.6.0 development line: the new Vue 3, TypeScript, and Capacitor app. It is
 untagged and unreleased until its release gates pass. The released 0.5.x
-Kotlin app lives on the `release/0.5.x` branch. The shell currently shows
-offline host/workspace states and a sample terminal; it does not yet connect to
-SSH hosts or implement the old app's feature set.
+Kotlin app lives on the `release/0.5.x` branch. The development app uses the
+shared PocketShell UI and native SSH transport to connect to hosts and their
+aplexer sessions, with mobile voice/keyboard input, files and port forwarding.
+This does not claim full 0.5.x parity or release qualification.
 
 The rewrite is tracked by umbrella issue [#2854](https://github.com/PocketShell-io/pocketshell/issues/2854).
 The pre-deletion destination, journey, and stored-data map is in
