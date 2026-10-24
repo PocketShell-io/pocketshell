@@ -1470,11 +1470,16 @@ $(tail -n 20 "$log" | sed 's/^/      /')"
           return 1
         fi
         # The refusal must be for the RIGHT reason: the banner's baked-pins
-        # section must show the stub-served REAL checkout pin (0.1.5), which
+        # section must show the stub-served REAL checkout pin, which
         # can only come from the provision actually serving -- if the stub
         # died or answered empty, this check would pass vacuously on <none>.
-        if ! grep -qF 'APLEXER_PIN=0.1.5' "$log"; then
-          fail "[$tag pins] the stale banner shows no baked APLEXER_PIN=0.1.5, so the stub did not serve the checkout pins and the refusal is for the wrong reason. Lane log:
+        # Derive from fixture-pins.txt so future APLEXER_PIN bumps don't
+        # break this contract (F5 0.1.5 -> 0.1.19 red; same pattern as
+        # avd-pool-test.sh and disk-preflight-test.sh).
+        real_pin="$(grep -E '^APLEXER_PIN=' "$ROOT_DIR/tests/docker/fixture-pins.txt")"
+        [[ -n "$real_pin" ]] || { fail "checkout pins file has no APLEXER_PIN line; the guard cannot verify what the stub served"; return 1; }
+        if ! grep -qF "$real_pin" "$log"; then
+          fail "[$tag pins] the stale banner shows no baked $real_pin, so the stub did not serve the checkout pins and the refusal is for the wrong reason. Lane log:
 $(tail -n 20 "$log" | sed 's/^/      /')"
           return 1
         fi
