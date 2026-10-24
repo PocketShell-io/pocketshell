@@ -17,10 +17,14 @@
 #     else — the PATH lookup is a D22 hard cut, #2543), so the binaries stay
 #     release-asset downloads rather than whatever the wheel happens to place
 #     on PATH. Keep this in lock-step with the pin inside the pocketshell
-#     wheel's own dependencies (aplexer==X.Y.Z there).
+#     wheel's own dependencies (aplexer>=0.1.19,<0.2 there, F5 one-version-per-host).
+#     F5: 0.1.5 -> 0.1.19 (first release with the full Hub/PocketShell consumer
+#     surface). POCKETSHELL_PIN stays at 0.5.8 until the CLI re-releases with
+#     the new aplexer range; the fixture binaries (0.1.19) are what the
+#     contract tests pin, not the wheel-bundled copy.
 #
 # Both Dockerfiles parse this file at build time (never a --build-arg
 # default, never a hardcoded literal — that is the drift a fixture must not
 # have), and scripts/test-agents-fixture-aplexer.sh asserts they still do.
 POCKETSHELL_PIN=0.5.8
-APLEXER_PIN=0.1.5
+APLEXER_PIN=0.1.19
