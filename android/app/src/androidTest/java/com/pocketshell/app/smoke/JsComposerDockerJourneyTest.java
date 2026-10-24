@@ -293,7 +293,7 @@ public final class JsComposerDockerJourneyTest {
         tapComposerAction("[data-testid=composer-insert]");
         awaitJsTrue("document.querySelector('[data-testid=composer-status]')?.textContent.includes('without pressing Enter')"
                 + " && document.querySelector('[data-testid=prompt-draft]')?.value === ''");
-        awaitJsTrue("(window.__ps2857TerminalVisibleText || '').includes(" + JSONObject.quote(insertMarker) + ")",
+        awaitJsTrue(TerminalTextOracle.contains(insertMarker),
                 10_000);
 
         setComposerDraft("discard-me-" + nameBase);

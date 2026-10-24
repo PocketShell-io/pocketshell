@@ -14,7 +14,8 @@ const SOURCE = readFileSync(
 const terminalHasLine = new Function(`return ${SOURCE.replace(/^\/\*[\s\S]*?\*\/\s*/, '')};`)() as (
   text: string,
   expected: string,
-  mode: 'equals' | 'endsWith',
+  mode: 'equals' | 'endsWith' | 'includes',
+  columns?: number,
 ) => boolean;
 
 /** A run-tagged id the runner makes: `ps2936-<epoch>-<$RANDOM>`, 1-5 digits. */
@@ -32,6 +33,22 @@ const RUN4_TEXT = `$ echo PS2936_$((6*7))_ps2936-17908\n35707-24437_a1\nPS2936_4
 const SEED8_TEXT = `$ echo PS2936_$((6*7))_ps2936-17908\n39010-6608_a1\nPS2936_42_${SEED8}_a1\n$  `;
 
 describe('terminal logical-line matcher', () => {
+  it('finds the composer Insert echo and dictation readiness across cursor-redrawn rows (CI attempt 3)', () => {
+    const composer = "^[[200~alpha\nβeta\n🙂^[[201~$ printf '%s' 'PS2857_INSERT_\njs2891-40109489424-3' > /tmp/js2891-40\n109489424-3-bytes-insert.marker ";
+    const dictation = '2884_DICTATION_DONE_js2884-40109489424\n-3\\n\')\nPS2884_DICTATION_READY_js2884-40109489\n424-3\n ';
+    expect(terminalHasLine(composer, 'PS2857_INSERT_js2891-40109489424-3', 'includes', 38)).toBe(true);
+    expect(terminalHasLine(dictation, 'PS2884_DICTATION_READY_js2884-40109489424-3', 'includes', 38)).toBe(true);
+    expect(terminalHasLine(composer, 'PS2857_INSERT_js2891-40109489424-4', 'includes', 38)).toBe(false);
+    expect(terminalHasLine(dictation, 'PS2884_DICTATION_READY_js2884-40109489424-4', 'includes', 38)).toBe(false);
+  });
+
+  it('uses the actual column count for substring waits, never an arbitrary shorter widest row', () => {
+    const text = 'prefix PS_READY_\nrun123 suffix';
+    expect(terminalHasLine(text, 'PS_READY_run123', 'includes', 38)).toBe(false);
+    expect(terminalHasLine('prefix PS_READY_run123 suffix', 'PS_READY_run123', 'includes', 38)).toBe(true);
+    expect(terminalHasLine('prefix PS_READY_\n\nrun123', 'PS_READY_run123', 'includes', 16)).toBe(false);
+  });
+
   it('matches an exactly full-width line that is not wrapped (4-digit run id, RANDOM=8)', () => {
     expect(`PS2936_42_${SEED8}_a1`).toHaveLength(35);
     expect(terminalHasLine(SEED8_TEXT, `PS2936_42_${SEED8}_a1`, 'equals')).toBe(true);

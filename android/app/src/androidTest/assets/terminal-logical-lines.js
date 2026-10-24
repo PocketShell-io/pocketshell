@@ -14,18 +14,24 @@
  * renderer's rows carry no wrap marker. "Full width" is the widest visible
  * row, which is the terminal width whenever any row wrapped.
  *
- * mode: 'equals' (trimmed line === expected) or 'endsWith'.
+ * mode: 'equals' (trimmed line === expected), 'endsWith', or 'includes'.
+ * Callers with runtime geometry pass `columns` to avoid inferring a wrap
+ * from an arbitrary short widest row. Cursor-positioned aplexer redraws
+ * also split lines this way, without setting xterm's isWrapped flag.
  *
  * Shared, byte for byte, by SharedAppDockerJourneyTest (read from the test
  * APK's assets) and tests/unit/terminalLogicalLines.test.ts (replays captured
  * failure texts), so the journey's matcher is the unit-tested one.
  */
-(function terminalHasLine(text, expected, mode) {
+(function terminalHasLine(text, expected, mode, columns) {
   var rows = String(text).split('\n');
-  var width = 0;
-  for (var k = 0; k < rows.length; k++) width = Math.max(width, rows[k].length);
+  var width = columns || 0;
+  if (!columns) {
+    for (var k = 0; k < rows.length; k++) width = Math.max(width, rows[k].length);
+  }
   function matches(candidate) {
     var line = candidate.trim();
+    if (mode === 'includes') return line.includes(expected);
     return mode === 'endsWith' ? line.endsWith(expected) : line === expected;
   }
   for (var i = 0; i < rows.length; i++) {

@@ -423,6 +423,8 @@
     "tests/unit/terminalLogicalLines.test.ts": {
       "suite": "terminal logical-line matcher",
       "tests": [
+        "finds the composer Insert echo and dictation readiness across cursor-redrawn rows (CI attempt 3)",
+        "uses the actual column count for substring waits, never an arbitrary shorter widest row",
         "matches an exactly full-width line that is not wrapped (4-digit run id, RANDOM=8)",
         "matches a soft-wrapped line (5-digit run id) and a wrapped line sharing the prompt row",
         "matches a short line on a terminal whose widest row is not a wrap",

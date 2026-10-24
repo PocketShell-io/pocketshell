@@ -450,8 +450,21 @@ if "pocketshell_android_input_preflight" not in runner:
     raise AssertionError("dedicated runner must run the Android input preflight before the journey (#2946)")
 if '(set +m; stty raw -echo;' not in journey:
     raise AssertionError("byte receiver must suppress background sampler job notices that evict the visible marker")
-if 'includes(" + JSONObject.quote(resumedDone) + ")' not in journey:
-    raise AssertionError("reattached fast-key journey must retain its visible resumed DONE marker assertion")
+def require_resumed_done_marker(source):
+    if 'awaitJsTrue(TerminalTextOracle.contains(resumedDone), 15_000);' not in source:
+        raise AssertionError("reattached fast-key journey must retain its visible resumed DONE marker assertion")
+
+require_resumed_done_marker(journey)
+try:
+    require_resumed_done_marker(journey.replace(
+        'awaitJsTrue(TerminalTextOracle.contains(resumedDone), 15_000);',
+        'awaitJsTrue("true", 15_000);',
+        1,
+    ))
+except AssertionError:
+    print("PASS: removed visible resumed DONE marker assertion fails the fast-key workflow contract")
+else:
+    raise AssertionError("workflow contract missed removed visible resumed DONE marker assertion")
 if 'appLastContainsDone:app.includes(done)' not in journey or 'terminalLastContainsDone:term.includes(done)' not in journey:
     raise AssertionError("failed marker diagnostics must distinguish app delivery from xterm write parsing")
 for focus_contract in (

@@ -401,7 +401,7 @@ public final class JsFastKeysDockerJourneyTest {
         assertTrue("compact Enter must receive the physical tap after closing the palette",
                 hotkeyClickSince("enter", pointerEventsBeforeEnter));
         awaitHotkeyWrites(writesBeforeEnter + 1);
-        awaitJsTrue("(window.__ps2857TerminalVisibleText || '').includes(" + JSONObject.quote(firstDone) + ")", 15_000);
+        awaitJsTrue(TerminalTextOracle.contains(firstDone), 15_000);
         awaitRenderedFrame();
         journey.put("tapToVisibleOutputMs", SystemClock.uptimeMillis() - tapToVisibleOutputStartedAt);
         journey.put("firstDoneMarker", firstDone);
@@ -594,7 +594,7 @@ public final class JsFastKeysDockerJourneyTest {
         tapDomCenter("[data-key-id='arrow-up']");
         awaitHotkeyWrites(writesBeforeBack + 1);
         try {
-            awaitJsTrue("(window.__ps2857TerminalVisibleText || '').includes(" + JSONObject.quote(resumedDone) + ")", 15_000);
+            awaitJsTrue(TerminalTextOracle.contains(resumedDone), 15_000);
         } catch (AssertionError error) {
             // Preserve the real packaged screen at the failed render boundary before instrumentation tears the app down.
             captureScreenshot("fastkeys-reconnected-ime-open.png");
@@ -943,7 +943,7 @@ public final class JsFastKeysDockerJourneyTest {
         // of silently landing in PromptComposer's separate draft.
         InstrumentationRegistry.getInstrumentation().sendStringSync(postStopKeyboardText);
         try {
-            awaitJsTrue("(window.__ps2857TerminalVisibleText || '').includes(" + JSONObject.quote(doneMarker) + ")", 15_000);
+            awaitJsTrue(TerminalTextOracle.contains(doneMarker), 15_000);
         } catch (AssertionError markerFailure) {
             try {
                 capturePostStopDoneMarkerFailure(readyMarker, doneMarker, postStopInputChunkStart);
@@ -1724,7 +1724,7 @@ public final class JsFastKeysDockerJourneyTest {
         markResizeFitPhase("send-receiver-command:" + readyMarker);
         click(".composer-shared-controls .send");
         awaitJsTrue("document.querySelector('[data-testid=prompt-draft]')?.value === ''");
-        awaitJsTrue("(window.__ps2857TerminalVisibleText || '').includes(" + JSONObject.quote(readyMarker) + ")", 15_000);
+        awaitJsTrue(TerminalTextOracle.contains(readyMarker), 15_000);
         SystemClock.sleep(300);
         closePromptComposerSheet();
         markResizeFitPhase("receiver-ready:" + readyMarker);
