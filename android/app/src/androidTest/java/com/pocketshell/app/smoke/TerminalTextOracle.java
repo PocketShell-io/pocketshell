@@ -19,6 +19,8 @@ final class TerminalTextOracle {
         // Read physical DOM rows: the buffer evidence already joins local soft
         // wraps, but aplexer's cursor-positioned redraws have no isWrapped flag.
         // Use the grid captured with the buffer, not the widest visible text.
+        // Pass text and painted widths: remote emoji cell widths can differ
+        // from the DOM renderer, so the matcher checks both exact models.
         return "(() => {const grid=JSON.parse(window.__ps2857TerminalBufferState || '{}');"
                 + "if (!(grid.cols > 0)) return false;"
                 + "const rows=[...document.querySelectorAll('.xterm-rows')].find(n=>n.offsetParent!==null);"

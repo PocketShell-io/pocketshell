@@ -424,6 +424,7 @@
     "tests/unit/terminalLogicalLines.test.ts": {
       "suite": "terminal logical-line matcher",
       "tests": [
+        "matches the hosted emoji wrap by logical cells while refusing short combining and ordinary rows",
         "uses measured full DOM cells for the real emoji-prefixed composer Insert echo",
         "finds the composer Insert echo and dictation readiness across cursor-redrawn rows (CI attempt 3)",
         "uses the actual column count for substring waits, never an arbitrary shorter widest row",

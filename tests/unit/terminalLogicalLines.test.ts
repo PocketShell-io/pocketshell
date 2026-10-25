@@ -34,6 +34,18 @@ const RUN4_TEXT = `$ echo PS2936_$((6*7))_ps2936-17908\n35707-24437_a1\nPS2936_4
 const SEED8_TEXT = `$ echo PS2936_$((6*7))_ps2936-17908\n39010-6608_a1\nPS2936_42_${SEED8}_a1\n$  `;
 
 describe('terminal logical-line matcher', () => {
+  it('matches the hosted emoji wrap by logical cells while refusing short combining and ordinary rows', () => {
+    const rows = ["🙂^[[201~$ printf '%s' 'PS2857_INSERT_", "js2891-40208600064-1' > /tmp/js2891-40", '208600064-1-bytes-insert.marker'];
+    const marker = 'PS2857_INSERT_js2891-40208600064-1';
+    expect(rows[0]).toHaveLength(38);
+    expect(terminalHasLine(rows.join('\n'), marker, 'includes', 38, [37.03, 38.03, 32.03])).toBe(true);
+    expect(terminalHasLine(rows.join('\n'), marker + '-wrong', 'includes', 38, [37.03, 38.03, 32.03])).toBe(false);
+    expect(terminalHasLine('e\u0301PS_\nREADY', 'PS_READY', 'includes', 5, [4.03, 5.03])).toBe(false);
+    expect(terminalHasLine('e\u0301xPS_\nREADY', 'PS_READY', 'includes', 5, [5.03, 5.03])).toBe(true);
+    expect(terminalHasLine('xxPS_\nREADY', 'PS_READY', 'includes', 6, [5.03, 5.03])).toBe(false);
+    expect(terminalHasLine('界PS_\nREADY', 'PS_READY', 'includes', 5, [4.03, 5.03])).toBe(true);
+  });
+
   it('uses measured full DOM cells for the real emoji-prefixed composer Insert echo', () => {
     const rows = ["🙂^[[201~$ printf '%s' 'PS2857_INSERT_j", "s2891-c8cf-v2' > /tmp/js2891-c8cf-v2-b", 'ytes-insert.marker '];
     const text = rows.join('\n');
