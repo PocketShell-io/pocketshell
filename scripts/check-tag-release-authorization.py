@@ -40,7 +40,7 @@ JOURNEY_CHECKER = "scripts/check-js-journey-results.py"
 JOURNEY_MANIFEST = ROOT / "scripts/js-journey-class-manifest.json"
 PUBLISH_WORKFLOW = ROOT / ".github/workflows/publish-release.yml"
 LEGACY_BUILD_WORKFLOW = ROOT / ".github/workflows/build.yml"
-EXPECTED_SELF_TESTS = 52
+EXPECTED_SELF_TESTS = 56
 SHA_PATTERN = re.compile(r"[0-9a-f]{40}")
 TAG_PATTERN = re.compile(r"v[0-9]+\.[0-9]+\.[0-9]+")
 
@@ -378,11 +378,18 @@ def validate_release_producer_wiring(release: str, full_suite: str) -> None:
     journey_steps = [b for name, b in steps if name == "Run fail-closed feature journey qualification"]
     if len(journey_steps) != 1:
         raise GateFailure("release validation must contain exactly one journey qualification step")
-    if "if:" in journey_steps[0]:
-        raise GateFailure("the journey qualification step must be unconditional (no if: guard)")
+    # Diagnostics must qualify even after an earlier lane failed. Only the
+    # literal always() condition is unconditional in that situation; a default
+    # step condition is success(), which would silently skip qualification.
+    journey_conditions = re.findall(r"(?m)^        if:\s*(.*?)\s*$", journey_steps[0])
+    if len(journey_conditions) != 1 or journey_conditions[0] not in {"always()", "${{ always() }}"}:
+        raise GateFailure("the journey qualification step must run with exactly one literal if: always()")
     pass_names = [name for name, _ in steps if name == "Mark release validation PASS"]
     if pass_names != ["Mark release validation PASS"]:
         raise GateFailure("release validation must flip the summary to PASS in exactly one final step")
+    pass_step = next(block for name, block in steps if name == "Mark release validation PASS")
+    if re.search(r"(?m)^        if:", pass_step):
+        raise GateFailure("release validation PASS must retain its default success() condition")
     if "name: js-release-validation-" not in release or "actions/upload-artifact@" not in release:
         raise GateFailure("release validation must upload the js-release-validation- summary artifact")
 
@@ -951,7 +958,7 @@ def self_test() -> int:
             False,
         ),
         (
-            "if: guard on the journey qualification step blocks",
+            "duplicate if: guard on the journey qualification step blocks",
             lambda: validate_release_producer_wiring(
                 release_producer.replace(
                     "      - name: Run fail-closed feature journey qualification\n",
@@ -959,6 +966,37 @@ def self_test() -> int:
                     1,
                 ),
                 full_suite,
+            ),
+            False,
+        ),
+        (
+            "qualification conditional on success blocks",
+            lambda: validate_release_producer_wiring(
+                release_producer.replace("        if: always()", "        if: success()"), full_suite,
+            ),
+            False,
+        ),
+        (
+            "qualification without always condition blocks",
+            lambda: validate_release_producer_wiring(
+                release_producer.replace("        if: always()\n", ""), full_suite,
+            ),
+            False,
+        ),
+        (
+            "literal expression always qualification passes",
+            lambda: validate_release_producer_wiring(
+                release_producer.replace("        if: always()", "        if: ${{ always() }}"), full_suite,
+            ),
+            True,
+        ),
+        (
+            "PASS after failed qualification blocks",
+            lambda: validate_release_producer_wiring(
+                release_producer.replace(
+                    "      - name: Mark release validation PASS\n",
+                    "      - name: Mark release validation PASS\n        if: always()\n", 1,
+                ), full_suite,
             ),
             False,
         ),

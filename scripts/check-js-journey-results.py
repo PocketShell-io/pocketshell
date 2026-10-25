@@ -2,13 +2,14 @@
 """Qualify JS-first Android feature journeys without accepting a vacuous run.
 
 The manifest names the 24 user-visible journeys mapped from the removed
-app2 suite. This checker is deliberately NOT wired into the foundation PR
-workflow while those feature journeys are absent; it emits a machine-readable
-BLOCK result until every registered journey has actually executed.
+app2 suite. Qualification stays BLOCK until every registered journey executes.
+Packaged mode reads canonical same-run lane reports, never the overwritten
+shared Gradle output or convenience copies of phase reports.
 
 Usage:
   scripts/check-js-journey-results.py --results-dir <connected-XML-dir>
   scripts/check-js-journey-results.py --results-dir <dir> --json
+  scripts/check-js-journey-results.py --packaged-results-root <outputs> --run-id <id> --run-attempt <attempt>
   scripts/check-js-journey-results.py --self-test
 """
 
@@ -16,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import subprocess
 import sys
 import tempfile
 import xml.etree.ElementTree as ET
@@ -88,7 +90,59 @@ def _class_name(raw: str) -> str:
     return raw.rsplit(".", 1)[-1]
 
 
+def qualify_packaged_results(
+    outputs: Path, run_id: str, run_attempt: str, manifest_path: Path = MANIFEST,
+) -> dict[str, Any]:
+    """Read each dispatcher's canonical lane once; reject missing/ambiguous runs.
+
+    Composer and durable storage repeat support methods in separate phases.
+    Their phase reports are authoritative, while Composer's run-root XML and
+    androidTest-results are overwritten convenience copies and must be ignored.
+    """
+    run = f"{run_id}-{run_attempt}"
+    patterns = [
+        "js-smoke-results", "js-shared-app-results",
+        f"js-lifecycle/js2861-{run}/instrumentation-results",
+        f"js-usage-ports/js2859-{run}/instrumentation-results",
+        f"js-files/js2858-{run}/instrumentation-results",
+        f"js-settings/js2861s-{run}/instrumentation-results",
+        f"js-account-sync/js3020-{run}/instrumentation-results",
+        f"js-account-picker/js3063-{run}/instrumentation-results",
+        f"js-gateway/gw3086-{run}/instrumentation-results",
+        f"js-account-vault/vaultw4-{run}/instrumentation-results",
+        f"js-key-vault/js2926-{run}/instrumentation-results/setup",
+        f"js-key-vault/js2926-{run}/instrumentation-results/document",
+        *[f"js-composer/js2891-{run}-*/phase-{phase}" for phase in ("no-speech", "prepare", "resume")],
+        f"js-hotkeys/js2884-{run}-*",
+        *[f"js-durable-storage/js2993-{run}/phase-{phase}" for phase in ("seed", "verify")],
+        *[f"js-key-vault-upgrade/up2926-{run}/{cycle}/junit"
+          for cycle in ("migrated-host", "malformed-source", "malformed-key")],
+    ]
+    xml_files: list[Path] = []
+    blockers: list[str] = []
+    for pattern in patterns:
+        directories = sorted(path for path in outputs.glob(pattern) if path.is_dir())
+        if len(directories) != 1:
+            blockers.append(f"expected exactly one packaged lane directory {outputs / pattern}; found {len(directories)}")
+            continue
+        # Only top-level TEST XML is authoritative: AGP also stores nested
+        # device copies, and evidence directories can contain diagnostic XML.
+        reports = sorted(directories[0].glob("TEST-*.xml"))
+        if not reports:
+            blockers.append(f"no TEST-*.xml instrumentation reports found under {directories[0]}")
+        xml_files.extend(reports)
+    return _qualify_reports(sorted(set(xml_files)), manifest_path, blockers, packaged=True)
+
+
 def qualify_results(results_dir: Path, manifest_path: Path = MANIFEST) -> dict[str, Any]:
+    xml_files = sorted(results_dir.rglob("TEST-*.xml")) if results_dir.is_dir() else []
+    blockers = [] if xml_files else [f"no TEST-*.xml instrumentation reports found under {results_dir}"]
+    return _qualify_reports(xml_files, manifest_path, blockers)
+
+
+def _qualify_reports(
+    xml_files: list[Path], manifest_path: Path, initial_blockers: list[str], *, packaged: bool = False,
+) -> dict[str, Any]:
     try:
         required = load_manifest(manifest_path)
     except (OSError, json.JSONDecodeError, ValueError) as exc:
@@ -97,18 +151,12 @@ def qualify_results(results_dir: Path, manifest_path: Path = MANIFEST) -> dict[s
         return result
 
     result = _new_result(required)
+    result["reportFiles"] = [str(path) for path in xml_files]
     blockers: list[str] = result["blockers"]
-    if not results_dir.is_dir():
-        blockers.append(f"instrumentation result directory is missing: {results_dir}")
-        return result
-
-    xml_files = sorted(results_dir.rglob("TEST-*.xml"))
-    if not xml_files:
-        blockers.append(f"no TEST-*.xml instrumentation reports found under {results_dir}")
-        return result
-
+    blockers.extend(initial_blockers)
     test_cases: list[tuple[str, str, bool, bool]] = []
     declared_total = 0
+    support_identities: Counter[tuple[str, str]] = Counter()
     for path in xml_files:
         try:
             root = ET.parse(path).getroot()
@@ -159,6 +207,8 @@ def qualify_results(results_dir: Path, manifest_path: Path = MANIFEST) -> dict[s
                 simple_class = _class_name(raw_class)
                 failed = bool(list(case.iter("failure")) or list(case.iter("error")))
                 skipped = bool(list(case.iter("skipped")))
+                if packaged and simple_class not in required:
+                    support_identities[(str(path.parent), f"{simple_class}#{method}")] += 1
                 test_cases.append((simple_class, f"{raw_class}#{method}", failed, skipped))
 
         if root.tag == "testsuites" and "tests" in root.attrib:
@@ -167,8 +217,10 @@ def qualify_results(results_dir: Path, manifest_path: Path = MANIFEST) -> dict[s
                 blockers.append(f"{path}: <testsuites> declares {aggregate} tests but contains {file_cases}")
         declared_total += file_declared_total
 
-    identities = Counter((class_name, test_id.rsplit("#", 1)[-1]) for class_name, test_id, _, _ in test_cases)
+    identities = Counter((class_name, test_id.rsplit("#", 1)[-1]) for class_name, test_id, _, _ in test_cases
+                         if not packaged or class_name in required)
     duplicates = sorted(f"{name}#{method} x{count}" for (name, method), count in identities.items() if count != 1)
+    duplicates.extend(f"{path}: {test_id} x{count}" for (path, test_id), count in support_identities.items() if count != 1)
     if duplicates:
         blockers.append("duplicate instrumentation test cases: " + ", ".join(duplicates))
 
@@ -190,7 +242,7 @@ def qualify_results(results_dir: Path, manifest_path: Path = MANIFEST) -> dict[s
         blockers.append(
             "missing required journey classes: " + ", ".join(result["missingJourneyClasses"])
         )
-    if result["unexpectedClasses"]:
+    if result["unexpectedClasses"] and not packaged:
         blockers.append("unexpected journey classes: " + ", ".join(result["unexpectedClasses"]))
     if result["failedTests"]:
         blockers.append("failed journey tests: " + ", ".join(result["failedTests"]))
@@ -282,12 +334,16 @@ def self_test() -> int:
         print(f"FAIL: {failures} journey result guard self-tests failed", file=sys.stderr)
         return 1
     print(f"SELF-TEST OK: missing, zero, skipped, failed, extra and duplicate journey cases block ({SELF_TEST_CASES}/{SELF_TEST_CASES})")
-    return 0
+    return subprocess.run([sys.executable, "-I", str(ROOT / "tests/scripts/js-journey-results-test.py")], check=False).returncode
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--results-dir", type=Path, default=DEFAULT_RESULTS_DIR)
+    source = parser.add_mutually_exclusive_group()
+    source.add_argument("--results-dir", type=Path)
+    source.add_argument("--packaged-results-root", type=Path, help="canonical packaged lane outputs root")
+    parser.add_argument("--run-id", help="GitHub run ID for canonical same-run lane selection")
+    parser.add_argument("--run-attempt", help="GitHub run attempt for canonical same-run lane selection")
     parser.add_argument("--manifest", type=Path, default=MANIFEST)
     parser.add_argument("--json", action="store_true", help="emit only the machine-readable qualification object")
     parser.add_argument("--self-test", action="store_true")
@@ -295,7 +351,12 @@ def main() -> int:
     if args.self_test:
         return self_test()
 
-    result = qualify_results(args.results_dir, args.manifest)
+    if args.packaged_results_root is not None:
+        if not args.run_id or not args.run_attempt or not args.run_id.isdigit() or not args.run_attempt.isdigit():
+            parser.error("--packaged-results-root requires numeric --run-id and --run-attempt")
+        result = qualify_packaged_results(args.packaged_results_root, args.run_id, args.run_attempt, args.manifest)
+    else:
+        result = qualify_results(args.results_dir or DEFAULT_RESULTS_DIR, args.manifest)
     if args.json:
         print(json.dumps(result, sort_keys=True))
     else:

@@ -14,7 +14,8 @@
 #   - there is deliberately NO input and NO environment knob that waives the
 #     journey qualification or the fault verdict (decision D37, issue #2379);
 #   - the journey-qualification and PASS-marking steps are unconditional and
-#     fail-closed: no `if:` that could skip them, no `continue-on-error`;
+#     fail-closed: qualification uses literal `if: always()`; PASS keeps its
+#     default success() condition; neither allows `continue-on-error`;
 #   - one concurrency group keyed on github.ref with `queue: max` and NO
 #     cancel-in-progress, so queued validations are delayed, never collapsed
 #     or cancelled (#2736, #2825);
@@ -351,7 +352,8 @@ jobs:
           set -euo pipefail
           rc=0
           scripts/check-js-journey-results.py \
-            --results-dir android/app/build/outputs/androidTest-results/connected/debug \
+            --packaged-results-root android/app/build/outputs \
+            --run-id "${GITHUB_RUN_ID}" --run-attempt "${GITHUB_RUN_ATTEMPT}" \
             --json > build/js-release-validation/journey-qualification.json || rc=$?
           python3 - build/js-release-validation/journey-qualification.json >> build/js-release-validation/summary.md <<'PY'
           import json
@@ -390,7 +392,9 @@ jobs:
         uses: actions/upload-artifact@v6
         with:
           name: js-release-validation-${{ github.run_id }}-${{ github.run_attempt }}
-          path: build/js-release-validation/summary.md
+          path: |
+            build/js-release-validation/summary.md
+            build/js-release-validation/journey-qualification.json
           if-no-files-found: error
 
       - name: Collect isolated composer fixture diagnostics
@@ -445,6 +449,9 @@ jobs:
             android/app/build/outputs/js-files/**
             android/app/build/outputs/js-settings/**
             android/app/build/outputs/js-account-sync/**
+            android/app/build/outputs/js-account-picker/**
+            android/app/build/outputs/js-account-vault/**
+            android/app/build/outputs/js-key-vault-upgrade/**
             android/app/build/outputs/js-key-vault/**
             android/app/build/outputs/js-durable-storage/**
             android/app/build/outputs/js-shared-app-results/**
