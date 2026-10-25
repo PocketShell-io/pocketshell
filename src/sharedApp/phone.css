@@ -9,6 +9,11 @@
 /* Tap targets: the 48px design-language minimum on a coarse pointer, where
    the desktop's 28-32px controls are too small for a thumb. */
 @media (pointer: coarse) {
+  /* The manual forwarding form uses the shared control token. On a phone
+     its Add action and fields need the same 48dp target as native forms. */
+  .port-panel {
+    --control-h: 48px;
+  }
   .picker .header-actions .icon-btn,
   .picker .header-actions .account-action,
   .picker .host-item .icon-btn,

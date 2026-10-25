@@ -16,6 +16,7 @@ const terminalHasLine = new Function(`return ${SOURCE.replace(/^\/\*[\s\S]*?\*\/
   expected: string,
   mode: 'equals' | 'endsWith' | 'includes',
   columns?: number,
+  occupiedColumns?: number[],
 ) => boolean;
 
 /** A run-tagged id the runner makes: `ps2936-<epoch>-<$RANDOM>`, 1-5 digits. */
@@ -33,6 +34,19 @@ const RUN4_TEXT = `$ echo PS2936_$((6*7))_ps2936-17908\n35707-24437_a1\nPS2936_4
 const SEED8_TEXT = `$ echo PS2936_$((6*7))_ps2936-17908\n39010-6608_a1\nPS2936_42_${SEED8}_a1\n$  `;
 
 describe('terminal logical-line matcher', () => {
+  it('uses measured full DOM cells for the real emoji-prefixed composer Insert echo', () => {
+    const rows = ["🙂^[[201~$ printf '%s' 'PS2857_INSERT_j", "s2891-c8cf-v2' > /tmp/js2891-c8cf-v2-b", 'ytes-insert.marker '];
+    const text = rows.join('\n');
+    const marker = 'PS2857_INSERT_js2891-c8cf-v2';
+    expect(rows[0]).toHaveLength(39);
+    expect(terminalHasLine(text, marker, 'includes', 38)).toBe(false);
+    expect(terminalHasLine(text, marker, 'includes', 38, [38.03, 38.03, 19])).toBe(true);
+    // A short or overflowing physical row cannot be treated as a wrap.
+    expect(terminalHasLine(text, marker, 'includes', 38, [37, 38.03, 19])).toBe(false);
+    expect(terminalHasLine(text, marker, 'includes', 38, [39, 38.03, 19])).toBe(false);
+    expect(terminalHasLine(text, marker + '-wrong', 'includes', 38, [38.03, 38.03, 19])).toBe(false);
+  });
+
   it('finds the composer Insert echo and dictation readiness across cursor-redrawn rows (CI attempt 3)', () => {
     const composer = "^[[200~alpha\nβeta\n🙂^[[201~$ printf '%s' 'PS2857_INSERT_\njs2891-40109489424-3' > /tmp/js2891-40\n109489424-3-bytes-insert.marker ";
     const dictation = '2884_DICTATION_DONE_js2884-40109489424\n-3\\n\')\nPS2884_DICTATION_READY_js2884-40109489\n424-3\n ';

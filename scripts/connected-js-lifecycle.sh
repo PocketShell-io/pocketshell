@@ -283,7 +283,7 @@ pocketshell_start_without_avd_lock_fd bash -o pipefail -c \
   "$ROOT_DIR/android/gradlew" -p "$ROOT_DIR/android" :app:connectedDebugAndroidTest \
     "-PpocketshellAppIdSuffix=$SUFFIX" \
     -Pandroid.injected.androidTest.leaveApksInstalledAfterRun=true \
-    -Pandroid.testInstrumentationRunnerArguments.class=com.pocketshell.app.smoke.SshPtyDockerJourneyTest \
+    -Pandroid.testInstrumentationRunnerArguments.class=com.pocketshell.app.smoke.J06BackgroundGraceReturnJourney \
     -Pandroid.testInstrumentationRunnerArguments.sshHost=10.0.2.2 \
     "-Pandroid.testInstrumentationRunnerArguments.sshPort=$PORT" \
     "-Pandroid.testInstrumentationRunnerArguments.sshPrivateKeyPath=$DEVICE_KEY_PATH" \

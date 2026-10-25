@@ -96,7 +96,7 @@ if (( ${#composer_runs[@]} != 1 )); then
   composer_junit_copy_status=1
 else
   composer_run="${composer_runs[0]}"
-  for phase in prepare resume; do
+  for phase in production no-speech prepare resume; do
     if [[ ! -s "$composer_run/phase-$phase/TEST-composer.xml" ]]; then
       printf 'FAIL: packaged composer %s phase has no same-run JUnit report\n' "$phase" >&2
       composer_junit_copy_status=1
@@ -109,8 +109,8 @@ composer_junit_status=0
 if (( composer_junit_copy_status != 0 )); then
   composer_junit_status=1
 else
-  for phase in prepare resume; do
-    if ! scripts/check-js-composer-journey-results.py --results-dir "$composer_run/phase-$phase"; then
+  for phase in production no-speech prepare resume; do
+    if ! scripts/check-js-composer-journey-results.py --results-dir "$composer_run/phase-$phase" --phase "$phase"; then
       composer_junit_status=1
     fi
   done
@@ -148,6 +148,18 @@ if scripts/connected-js-settings.sh \
   settings_status=0
 else
   settings_status=$?
+fi
+
+if (
+  export POCKETSHELL_ARTIFACTS_DIR="$ROOT_DIR/android/app/build/outputs/js-voice-settings"
+  scripts/connected-js-voice-settings.sh \
+  --suffix i2855ci \
+  --run-id "js2857voice-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+  --test-only
+); then
+  voice_settings_status=0
+else
+  voice_settings_status=$?
 fi
 
 # Google sign-in and settings sync (#3020): fake Google and fake sync API
@@ -212,6 +224,15 @@ else
   account_vault_status=$?
 fi
 
+if scripts/connected-js-forward-service.sh \
+  --suffix i3097forward \
+  --port 2243 \
+  --run-id "js3097-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"; then
+  forward_service_status=0
+else
+  forward_service_status=$?
+fi
+
 if scripts/connected-js-key-vault-docker.sh \
   --suffix i2926ci \
   --port 2244 \
@@ -236,13 +257,13 @@ else
   signed_upgrade_status=$?
 fi
 
-printf 'Packaged API 35 lane statuses: smoke=%s lifecycle=%s usage-ports=%s files=%s composer=%s composer-junit-copy=%s composer-junit=%s hotkeys=%s hotkeys-junit=%s durable-storage=%s settings=%s account-sync=%s account-picker=%s gateway=%s shared-app=%s account-vault=%s key-vault=%s signed-upgrade=%s smoke-junit-copy=%s\n' \
+printf 'Packaged API 35 lane statuses: smoke=%s lifecycle=%s usage-ports=%s files=%s composer=%s composer-junit-copy=%s composer-junit=%s hotkeys=%s hotkeys-junit=%s durable-storage=%s settings=%s voice-settings=%s forward-service=%s account-sync=%s account-picker=%s gateway=%s shared-app=%s account-vault=%s key-vault=%s signed-upgrade=%s smoke-junit-copy=%s\n' \
   "$smoke_status" "$lifecycle_status" "$usage_status" "$files_status" "$composer_status" \
   "$composer_junit_copy_status" "$composer_junit_status" "$hotkeys_status" \
-  "$hotkeys_junit_status" "$durable_status" "$settings_status" "$account_sync_status" "$account_picker_status" "$gateway_status" "$shared_app_status" \
+  "$hotkeys_junit_status" "$durable_status" "$settings_status" "$voice_settings_status" "$forward_service_status" "$account_sync_status" "$account_picker_status" "$gateway_status" "$shared_app_status" \
   "$account_vault_status" "$key_vault_status" "$signed_upgrade_status" "$copy_status"
 
-if (( smoke_status != 0 || lifecycle_status != 0 || usage_status != 0 || files_status != 0 \
+if (( smoke_status != 0 || lifecycle_status != 0 || usage_status != 0 || files_status != 0 || voice_settings_status != 0 || forward_service_status != 0 \
       || composer_status != 0 || composer_junit_copy_status != 0 || composer_junit_status != 0 \
       || hotkeys_status != 0 || hotkeys_junit_status != 0 || durable_status != 0 \
       || settings_status != 0 || account_sync_status != 0 || account_picker_status != 0 || gateway_status != 0 || shared_app_status != 0 || account_vault_status != 0 || key_vault_status != 0 \

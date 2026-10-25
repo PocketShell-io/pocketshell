@@ -12,7 +12,7 @@ from collections import Counter
 from pathlib import Path
 
 
-REQUIRED_CLASS = "com.pocketshell.app.smoke.J10FilesBrowseEditJourneyTest"
+REQUIRED_CLASS = "com.pocketshell.app.smoke.J10FilesBrowseEditJourney"
 REQUIRED_METHOD = "browseEditConflictAndTransferFilesWithinTheConfiguredRoot"
 LOGCAT_GLOB = f"logcat-{REQUIRED_CLASS}-*.txt"
 DEFAULT_RESULTS = Path("android/app/build/outputs/androidTest-results/connected/debug")

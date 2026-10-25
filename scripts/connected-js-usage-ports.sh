@@ -233,7 +233,7 @@ if pocketshell_run_connected_js_usage_ports_gradle \
     "$RESULTS_DIR" "$REPORTS_DIR" "$ARTIFACTS_DIR" \
     "$ROOT_DIR/android/gradlew" -p "$ROOT_DIR/android" :app:connectedDebugAndroidTest \
     "-PpocketshellAppIdSuffix=$SUFFIX" \
-    -Pandroid.testInstrumentationRunnerArguments.class=com.pocketshell.app.smoke.UsagePortsDockerJourneyTest#usageAndPortForwardingPoliciesUseDockerAndNativePlugin \
+    -Pandroid.testInstrumentationRunnerArguments.class=com.pocketshell.app.smoke.J12UsagePanelJourney,com.pocketshell.app.smoke.J13PortForwardOpenJourney \
     -Pandroid.testInstrumentationRunnerArguments.sshHost=10.0.2.2 \
     "-Pandroid.testInstrumentationRunnerArguments.sshPort=$PORT" \
     "-Pandroid.testInstrumentationRunnerArguments.sshPrivateKeyPath=$DEVICE_KEY_PATH" \
@@ -275,9 +275,10 @@ from pathlib import Path
 import sys
 import xml.etree.ElementTree as ET
 
-REQUIRED = ("com.pocketshell.app.smoke.UsagePortsDockerJourneyTest",
+REQUIRED = ("com.pocketshell.app.smoke.J13PortForwardOpenJourney",
             "usageAndPortForwardingPoliciesUseDockerAndNativePlugin")
-outcomes = []
+USAGE = ("com.pocketshell.app.smoke.J12UsagePanelJourney", "realHostQuotasRenderInUsagePanel")
+outcomes = {REQUIRED: [], USAGE: []}
 for path in sorted(Path(sys.argv[1]).rglob("TEST-*.xml")):
     try:
         root = ET.parse(path).getroot()
@@ -286,15 +287,20 @@ for path in sorted(Path(sys.argv[1]).rglob("TEST-*.xml")):
     suites = [root] if root.tag == "testsuite" else root.findall("testsuite")
     for suite in suites:
         for case in suite.findall("testcase"):
-            if (case.attrib.get("classname"), case.attrib.get("name")) != REQUIRED:
+            identity = (case.attrib.get("classname"), case.attrib.get("name"))
+            if identity not in outcomes:
                 continue
             if list(case.iter("skipped")):
-                outcomes.append("skipped")
+                outcomes[identity].append("skipped")
             elif list(case.iter("failure")) or list(case.iter("error")):
-                outcomes.append("failed")
+                outcomes[identity].append("failed")
             else:
-                outcomes.append("passed")
-print(outcomes[0] if len(outcomes) == 1 else ("missing" if not outcomes else "duplicate"))
+                outcomes[identity].append("passed")
+if outcomes[USAGE] != ["passed"]:
+    print("usage-missing-duplicate-or-not-passed")
+else:
+    ports = outcomes[REQUIRED]
+    print(ports[0] if len(ports) == 1 else ("missing" if not ports else "duplicate"))
 OUTCOME
 )"
 case "$journey_junit_outcome" in

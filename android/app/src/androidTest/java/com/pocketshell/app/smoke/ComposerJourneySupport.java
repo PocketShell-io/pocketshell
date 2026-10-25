@@ -51,7 +51,7 @@ import java.util.concurrent.atomic.AtomicReference;
 
 /** Packaged composer journey against the real agents/aplexer Docker fixture. */
 @RunWith(AndroidJUnit4.class)
-public final class JsComposerDockerJourneyTest {
+public abstract class ComposerJourneySupport {
     private static final long WAIT_TIMEOUT_MILLIS = 45_000;
     private static final long JS_TIMEOUT_SECONDS = 15;
     private static final int MAX_PRE_INJECTION_LAYOUT_ATTEMPTS = 3;
@@ -124,8 +124,27 @@ public final class JsComposerDockerJourneyTest {
         if (stagedKeyDocument != null) stagedKeyDocument.delete();
     }
 
-    @Test
-    public void composerWritesUtf8AndMultilineInsertAndRetainsAfterDrop() throws Exception {
+    protected void runProductionSpeechProviderStart() throws Exception {
+        String packageName = InstrumentationRegistry.getInstrumentation().getTargetContext().getPackageName();
+        InstrumentationRegistry.getInstrumentation().getUiAutomation()
+                .grantRuntimePermission(packageName, "android.permission.RECORD_AUDIO");
+        awaitJsTrue("!!window.Capacitor?.Plugins?.SpeechRecognition");
+        String requestId = "production-provider-" + android.os.SystemClock.uptimeMillis();
+        evalString("window.__productionSpeechStart = null; window.Capacitor.Plugins.SpeechRecognition.startDictation({requestId:"
+                + JSONObject.quote(requestId) + "}).then(value => window.__productionSpeechStart={result:value})"
+                + ".catch(error=>window.__productionSpeechStart={error:String(error?.message??error)}); 'requested'");
+        // A device may have no installed recognizer. Its real native refusal
+        // must return over the bridge; killing the process or losing its reply fails.
+        awaitJsTrue("window.__productionSpeechStart !== null", 30_000);
+        JSONObject reply = new JSONObject(evalString("JSON.stringify(window.__productionSpeechStart)"));
+        assertTrue("native provider start must return a result or explicit error", reply.has("result") || reply.has("error"));
+        assertEquals("the process and WebView bridge must remain alive after production start", "alive",
+                evalString("'alive'"));
+        evalString("window.Capacitor.Plugins.SpeechRecognition.cancelDictation({requestId:"
+                + JSONObject.quote(requestId) + "}).catch(()=>{}); 'cancelled'");
+    }
+
+    protected void runComposerJourney() throws Exception {
         assertTrue("safe-area and keyboard assertions require API 35+", Build.VERSION.SDK_INT >= 35);
         var arguments = InstrumentationRegistry.getArguments();
         String host = arguments.getString("sshHost", "10.0.2.2");
@@ -317,6 +336,7 @@ public final class JsComposerDockerJourneyTest {
         tapComposerAction("[data-testid=composer-insert]");
         awaitJsTrue("document.querySelector('[data-testid=composer-status]')?.textContent.includes('without pressing Enter')"
                 + " && document.querySelector('[data-testid=prompt-draft]')?.value === ''");
+        Log.i("PS2857Insert", "RENDERED_GRID|" + evalString(terminalGridFidelityExpression("PS2857_INSERT_", null)));
         awaitJsTrue(TerminalTextOracle.contains(insertMarker),
                 10_000);
 
@@ -679,9 +699,25 @@ public final class JsComposerDockerJourneyTest {
         awaitJsTrue("document.querySelector('.app-shell')?.dataset.sshPhase === 'live'"
                 + " && !document.querySelector('[data-testid=prompt-composer]')"
                 + " && document.querySelector('[data-testid=inline-dictation-toggle]')?.disabled === false", 20_000);
-        // Install before raising the IME so diagnostic round trips do not
-        // accidentally settle its compositor geometry before the Dictate tap.
+        if (deferInlineImeMeasurement) {
+            noSpeechStep("inline:fixture-entry|nativeIme=" + isImeVisible() + "|" + evalString(
+                    "JSON.stringify({keyboardVisible:document.querySelector('.app-shell')?.dataset.keyboardVisible,"
+                    + "terminalFocused:document.querySelector('.app-shell')?.dataset.terminalViewportFocused})"));
+            // Send may leave the real IME open. Arrange a genuine down→up
+            // transition instead of hoping a later attribute callback precedes
+            // its final geometry. Android Back only dismisses the visible IME.
+            if (isImeVisible()) InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK);
+            awaitImeVisible(false);
+            awaitJsTrue("document.querySelector('.app-shell')?.dataset.keyboardVisible === 'false'");
+            awaitWebViewVisualState();
+        }
         installInlineNoSpeechFocusTrace();
+        if (deferInlineImeMeasurement) {
+            evalString("window.__ps3096CaptureBeforeIme(); 'real pre-transition geometry retained'");
+            awaitJsTrue("!!window.__ps3096DeferredTapMeasurement");
+            noSpeechStep("inline:fixture-before-native-ime-transition|" + evalString(
+                    "JSON.stringify(window.__ps3096DeferredTapMeasurement)"));
+        }
         // Keyboard up on the terminal, as the maintainer dictates.
         raiseTerminalImeWithRetry();
         beginDictationStagesWithoutIdleSync();
@@ -777,7 +813,7 @@ public final class JsComposerDockerJourneyTest {
                 + "window.__ps3096DeferredTapMeasurement=null;"
                 + "const record=reason=>{const state=sample(reason);window.__ps3096Layouts.push(state);"
                 + "if(window.__ps3096Layouts.length>40)window.__ps3096Layouts.shift();"
-                + "if(!window.__ps3096DeferredTapMeasurement&&state.keyboardVisible==='true'&&state.terminalFocused==='true'){"
+                + "if(!window.__ps3096DeferredTapMeasurement&&reason==='before-native-ime-transition'&&state.mic){"
                 + "const r=state.mic,x=(r.left+r.right)/2,y=(r.top+r.bottom)/2,hit=document.elementFromPoint(x,y);"
                 + "window.__ps3096DeferredTapMeasurement={selector:'[data-testid=inline-dictation-toggle]',"
                 + "x,y,width:innerWidth,cssHeight:innerHeight,height:visualViewport?.height??innerHeight,"
@@ -786,6 +822,7 @@ public final class JsComposerDockerJourneyTest {
                 + "offsetLeft:visualViewport?.offsetLeft??0,offsetTop:visualViewport?.offsetTop??0},"
                 + "centerHit:label(hit),centerHitMatchesTarget:!!hit?.closest?.('[data-testid=inline-dictation-toggle]'),"
                 + "activeElementBefore:label(document.activeElement),disabled:false,recordedAtMs:state.atMs};}};"
+                + "window.__ps3096CaptureBeforeIme=()=>record('before-native-ime-transition');"
                 + "record('installed');new MutationObserver(()=>record('shell-mutation')).observe(shell,{attributes:true,"
                 + "attributeFilter:['data-keyboard-visible','data-keyboard-composer-mode','data-terminal-viewport-focused']});"
                 + "visualViewport?.addEventListener('resize',()=>record('viewport-resize'));"
@@ -823,8 +860,8 @@ public final class JsComposerDockerJourneyTest {
     }
 
     /**
-     * Regression fixture: retain an actual DOM measurement from the native IME
-     * transition, then let that transition finish before the test's native
+     * Regression fixture: retain an actual DOM measurement before a native IME
+     * down-to-up transition, then let it finish before the test's native
      * dispatch consumes it. This models delayed snapshot-to-injection scheduling
      * without changing CSS, focus, IME state, or the product. The unguarded tap
      * uses this stale point; the fixed predispatch sampler must reject it.

@@ -3,10 +3,9 @@
 
 The JS path is deliberately a dispatch guard, not a feature-coverage claim. It
 proves that each journey-shaped androidTest class is selected by one of the
-fourteen packaged lanes, and that the lane's exact method
+seventeen packaged lanes, and that the lane's exact method
 contract agrees with both its source and result checker. The independent
-24-class feature qualification gate remains separate and incomplete until
-those journeys exist.
+24-class feature qualification gate independently requires their real JUnit execution.
 
 Usage:
   scripts/check-js-first-android-journeys.py [--repo-root DIR]
@@ -34,6 +33,10 @@ class LaneContract:
     child_runner: str
     result_checker: str
     methods: frozenset[str]
+    additional_classes: tuple[tuple[str, frozenset[str]], ...] = ()
+
+    def classes(self) -> tuple[tuple[str, frozenset[str]], ...]:
+        return ((self.class_name, self.methods),) + self.additional_classes
 
 
 LANES = (
@@ -59,42 +62,49 @@ LANES = (
     ),
     LaneContract(
         name="lifecycle",
-        class_name="com.pocketshell.app.smoke.SshPtyDockerJourneyTest",
+        class_name="com.pocketshell.app.smoke.J06BackgroundGraceReturnJourney",
         child_runner="scripts/connected-js-lifecycle.sh",
         result_checker="scripts/check-js-lifecycle-results.py",
         methods=frozenset({"sshSessionSwitchingGraceAndAbruptServerDropReconnectAgainstDockerFixture"}),
     ),
     LaneContract(
         name="usage-ports",
-        class_name="com.pocketshell.app.smoke.UsagePortsDockerJourneyTest",
+        class_name="com.pocketshell.app.smoke.J13PortForwardOpenJourney",
         child_runner="scripts/connected-js-usage-ports.sh",
         result_checker="scripts/check-js-usage-ports-results.py",
         methods=frozenset({"usageAndPortForwardingPoliciesUseDockerAndNativePlugin"}),
+        additional_classes=(("com.pocketshell.app.smoke.J12UsagePanelJourney", frozenset({"realHostQuotasRenderInUsagePanel"})),),
     ),
     LaneContract(
         name="files",
-        class_name="com.pocketshell.app.smoke.J10FilesBrowseEditJourneyTest",
+        class_name="com.pocketshell.app.smoke.J10FilesBrowseEditJourney",
         child_runner="scripts/connected-js-files-docker.sh",
         result_checker="scripts/check-js-files-results.py",
         methods=frozenset({"browseEditConflictAndTransferFilesWithinTheConfiguredRoot"}),
     ),
     LaneContract(
         name="composer-docker",
-        class_name="com.pocketshell.app.smoke.JsComposerDockerJourneyTest",
+        class_name="com.pocketshell.app.smoke.J07ComposerSendJourney",
         child_runner="scripts/connected-js-composer-docker.sh",
         result_checker="scripts/check-js-composer-journey-results.py",
         methods=frozenset({"composerWritesUtf8AndMultilineInsertAndRetainsAfterDrop"}),
+        additional_classes=(
+            ("com.pocketshell.app.smoke.J08VoiceDictationJourney", frozenset({
+                "dictatedDraftSurvivesScreenOffAndProcessRestart", "noSpeechWarningsKeepTheNativeKeyboardAndDraft",
+            })),
+            ("com.pocketshell.app.smoke.J08VoiceProductionProviderJourney", frozenset({"realProviderStartReturnsWithoutCrashingTheProcess"})),
+        ),
     ),
     LaneContract(
         name="hotkeys-docker",
-        class_name="com.pocketshell.app.smoke.JsFastKeysDockerJourneyTest",
+        class_name="com.pocketshell.app.smoke.J23InlineDictationJourney",
         child_runner="scripts/connected-js-hotkeys-docker.sh",
         result_checker="scripts/check-js-hotkeys-journey-results.py",
         methods=frozenset({"fastKeysStayReachableAndWriteExactBytesAcrossImeBackAndReconnect"}),
     ),
     LaneContract(
         name="settings",
-        class_name="com.pocketshell.app.smoke.JsSettingsSupportJourneyTest",
+        class_name="com.pocketshell.app.smoke.J16SettingsSupportJourney",
         child_runner="scripts/connected-js-settings.sh",
         result_checker="scripts/check-js-settings-results.py",
         methods=frozenset(
@@ -106,38 +116,47 @@ LANES = (
         ),
     ),
     LaneContract(
+        name="voice-settings",
+        class_name="com.pocketshell.app.smoke.J24SettingsReachJourney",
+        child_runner="scripts/connected-js-voice-settings.sh",
+        result_checker="scripts/check-js-voice-settings-results.py",
+        methods=frozenset({"voiceLanguageAndSilenceControlsPersistAcrossNavigationAndActivityRelaunch"}),
+    ),
+    LaneContract(
         name="shared-app",
-        class_name="com.pocketshell.app.smoke.SharedAppDockerJourneyTest",
+        class_name="com.pocketshell.app.smoke.J01ConnectAndTrustJourney",
         child_runner="scripts/connected-js-shared-app.sh",
         result_checker="scripts/check-js-shared-app-results.py",
-        methods=frozenset(
-            {
-                "sharedAppListsAttachesAndTypesIntoFixtureSession",
-                "sharedTerminalDeliversImeEditsAsExactBytes",
-                "sharedAppRecoversAbruptServerDropWithOneControllerReconnect",
-                "sharedAppReportsARealSessionEndWithoutReconnecting",
-                # #3039: only the attach client dies; a silent re-join.
-                "sharedAppSilentlyRejoinsWhenOnlyTheAttachClientDies",
-                "sharedAppSwitchesSessionTabsKeepingEachTerminal",
-                # #2953: the shared host-key prompt, and a changed key refused.
-                "firstContactHostKeyAsksAndHonoursRejectOnceAndAlways",
-                "changedHostKeyIsRefusedWithVisibleMessage",
-            }
+        methods=frozenset({'firstContactHostKeyAsksAndHonoursRejectOnceAndAlways', 'changedHostKeyIsRefusedWithVisibleMessage'}),
+        additional_classes=(
+            ("com.pocketshell.app.smoke.J02SessionTreeListJourney", frozenset({'sharedAppSwitchesSessionTabsKeepingEachTerminal', 'sharedAppListsAttachesAndTypesIntoFixtureSession'})),
+            ("com.pocketshell.app.smoke.J03AttachAndTypeJourney", frozenset({'sharedTerminalDeliversImeEditsAsExactBytes'})),
+            ("com.pocketshell.app.smoke.J05ReconnectAfterDropJourney", frozenset({'sharedAppSilentlyRejoinsWhenOnlyTheAttachClientDies', 'sharedAppRecoversAbruptServerDropWithOneControllerReconnect'})),
+            ("com.pocketshell.app.smoke.J14StopSessionJourney", frozenset({'sharedAppReportsARealSessionEndWithoutReconnecting', 'stopSessionFromTabKillsItOnTheHost'})),
+            ("com.pocketshell.app.smoke.J15TerminalScrollJourney", frozenset({'scrollTerminalDoesNotSendInputBytes'})),
+            ("com.pocketshell.app.smoke.J19HostFormImeJourney", frozenset({'tunnelFormSubmitRemainsReachableWithTheIme', 'hostFormSubmitRemainsReachableWithTheIme'})),
+            ("com.pocketshell.app.smoke.J21HostAddConnectJourney", frozenset({'hostAddedThroughFormConnectsToFixture'})),
+            ("com.pocketshell.app.smoke.J11ShareUploadJourney", frozenset({"androidSingleShareReachesTheChosenSessionOnTheRealHost", "androidShareStreamsReachTheChosenSessionOnTheRealHost"})),
+            ("com.pocketshell.app.smoke.J20ComposerUploadProgressJourney", frozenset({"aThreeFileUploadShowsTheBarMidFlightAndLeavesNoResidueAfterCompletion"})),
         ),
     ),
     LaneContract(
         name="key-vault-docker",
-        class_name="com.pocketshell.app.smoke.SshKeyVaultDockerJourneyTest",
+        class_name="com.pocketshell.app.smoke.J04CreateSessionJourney",
         child_runner="scripts/connected-js-key-vault-docker.sh",
         result_checker="scripts/check-js-key-vault-results.py",
-        # One exact method per cycle, selected as `class=...#$method` from
-        # literal run_cycle calls: #2926 document import, #3021 paste/install.
-        methods=frozenset(
-            {
-                "importsEncryptedDocumentConnectsAndKeepsSecretsOutOfWebViewState",
-                "pastesKeySharesPublicKeyAndInstallsGeneratedKeyOnHost",
-            }
-        ),
+        methods=frozenset({"importsEncryptedDocumentConnectsAndKeepsSecretsOutOfWebViewState"}),
+        additional_classes=(("com.pocketshell.app.smoke.J17HostToolsJourney",
+                             frozenset({"pastesKeySharesPublicKeyAndInstallsGeneratedKeyOnHost"})),),
+    ),
+    LaneContract(
+        name="forward-service",
+        class_name="com.pocketshell.app.smoke.J18AutoForwardResumeJourney",
+        child_runner="scripts/connected-js-forward-service.sh",
+        result_checker="scripts/check-js-forward-service-results.py",
+        methods=frozenset({"automaticForwardStartsWithoutPortsAndSurvivesResume"}),
+        additional_classes=(("com.pocketshell.app.smoke.J22ForwardServiceFgsJourney",
+                             frozenset({"foregroundServiceKeepsTunnelInBackgroundAndNotificationStopsIt"})),),
     ),
     LaneContract(
         name="account-sync",
@@ -212,7 +231,7 @@ LANES = (
     ),
 )
 
-JOURNEY_SUFFIX = re.compile(r"(?:E2eTest|DockerTest|JourneyTest|SmokeTest)$")
+JOURNEY_SUFFIX = re.compile(r"(?:E2eTest|DockerTest|JourneyTest|SmokeTest|Journey)$")
 ISSUE_JUSTIFICATION = re.compile(
     r"CI_JOURNEY_SUITE_JUSTIFIED:\s*(#[1-9][0-9]*)\s+([^\r\n]+)"
 )
@@ -259,17 +278,30 @@ def _class_selector_matches(source: str, contract: LaneContract) -> bool:
     active = _strip_shell_comments(source)
     active = re.sub(r"\\\s*\n", " ", active)
     selector = "-Pandroid.testInstrumentationRunnerArguments.class="
-    if contract.name == "shared-app":
-        # The selection regressions supplement the seven exact product
-        # journeys. Accept only that explicit pair, without per-method
-        # filtering, duplicates, unknown classes, or overriding selectors.
+    group = next((lane for lane in LANES if lane.child_runner == contract.child_runner), contract)
+    expected_classes = {name for name, _ in group.classes()}
+    if contract.name == "composer-docker" and group.additional_classes:
+        phase_pairs = re.findall(r'test_class="([\w.]+)"\s+test_method="([\w]+)"', active)
+        expected_pairs = {(name, method) for name, methods in group.classes() for method in methods}
+        return (set(phase_pairs) == expected_pairs and len(phase_pairs) == len(expected_pairs)
+                and '-e class "$test_class#$test_method"' in active
+                and bool(re.search(r'\bshell\s+am\s+instrument[^\n;]*\$\{phase_args\[@\]\}', active)))
+    if contract.name == "key-vault-docker" and group.additional_classes:
+        expected_pairs = {(name.rsplit('.', 1)[-1], method) for name, methods in group.classes() for method in methods}
+        declarations = re.findall(r'(?:local\s+)?journey_class=([A-Za-z_]\w*)', active)
+        cycles = re.findall(r'(?m)^\s*run_cycle\s+\S+\s+([A-Za-z_]\w*)(?=\s)', active)
+        return (set(declarations) == {name for name, _ in expected_pairs}
+                and set(cycles) == {method for _, method in expected_pairs}
+                and len(cycles) == len(expected_pairs)
+                and 'com.pocketshell.app.smoke.$journey_class#$method' in active)
+    if group.additional_classes or contract.name == "shared-app":
+        if contract.name == "shared-app":
+            expected_classes.add(SHARED_APP_SELECTION_REGRESSION_CLASS)
         values = re.findall(re.escape(selector) + r"([^\s'\"\\]+)", active)
         if len(values) != 1:
             return False
         selected = values[0].split(",")
-        return len(selected) == 2 and set(selected) == {
-            contract.class_name, SHARED_APP_SELECTION_REGRESSION_CLASS,
-        }
+        return len(selected) == len(expected_classes) and set(selected) == expected_classes
     # Most lanes select their class through Gradle. The composer lane directly
     # invokes Android instrumentation and forwards its selector via an array.
     direct = re.search(
@@ -319,27 +351,35 @@ def _checker_contract(source: str, contract: LaneContract) -> tuple[str | None, 
     except SyntaxError:
         return None, None
     values: dict[str, object] = {}
+
+    def literal(node):
+        if isinstance(node, ast.Name):
+            return values[node.id]
+        if isinstance(node, ast.Constant):
+            return node.value
+        if isinstance(node, (ast.Tuple, ast.List, ast.Set)):
+            entries = [literal(item) for item in node.elts]
+            return tuple(entries) if isinstance(node, ast.Tuple) else (set(entries) if isinstance(node, ast.Set) else entries)
+        if isinstance(node, ast.Dict):
+            return {literal(key): literal(value) for key, value in zip(node.keys, node.values)}
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in {"frozenset", "set"} and len(node.args) == 1:
+            return frozenset(literal(node.args[0]))
+        raise ValueError("not a literal contract")
+
     for node in tree.body:
         if isinstance(node, ast.Assign):
             for target in node.targets:
-                if isinstance(target, ast.Name) and target.id in {
-                    "REQUIRED_CLASS",
-                    "REQUIRED_METHOD",
-                    "REQUIRED_METHODS",
-                }:
+                if isinstance(target, ast.Name):
                     try:
-                        if (
-                            target.id == "REQUIRED_METHODS"
-                            and isinstance(node.value, ast.Call)
-                            and isinstance(node.value.func, ast.Name)
-                            and node.value.func.id == "frozenset"
-                            and len(node.value.args) == 1
-                        ):
-                            values[target.id] = ast.literal_eval(node.value.args[0])
-                        else:
-                            values[target.id] = ast.literal_eval(node.value)
-                    except (ValueError, TypeError):
-                        values[target.id] = None
+                        values[target.id] = literal(node.value)
+                    except (KeyError, ValueError, TypeError):
+                        pass
+    mapping = values.get("METHOD_CLASSES")
+    if isinstance(mapping, dict):
+        return contract.class_name, {method for method, class_name in mapping.items() if class_name == contract.class_name}
+    phases = values.get("PHASE_IDENTITIES")
+    if isinstance(phases, dict):
+        return contract.class_name, {method for class_name, method in phases.values() if class_name == contract.class_name}
     class_name = values.get("REQUIRED_CLASS")
     methods = values.get("REQUIRED_METHODS")
     if methods is None and values.get("REQUIRED_METHOD") is not None:
@@ -412,7 +452,7 @@ def _source_test_methods(source: str) -> set[str]:
     # char literals and Java text blocks cannot supply fake @Test declarations.
     cleaned, _comments = _strip_java_non_code(source)
     pattern = re.compile(
-        r"@Test\b(?:\s*\([^)]*\))?\s+"
+        r"@Test\b(?:\s*\([^)]*\))?\s+(?:@\w+(?:\([^)]*\))?\s+)*"
         r"(?:(?:public|protected|private|static|final|synchronized)\s+)*"
         r"[\w$<>.?\[\]]+\s+([A-Za-z_$][\w$]*)\s*\("
     )
@@ -456,7 +496,7 @@ def check_js(repo_root: Path) -> list[Finding]:
         findings.append(Finding("ERROR", "JS-first packaged lane dispatcher is empty; refusing a zero-lane pass"))
         return findings
 
-    # A fixed fourteen-lane inventory makes an empty/partially deleted registry a
+    # A fixed seventeen-lane inventory makes an empty/partially deleted registry a
     # hard error. This is the current packaged suite only, not the 24-class
     # feature-journey inventory in scripts/js-journey-class-manifest.json.
     required_lanes = {
@@ -469,6 +509,8 @@ def check_js(repo_root: Path) -> list[Finding]:
         "shared-app",
         "signed-upgrade",
         "settings",
+        "voice-settings",
+        "forward-service",
         "durable-storage",
         "hotkeys-docker",
         "account-sync",
@@ -477,9 +519,11 @@ def check_js(repo_root: Path) -> list[Finding]:
         "account-vault",
     }
     if {lane.name for lane in LANES} != required_lanes:
-        findings.append(Finding("ERROR", "required fifteen-lane packaged journey inventory changed"))
+        findings.append(Finding("ERROR", "required seventeen-lane packaged journey inventory changed"))
 
-    for lane in LANES:
+    expanded = [LaneContract(lane.name, name, lane.child_runner, lane.result_checker, methods)
+                for lane in LANES for name, methods in lane.classes()]
+    for lane in expanded:
         if not _script_invokes(dispatcher, lane.child_runner):
             findings.append(Finding("ERROR", f"dispatcher does not execute {lane.child_runner}"))
             continue
@@ -516,12 +560,14 @@ def check_js(repo_root: Path) -> list[Finding]:
         return findings
 
     actual_journey_classes: dict[str, tuple[Path, str, str]] = {}
-    known_classes = {lane.class_name for lane in LANES}
+    known_classes = {lane.class_name for lane in expanded}
     for path in files:
         source = _read(path, f"androidTest source {path.relative_to(repo_root)}", findings)
         code, _comments = _strip_java_non_code(source)
         package = re.search(r"(?m)^\s*package\s+([A-Za-z_][\w.]*)\s*;?", code)
         package_name = package.group(1) if package else ""
+        if re.search(r"\babstract\s+class\b", code) and not _source_test_methods(source):
+            continue
         declarations = re.findall(r"\b(?:class|interface|enum)\s+([A-Za-z_$][\w$]*)", code)
         candidates = [
             simple_name
@@ -546,7 +592,7 @@ def check_js(repo_root: Path) -> list[Finding]:
         findings.append(Finding("ERROR", "JS androidTest root contains zero journey-shaped classes; refusing a vacuous J1 pass"))
         return findings
 
-    by_class = {lane.class_name: lane for lane in LANES}
+    by_class = {lane.class_name: lane for lane in expanded}
     wired_classes: set[str] = set()
     for class_name, lane in by_class.items():
         source_record = actual_journey_classes.get(class_name)
@@ -699,12 +745,32 @@ def _write_fixture(
     source += "\n}\n"
     source_path.write_text(source, encoding="utf-8")
 
+    for extra_name, extra_methods in lane.additional_classes:
+        extra_path = android_root / Path(*extra_name.split(".")).with_suffix(".java")
+        extra_path.parent.mkdir(parents=True, exist_ok=True)
+        extra_path.write_text("package " + extra_name.rsplit(".", 1)[0] + ";\npublic class " + extra_name.rsplit(".", 1)[1]
+            + " {\n" + "\n".join("@Test public void " + method + "() {}" for method in sorted(extra_methods)) + "\n}\n")
     dispatcher = root / "scripts/ci-js-first-packaged-lanes.sh"
     dispatcher.parent.mkdir(parents=True, exist_ok=True)
     dispatcher.write_text("#!/bin/sh\n" + "\n".join(lane.child_runner for lane in LANES) + "\n", encoding="utf-8")
     child = root / lane.child_runner
     child.parent.mkdir(parents=True, exist_ok=True)
-    if lane.name in {"composer-docker", "durable-storage"}:
+    if lane.name == "composer-docker" and lane.additional_classes:
+        selector = "run_instrumentation_phase() {\n case \"$phase\" in\n"
+        for index, (class_name, class_methods) in enumerate(lane.classes()):
+            for method in sorted(class_methods):
+                selector += 'phase' + method + ') test_class="' + ("wrong.Class" if wrong_selector else class_name) + '"\n test_method="' + method + '" ;;\n'
+        selector += 'esac\n local phase_args=(' + ('' if omit_selector else '-e class "$test_class#$test_method" ') + ')\n'
+        selector += '"$ADB" shell am instrument -w -r "${phase_args[@]}" "$INSTRUMENTATION_COMPONENT"\n}\n'
+    elif lane.name == "key-vault-docker" and lane.additional_classes:
+        selector = "local journey_class=" + ("wrong.Class" if wrong_selector else lane.class_name.rsplit('.', 1)[-1]) + "\n"
+        for name, class_methods in lane.additional_classes:
+            selector += '[[ "$method" != ' + next(iter(class_methods)) + ' ]] || journey_class=' + name.rsplit('.', 1)[-1] + "\n"
+        if not omit_selector:
+            selector += './gradlew "-Pandroid.testInstrumentationRunnerArguments.class=com.pocketshell.app.smoke.$journey_class#$method"\n'
+        for name, class_methods in lane.classes():
+            selector += "".join('run_cycle cycle ' + method + ' "$RUN_ID" none\n' for method in sorted(class_methods))
+    elif lane.name in {"composer-docker", "durable-storage"}:
         selected_class = "wrong.Class" if wrong_selector else lane.class_name
         selector = f"test_class='{selected_class}'\n"
         phase_selector = "" if omit_selector else '-e class "$test_class" '
@@ -718,7 +784,7 @@ def _write_fixture(
         cycle_methods = methods[:-1] if omit_selector else methods
         selector += "".join(f'run_cycle cycle{index} {method} "$RUN_ID-{index}" none\n' for index, method in enumerate(cycle_methods))
     else:
-        target = "wrong.Class" if (omit_selector or wrong_selector) else lane.class_name
+        target = "wrong.Class" if (omit_selector or wrong_selector) else ",".join(name for name, _ in lane.classes())
         if lane.name == "shared-app":
             target += "," + SHARED_APP_SELECTION_REGRESSION_CLASS
         selector = f"./gradlew -Pandroid.testInstrumentationRunnerArguments.class={target}\n"
@@ -732,6 +798,9 @@ def _write_fixture(
         checker_source += "REQUIRED_METHOD = " + repr(checker_methods[0]) + "\n"
     else:
         checker_source += "REQUIRED_METHODS = frozenset(" + repr(set(checker_methods)) + ")\n"
+    if lane.additional_classes:
+        checker_source = "METHOD_CLASSES = " + repr({method: name for name, class_methods in lane.classes()
+            for method in sorted(class_methods) if not omit_checker_method or method != sorted(lane.methods)[0]}) + "\n"
     checker.write_text(checker_source, encoding="utf-8")
 
 
@@ -757,12 +826,12 @@ def self_test() -> int:
         for lane in LANES:
             _write_fixture(root, lane)
         result = check(root, "auto")
-        probe("all fourteen exact packaged lane classes and methods dispatch", result == 0, True)
+        probe("all seventeen exact packaged lane class/method groups dispatch", result == 0, True)
 
         shared = next(lane for lane in LANES if lane.name == "shared-app")
         shared_runner = root / shared.child_runner
         complete_shared = shared_runner.read_text(encoding="utf-8")
-        pair = shared.class_name + "," + SHARED_APP_SELECTION_REGRESSION_CLASS
+        pair = ",".join(name for name, _ in shared.classes()) + "," + SHARED_APP_SELECTION_REGRESSION_CLASS
         invalid_selectors = {
             "missing selection regression": shared.class_name,
             "missing real shared-app journeys": SHARED_APP_SELECTION_REGRESSION_CLASS,
@@ -778,7 +847,7 @@ def self_test() -> int:
                                  + pair + "\n", encoding="utf-8")
         probe("shared-app overriding class selector fails closed", check(root, "js") != 0, True)
         shared_runner.write_text(complete_shared.replace(pair,
-            SHARED_APP_SELECTION_REGRESSION_CLASS + "," + shared.class_name), encoding="utf-8")
+            ",".join(reversed(pair.split(",")))), encoding="utf-8")
         probe("shared-app explicit pair permits either order", check(root, "js") == 0, True)
         shared_runner.write_text(complete_shared, encoding="utf-8")
 
@@ -884,6 +953,8 @@ def self_test() -> int:
         for lane in LANES:
             source = root / "android/app/src/androidTest/java" / Path(*lane.class_name.split(".")).with_suffix(".java")
             source.unlink(missing_ok=True)
+            for extra_name, _ in lane.additional_classes:
+                (root / "android/app/src/androidTest/java" / Path(*extra_name.split(".")).with_suffix(".java")).unlink(missing_ok=True)
         probe("empty JS androidTest tree fails closed", check(root, "js") != 0, True)
 
     # Preserve and exercise the legacy main/stable behavior with a synthetic

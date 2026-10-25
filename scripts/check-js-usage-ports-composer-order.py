@@ -9,7 +9,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_SOURCE = ROOT / "android/app/src/androidTest/java/com/pocketshell/app/smoke/UsagePortsDockerJourneyTest.java"
+DEFAULT_SOURCE = ROOT / "android/app/src/androidTest/java/com/pocketshell/app/smoke/UsagePortsJourneySupport.java"
 # The one physical-tap injector every packaged journey shares (#2884, #2946).
 PHYSICAL_TAP_SOURCE = ROOT / "android/app/src/androidTest/java/com/pocketshell/app/smoke/PhysicalTap.java"
 

@@ -11,8 +11,14 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 
 
-REQUIRED_CLASS = "com.pocketshell.app.smoke.JsComposerDockerJourneyTest"
+REQUIRED_CLASS = "com.pocketshell.app.smoke.J07ComposerSendJourney"
 REQUIRED_METHOD = "composerWritesUtf8AndMultilineInsertAndRetainsAfterDrop"
+PHASE_IDENTITIES = {
+    "production": ("com.pocketshell.app.smoke.J08VoiceProductionProviderJourney", "realProviderStartReturnsWithoutCrashingTheProcess"),
+    "resume": (REQUIRED_CLASS, REQUIRED_METHOD),
+    "prepare": ("com.pocketshell.app.smoke.J08VoiceDictationJourney", "dictatedDraftSurvivesScreenOffAndProcessRestart"),
+    "no-speech": ("com.pocketshell.app.smoke.J08VoiceDictationJourney", "noSpeechWarningsKeepTheNativeKeyboardAndDraft"),
+}
 DEFAULT_RESULTS_DIR = Path("android/app/build/outputs/androidTest-results/connected/debug")
 
 
@@ -20,7 +26,7 @@ class GateFailure(ValueError):
     """The packaged composer journey result is missing, extra, skipped, or red."""
 
 
-def validate_results(results_dir: Path) -> None:
+def validate_results(results_dir: Path, phase: str | None = None) -> None:
     if not results_dir.is_dir():
         raise GateFailure(f"instrumentation results directory is missing: {results_dir}")
     xml_files = sorted(results_dir.rglob("TEST-*.xml"))
@@ -62,17 +68,19 @@ def validate_results(results_dir: Path) -> None:
                 testcases.append((classname, method, case))
 
     actual = [(classname, method) for classname, method, _ in testcases]
-    expected = [(REQUIRED_CLASS, REQUIRED_METHOD)]
-    if actual != expected:
-        raise GateFailure(f"expected exactly {REQUIRED_CLASS}#{REQUIRED_METHOD}; found {actual or '<zero tests>'}")
+    expected = [PHASE_IDENTITIES[phase]] if phase is not None else actual
+    if len(actual) != 1 or actual[0] not in PHASE_IDENTITIES.values() or actual != expected:
+        allowed = expected if phase is not None else list(PHASE_IDENTITIES.values())
+        raise GateFailure(f"expected exactly one registered composer phase identity from {allowed}; found {actual or '<zero tests>'}")
+    identity = "#".join(actual[0])
     case = testcases[0][2]
     failures = list(case.iter("failure")) + list(case.iter("error"))
     if failures:
         details = "; ".join((failure.get("message") or failure.text or "unspecified failure").strip()
                             for failure in failures)
-        raise GateFailure(f"{REQUIRED_CLASS}#{REQUIRED_METHOD} failed: {details}")
+        raise GateFailure(f"{identity} failed: {details}")
     if list(case.iter("skipped")):
-        raise GateFailure(f"{REQUIRED_CLASS}#{REQUIRED_METHOD} was skipped")
+        raise GateFailure(f"{identity} was skipped")
 
 
 def self_test() -> int:
@@ -155,16 +163,20 @@ def self_test() -> int:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--results-dir", type=Path, default=DEFAULT_RESULTS_DIR)
+    parser.add_argument("--phase", choices=PHASE_IDENTITIES)
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args()
     if args.self_test:
         return self_test()
     try:
-        validate_results(args.results_dir)
+        validate_results(args.results_dir, args.phase)
     except GateFailure as exc:
         print(f"BLOCK: {exc}", file=sys.stderr)
         return 1
-    print(f"PASS: exactly one packaged composer journey passed ({REQUIRED_CLASS}#{REQUIRED_METHOD})")
+    if args.phase is not None:
+        print(f"PASS: exactly one packaged composer journey passed ({'#'.join(PHASE_IDENTITIES[args.phase])})")
+    else:
+        print("PASS: exactly one registered packaged composer phase passed")
     return 0
 
 

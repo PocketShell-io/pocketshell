@@ -498,9 +498,10 @@ export class AndroidConnectionHub {
   // --- lifecycle --------------------------------------------------------------
 
   /** Android paused the activity: every live controller starts its grace. */
-  async enterBackground(graceMs: number): Promise<void> {
+  async enterBackground(graceMs: number, keepAlive: (id: string) => boolean = () => false): Promise<void> {
     await Promise.all(
       [...this.records.values()].map(async (record) => {
+        if (keepAlive(record.id)) return;
         const phase = record.controller.getSnapshot().phase;
         if (phase === 'live' || phase === 'connected') {
           await record.controller.enterBackground(graceMs).catch(() => undefined);

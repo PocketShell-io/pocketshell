@@ -47,7 +47,7 @@ import java.util.concurrent.atomic.AtomicReference;
 
 /** Usage and tunnel policy through the packaged JS app, Docker host and Android SSH plugin. */
 @RunWith(AndroidJUnit4.class)
-public final class UsagePortsDockerJourneyTest {
+public abstract class UsagePortsJourneySupport {
     private static final long WAIT_TIMEOUT_MILLIS = 45_000;
     private static final String PROMPT_LAUNCHER_SELECTOR = "[data-testid=prompt-composer-launcher]";
     private ActivityScenario<MainActivity> scenario;
@@ -94,8 +94,7 @@ public final class UsagePortsDockerJourneyTest {
         lastScreenshot = null;
     }
 
-    @Test
-    public void usageAndPortForwardingPoliciesUseDockerAndNativePlugin() throws Exception {
+    protected void runUsagePortsJourney() throws Exception {
         try {
             runUsageAndPortForwardingPoliciesUseDockerAndNativePlugin();
         } catch (Throwable failure) {
@@ -112,12 +111,15 @@ public final class UsagePortsDockerJourneyTest {
         }
     }
 
+    protected boolean usageOnly() { return false; }
+
     private void runUsageAndPortForwardingPoliciesUseDockerAndNativePlugin() throws Exception {
         var arguments = InstrumentationRegistry.getArguments();
         String host = arguments.getString("sshHost", "10.0.2.2");
         String port = arguments.getString("sshPort");
         String keyPath = arguments.getString("sshPrivateKeyPath");
         String runId = arguments.getString("sshSessionName", "js2859-" + System.currentTimeMillis());
+        if (usageOnly()) runId += "-panel";
         activeRunId = runId.matches("[A-Za-z0-9][A-Za-z0-9_-]{2,38}") ? runId : "usage-ports-failure";
         httpRemotePort = 8_000 + Math.floorMod(activeRunId.hashCode(), 2_001);
         artifactDirectory = new File(
@@ -205,6 +207,7 @@ public final class UsagePortsDockerJourneyTest {
         assertEquals("reading usage must use the same live SSH transport", firstConnectionId,
                 evalString("document.querySelector('.app-shell')?.dataset.sshConnectionId ?? ''"));
         captureScreenArtifact("provider-usage", artifactDirectory);
+        if (usageOnly()) return;
 
         click("[aria-label='Back']");
         click("[data-testid=open-ports]");

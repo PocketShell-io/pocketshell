@@ -252,9 +252,11 @@ printf '%s\n' "$docker_log_start_time" > "$ARTIFACTS_DIR/docker-log-started-at.t
 # One exact method per instrumentation cycle: $1 = method, $2 = Gradle log.
 run_key_vault_instrumentation() {
   local method="$1" log="$2"
+  local journey_class=J04CreateSessionJourney
+  [[ "$method" != pastesKeySharesPublicKeyAndInstallsGeneratedKeyOnHost ]] || journey_class=J17HostToolsJourney
   "$ROOT_DIR/android/gradlew" -p "$ROOT_DIR/android" :app:connectedDebugAndroidTest \
     "-PpocketshellAppIdSuffix=$SUFFIX" \
-    "-Pandroid.testInstrumentationRunnerArguments.class=com.pocketshell.app.smoke.SshKeyVaultDockerJourneyTest#$method" \
+    "-Pandroid.testInstrumentationRunnerArguments.class=com.pocketshell.app.smoke.$journey_class#$method" \
     -Pandroid.testInstrumentationRunnerArguments.sshHost=10.0.2.2 \
     "-Pandroid.testInstrumentationRunnerArguments.sshPort=$PORT" \
     "-Pandroid.testInstrumentationRunnerArguments.keyFixtureName=$DEVICE_KEY_NAME" \

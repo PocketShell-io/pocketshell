@@ -149,7 +149,7 @@ if results.exists():
 PY
 
 DEVICE_KEY_PATH="/data/local/tmp/pocketshell-$SUFFIX-key.pem"
-test_class='com.pocketshell.app.smoke.JsFastKeysDockerJourneyTest'
+test_class='com.pocketshell.app.smoke.J23InlineDictationJourney'
 asset_logcat="$evidence_dir/hotkeys-assets-live-logcat.txt"
 asset_logcat_pid=""
 prepare_asset_logcat_path() {
@@ -272,7 +272,7 @@ from pathlib import Path
 import sys
 import xml.etree.ElementTree as ET
 
-REQUIRED_CLASS = "com.pocketshell.app.smoke.JsFastKeysDockerJourneyTest"
+REQUIRED_CLASS = "com.pocketshell.app.smoke.J23InlineDictationJourney"
 REQUIRED_METHOD = "fastKeysStayReachableAndWriteExactBytesAcrossImeBackAndReconnect"
 
 results = Path(sys.argv[1])

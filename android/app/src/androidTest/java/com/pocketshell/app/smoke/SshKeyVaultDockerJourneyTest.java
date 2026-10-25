@@ -42,7 +42,7 @@ import java.util.concurrent.atomic.AtomicReference;
 
 /** Packaged opaque-key import and SSH authentication journey against Docker sshd. */
 @RunWith(AndroidJUnit4.class)
-public final class SshKeyVaultDockerJourneyTest {
+public abstract class SshKeyVaultDockerJourneyTest {
     private static final long WAIT_TIMEOUT_MILLIS = 45_000;
     private static final long JS_TIMEOUT_SECONDS = 15;
     private static final String KEY_FINGERPRINT = "SHA256:geJoGi64Up5pm2TGC6bdVNrvlIA1vuPIOtNKo2tLsuQ";
@@ -65,7 +65,7 @@ public final class SshKeyVaultDockerJourneyTest {
         lastScreenshot = null;
     }
 
-    @Test public void importsEncryptedDocumentConnectsAndKeepsSecretsOutOfWebViewState() throws Exception {
+    public void importsEncryptedDocumentConnectsAndKeepsSecretsOutOfWebViewState() throws Exception {
         Context context = InstrumentationRegistry.getInstrumentation().getTargetContext();
         String host = requiredArgument("sshHost");
         String port = requiredArgument("sshPort");
@@ -143,6 +143,20 @@ public final class SshKeyVaultDockerJourneyTest {
         setValue("[data-testid=new-session-name]", sessionName);
         click("[data-testid=create-session]");
         awaitJsTrue("Array.from(document.querySelectorAll('[data-testid=session-list] .session-row')).some(row => row.dataset.sessionTag === '" + sessionName + "')");
+        String createdId = evalString("document.querySelector('[data-session-tag=\"" + sessionName + "\"]').dataset.sessionId");
+        assertTrue("creating a session returns a real host UUID", createdId.matches("[a-f0-9-]{36}"));
+        evalString("(() => {window.__j04DuplicateSettled=false; const original=window.Capacitor.nativePromise.bind(window.Capacitor);"
+                + "window.Capacitor.nativePromise=(plugin,method,options)=>{const result=original(plugin,method,options);"
+                + "if(plugin==='SshCapability'&&method==='exec'&&String(options?.command??'').includes(' sessions create '))"
+                + "result.finally(()=>{window.__j04DuplicateSettled=true;}); return result;};return 'armed';})()");
+        setValue("[data-testid=new-session-name]", sessionName);
+        click("[data-testid=create-session]");
+        awaitJsTrue("window.__j04DuplicateSettled === true");
+        awaitJsTrue("!document.querySelector('[data-testid=ssh-message]')?.textContent.trim()");
+        assertEquals("creating the same session twice keeps exactly one host session row", "1",
+                evalString("String(document.querySelectorAll('[data-session-tag=\"" + sessionName + "\"]').length)"));
+        assertEquals("duplicate create opens the existing session identity", createdId,
+                evalString("document.querySelector('[data-session-tag=\"" + sessionName + "\"]').dataset.sessionId"));
         click("[data-testid=session-list] .session-row[data-session-tag=\"" + sessionName + "\"]");
         awaitJsTrue("document.querySelector('.app-shell')?.dataset.homeSurface === 'live' && document.querySelector('#terminal-viewport')?.dataset.enabled === 'true'");
         long importedSessionAttachedAt = SystemClock.elapsedRealtime();
@@ -274,7 +288,7 @@ public final class SshKeyVaultDockerJourneyTest {
      * verifies authorized_keys gained exactly that line once and that sshd
      * accepted both keys after this cycle started.
      */
-    @Test public void pastesKeySharesPublicKeyAndInstallsGeneratedKeyOnHost() throws Exception {
+    public void pastesKeySharesPublicKeyAndInstallsGeneratedKeyOnHost() throws Exception {
         Context context = InstrumentationRegistry.getInstrumentation().getTargetContext();
         String host = requiredArgument("sshHost");
         String port = requiredArgument("sshPort");

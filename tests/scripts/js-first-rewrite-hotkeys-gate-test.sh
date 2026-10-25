@@ -8,7 +8,7 @@ LANES="$ROOT_DIR/scripts/ci-js-first-packaged-lanes.sh"
 EXTRACTOR="$ROOT_DIR/scripts/extract-js-hotkeys-artifacts.py"
 PTY_GEOMETRY="$ROOT_DIR/scripts/check-js-hotkeys-pty-geometry.py"
 RESULT_CHECKER="$ROOT_DIR/scripts/check-js-hotkeys-journey-results.py"
-JOURNEY="$ROOT_DIR/android/app/src/androidTest/java/com/pocketshell/app/smoke/JsFastKeysDockerJourneyTest.java"
+JOURNEY="$ROOT_DIR/android/app/src/androidTest/java/com/pocketshell/app/smoke/J23InlineDictationJourney.java"
 MOBILE_HOTKEYS="$ROOT_DIR/src/components/MobileHotkeys.vue"
 APP="$ROOT_DIR/src/App.vue"
 
@@ -156,11 +156,11 @@ def require_contract(source: str, packaged_lanes: str, packaged_runner: str, art
     if packaged_lanes.index("scripts/connected-js-composer-docker.sh") > run:
         raise AssertionError("the fast-key lane must run after composer")
     composer_phase_checks = packaged_lanes.index(
-        'for phase in prepare resume; do',
+        'for phase in production no-speech prepare resume; do',
         packaged_lanes.index('composer_root="android/app/build/outputs/js-composer"'),
     )
     if not packaged_lanes.index("scripts/connected-js-composer-docker.sh") < composer_phase_checks < run:
-        raise AssertionError("both same-run composer phase JUnit reports must be checked before fastkeys")
+        raise AssertionError("all four same-run composer phase JUnit reports must be checked before fastkeys")
 
     skip_route = packaged_runner.index("journey_junit_outcome")
     skip_sanction = packaged_runner.index(

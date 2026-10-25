@@ -19,5 +19,8 @@
   "js-key-vault/js2926-40190277357-1/instrumentation-results/document",
   "js-key-vault-upgrade/up2926-40190277357-1/migrated-host/junit",
   "js-key-vault-upgrade/up2926-40190277357-1/malformed-source/junit",
-  "js-key-vault-upgrade/up2926-40190277357-1/malformed-key/junit"
+  "js-key-vault-upgrade/up2926-40190277357-1/malformed-key/junit",
+  "js-voice-settings/js2857voice-40190277357-1/instrumentation-results",
+  "js-composer/js2891-40190277357-1-1792929863342510080/phase-production",
+  "js-forward-service/js3097-40190277357-1/instrumentation-results"
 ]

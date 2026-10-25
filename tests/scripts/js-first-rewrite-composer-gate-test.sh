@@ -26,6 +26,7 @@ import ast
 import hashlib
 import os
 import re
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -37,7 +38,7 @@ workflow = workflow_path.read_text()
 runner = runner_path.read_text()
 packaged_lanes = packaged_lanes_path.read_text()
 usage_ports_journey_path = workflow_path.parent.parent.parent / (
-    "android/app/src/androidTest/java/com/pocketshell/app/smoke/UsagePortsDockerJourneyTest.java"
+    "android/app/src/androidTest/java/com/pocketshell/app/smoke/UsagePortsJourneySupport.java"
 )
 usage_ports_journey = usage_ports_journey_path.read_text()
 disk_cleanup = (toolcache_pruner_path.parent / "ci-emulator-free-disk.sh").read_text()
@@ -158,9 +159,13 @@ def require_contract(source: str, packaged_script: str) -> None:
         raise AssertionError("packaged wrapper ignores the signed-upgrade lane status")
     for lane in ("smoke_status", "lifecycle_status", "usage_status", "files_status", "composer_status",
                  "hotkeys_status", "hotkeys_junit_status", "durable_status", "settings_status",
-                 "account_sync_status", "account_picker_status", "gateway_status", "shared_app_status", "account_vault_status", "key_vault_status", "signed_upgrade_status", "copy_status"):
+                 "account_sync_status", "account_picker_status", "gateway_status", "shared_app_status", "account_vault_status", "key_vault_status", "signed_upgrade_status", "voice_settings_status", "forward_service_status", "copy_status"):
         if lane not in packaged_script:
             raise AssertionError(f"packaged wrapper does not aggregate {lane}")
+    for command, status in (("scripts/connected-js-voice-settings.sh", "voice_settings_status"),
+                            ("scripts/connected-js-forward-service.sh", "forward_service_status")):
+        if command not in packaged_script or f"{status} != 0" not in packaged_script:
+            raise AssertionError(f"packaged wrapper must execute and fail closed on {command}")
     if "TEST-*.xml" not in packaged_script or "cp -a --" not in packaged_script:
         raise AssertionError("packaged wrapper must copy smoke JUnit evidence")
     if "android/app/build/outputs/js-smoke-results" not in packaged_script:
@@ -176,6 +181,8 @@ def require_contract(source: str, packaged_script: str) -> None:
         ("Files", "js-files/js2858-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/instrumentation-results"),
         ("Usage/Ports", "js-usage-ports/js2859-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/instrumentation-results"),
         ("key-vault", "js-key-vault/js2926-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/instrumentation-results"),
+        ("voice-settings", "js-voice-settings/js2857voice-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/instrumentation-results"),
+        ("forward-service", "js-forward-service/js3097-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/instrumentation-results"),
         ("signed-upgrade", "js-key-vault-upgrade/up2926-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"),
         ("durable-storage", '--run-dir "android/app/build/outputs/js-durable-storage/js2993-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"'),
         ("account-sync", "js-account-sync/js3020-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/instrumentation-results"),
@@ -190,9 +197,9 @@ def require_contract(source: str, packaged_script: str) -> None:
        'composer_runs=("$composer_root/$composer_prefix"*)' not in guard or \
        'composer_run="${composer_runs[0]}"' not in guard:
         raise AssertionError("the Composer checkers must use the unique run-scoped artifact directory")
-    for phase in ("prepare", "resume"):
-        if f'--results-dir "$composer_run/phase-{phase}"' not in guard:
-            raise AssertionError(f"the Composer {phase} result guard must read that phase's isolated JUnit")
+    if 'for phase in production no-speech prepare resume; do' not in guard or \
+       '--results-dir "$composer_run/phase-$phase" --phase "$phase"' not in guard:
+        raise AssertionError("all four Composer phases must check their isolated JUnit and exact phase identity")
     for checker in (
         "scripts/check-js-smoke-results.py",
         "scripts/check-js-lifecycle-results.py",
@@ -202,6 +209,8 @@ def require_contract(source: str, packaged_script: str) -> None:
         "scripts/check-js-key-vault-results.py",
         "scripts/check-js-signed-upgrade-results.py",
         "scripts/check-js-durable-storage-results.py",
+        "scripts/check-js-voice-settings-results.py",
+        "scripts/check-js-forward-service-results.py",
         "scripts/check-js-account-sync-results.py",
         "scripts/check-js-account-picker-results.py",
         "scripts/check-js-gateway-results.py",
@@ -631,6 +640,14 @@ with tempfile.TemporaryDirectory(prefix="js rewrite live lane reports ") as temp
         ("check-js-durable-storage-results.py", "durable-storage"),
         ("check-js-key-vault-results.py", "key-vault"),
         ("check-js-signed-upgrade-results.py", "signed-upgrade"),
+        ("check-js-settings-results.py", "settings"),
+        ("check-js-account-sync-results.py", "account-sync"),
+        ("check-js-account-picker-results.py", "account-picker"),
+        ("check-js-gateway-results.py", "gateway"),
+        ("check-js-shared-app-results.py", "shared-app"),
+        ("check-js-account-vault-results.py", "account-vault"),
+        ("check-js-voice-settings-results.py", "voice-settings"),
+        ("check-js-forward-service-results.py", "forward-service"),
     ):
         execute = (
             'exec "$PYTHON" "$ACTUAL_COMPOSER_CHECKER" "$@"\n'
@@ -647,17 +664,22 @@ with tempfile.TemporaryDirectory(prefix="js rewrite live lane reports ") as temp
     files_checker.write_text((repository_root / "scripts/check-js-files-results.py").read_text())
     files_checker.chmod(0o755)
     composer_dir = fake_repo / "android/app/build/outputs/js-composer/js2891-fixture-1-123"
-    composer_xml = (
-        '<?xml version="1.0" encoding="UTF-8"?>\n'
-        '<testsuite name="com.pocketshell.app.smoke.JsComposerDockerJourneyTest" '
-        'tests="1" failures="0" errors="0" skipped="0">'
-        '<testcase name="composerWritesUtf8AndMultilineInsertAndRetainsAfterDrop" '
-        'classname="com.pocketshell.app.smoke.JsComposerDockerJourneyTest"/></testsuite>\n'
-    )
-    for relative in ("", "phase-prepare", "phase-resume"):
-        report_dir = composer_dir / relative
+    phase_cases = {
+        "production": ("J08VoiceProductionProviderJourney", "realProviderStartReturnsWithoutCrashingTheProcess"),
+        "no-speech": ("J08VoiceDictationJourney", "noSpeechWarningsKeepTheNativeKeyboardAndDraft"),
+        "prepare": ("J08VoiceDictationJourney", "dictatedDraftSurvivesScreenOffAndProcessRestart"),
+        "resume": ("J07ComposerSendJourney", "composerWritesUtf8AndMultilineInsertAndRetainsAfterDrop"),
+    }
+    for phase, (class_name, method) in phase_cases.items():
+        report_dir = composer_dir / f"phase-{phase}"
         report_dir.mkdir(parents=True, exist_ok=True)
+        composer_xml = (
+            '<testsuite tests="1" failures="0" errors="0" skipped="0">'
+            f'<testcase name="{method}" classname="com.pocketshell.app.smoke.{class_name}"/></testsuite>\n'
+        )
         (report_dir / "TEST-composer.xml").write_text(composer_xml)
+    # The convenience run-root copy duplicates the final phase and is ignored.
+    (composer_dir / "TEST-composer.xml").write_text(composer_xml)
     result = subprocess.run(
         ["bash", "-e", "-u", "-o", "pipefail"],
         input=guard_script,
@@ -679,15 +701,15 @@ with tempfile.TemporaryDirectory(prefix="js rewrite live lane reports ") as temp
             "the always-run lane guard accepted a dormant Files runner: "
             f"exit={result.returncode}, stdout={result.stdout!r}, stderr={result.stderr!r}"
         )
-    if "Composer prepare result check exited" in result.stderr or \
-       "Composer resume result check exited" in result.stderr:
+    if any(f"Composer {phase} result check exited" in result.stderr for phase in phase_cases):
         raise AssertionError(f"isolated Composer phases did not accept the real run's duplicated summary copy: {result.stderr!r}")
     checked_lines = result_trace.read_text().splitlines()
     checked_lanes = [line.split("\t", 1)[0] for line in checked_lines]
-    if checked_lanes != ["smoke", "lifecycle", "usage-ports", "key-vault", "durable-storage", "signed-upgrade", "composer", "composer"]:
+    if checked_lanes != ["smoke", "lifecycle", "usage-ports", "settings", "account-sync", "account-picker", "gateway", "shared-app", "account-vault", "key-vault", "durable-storage", "signed-upgrade", "voice-settings", "forward-service", *(["composer"] * 4)]:
         raise AssertionError(f"the always-run report guard stopped before all present lanes: {checked_lanes!r}")
-    if "/phase-prepare" not in checked_lines[6] or "/phase-resume" not in checked_lines[7]:
-        raise AssertionError(f"the guard did not check the two Composer process phases independently: {checked_lines!r}")
+    for line, phase in zip(checked_lines[-4:], phase_cases, strict=True):
+        if f"/phase-{phase} --phase {phase}" not in line:
+            raise AssertionError(f"the guard did not check Composer {phase} independently: {line!r}")
 print("PASS: a dormant Files invocation fails the always-run workflow report guard despite a zero lane status")
 
 # The emulator action splits multiline scripts across child shells. Require
@@ -704,6 +726,7 @@ subprocess.run(["bash", "-n", str(packaged_lanes_path)], check=True)
 
 def exercise_packaged_lanes(label: str, *, smoke: int = 0, lifecycle: int = 0,
                             usage: int = 0, files: int = 0, composer: int = 0, durable: int = 0, settings: int = 0,
+                            voice_settings: int = 0, forward_service: int = 0,
                             account_sync: int = 0, account_picker: int = 0, gateway: int = 0, shared_app: int = 0,
                             account_vault: int = 0, key_vault: int = 0, signed_upgrade: int = 0, omit_junit: bool = False,
                             fail_junit_copy: bool = False, hotkeys: int = 0,
@@ -768,9 +791,15 @@ def exercise_packaged_lanes(label: str, *, smoke: int = 0, lifecycle: int = 0,
             "printf '%s\\n%s\\n' \"$PNPM\" \"$PATH\" > \"$FIXTURE_RUNTIME_CAPTURE\"\n"
             "\"$PNPM\" --version >> \"$FIXTURE_RUNTIME_CAPTURE\"\n"
             "run_dir=android/app/build/outputs/js-composer/js2891-run-1-composer-fixture\n"
-            "for phase in prepare resume; do\n"
+            "for phase in production no-speech prepare resume; do\n"
             "  mkdir -p \"$run_dir/phase-$phase\"\n"
-            "  printf '%s\\n' '<?xml version=\"1.0\"?><testsuite tests=\"1\" failures=\"0\" errors=\"0\" skipped=\"0\" time=\"0.01\"><testcase classname=\"com.pocketshell.app.smoke.JsComposerDockerJourneyTest\" name=\"composerWritesUtf8AndMultilineInsertAndRetainsAfterDrop\" time=\"0.01\"/></testsuite>' > \"$run_dir/phase-$phase/TEST-composer.xml\"\n"
+            "  case \"$phase\" in\n"
+            "    production) class=J08VoiceProductionProviderJourney; method=realProviderStartReturnsWithoutCrashingTheProcess;;\n"
+            "    no-speech) class=J08VoiceDictationJourney; method=noSpeechWarningsKeepTheNativeKeyboardAndDraft;;\n"
+            "    prepare) class=J08VoiceDictationJourney; method=dictatedDraftSurvivesScreenOffAndProcessRestart;;\n"
+            "    resume) class=J07ComposerSendJourney; method=composerWritesUtf8AndMultilineInsertAndRetainsAfterDrop;;\n"
+            "  esac\n"
+            "  printf '<testsuite tests=\"1\" failures=\"0\" errors=\"0\" skipped=\"0\"><testcase classname=\"com.pocketshell.app.smoke.%s\" name=\"%s\"/></testsuite>\\n' \"$class\" \"$method\" > \"$run_dir/phase-$phase/TEST-composer.xml\"\n"
             "done\n"
             "exit \"$FIXTURE_COMPOSER_STATUS\"\n"
         )
@@ -778,8 +807,8 @@ def exercise_packaged_lanes(label: str, *, smoke: int = 0, lifecycle: int = 0,
         fake_composer_checker = fake_scripts / "check-js-composer-journey-results.py"
         fake_composer_checker.write_text(
             "#!/bin/bash\n"
-            "if [ \"$#\" != 2 ] || [ \"$1\" != --results-dir ] || [ ! -s \"$2/TEST-composer.xml\" ]; then exit 51; fi\n"
-            "exit 0\n"
+            + "exec " + shlex.quote(sys.executable) + " "
+            + shlex.quote(str(repository_root / "scripts/check-js-composer-journey-results.py")) + ' "$@"\n'
         )
         fake_composer_checker.chmod(0o755)
 
@@ -791,7 +820,7 @@ def exercise_packaged_lanes(label: str, *, smoke: int = 0, lifecycle: int = 0,
             "evidence_dir=\"android/app/build/outputs/js-hotkeys/$run_id\"\n"
             "mkdir -p \"$evidence_dir\"\n"
             "if [ \"$FIXTURE_OMIT_HOTKEYS_JUNIT\" != 1 ]; then\n"
-            "  printf '%s\\n' '<?xml version=\"1.0\"?><testsuite tests=\"1\" failures=\"0\" errors=\"0\" skipped=\"0\" time=\"0.01\"><testcase classname=\"com.pocketshell.app.smoke.JsFastKeysDockerJourneyTest\" name=\"fastKeysStayReachableAndWriteExactBytesAcrossImeBackAndReconnect\" time=\"0.01\"/></testsuite>' > \"$evidence_dir/TEST-fastkeys.xml\"\n"
+            "  printf '%s\\n' '<?xml version=\"1.0\"?><testsuite tests=\"1\" failures=\"0\" errors=\"0\" skipped=\"0\" time=\"0.01\"><testcase classname=\"com.pocketshell.app.smoke.J23InlineDictationJourney\" name=\"fastKeysStayReachableAndWriteExactBytesAcrossImeBackAndReconnect\" time=\"0.01\"/></testsuite>' > \"$evidence_dir/TEST-fastkeys.xml\"\n"
             "fi\n"
             "printf 'run_id=%s\\nexit_code=%s\\n' \"$run_id\" \"$FIXTURE_HOTKEYS_STATUS\" > \"$evidence_dir/hotkeys-run-metadata.txt\"\n"
             "exit \"$FIXTURE_HOTKEYS_STATUS\"\n"
@@ -809,6 +838,8 @@ def exercise_packaged_lanes(label: str, *, smoke: int = 0, lifecycle: int = 0,
         fake_hotkeys_checker.chmod(0o755)
         for script_name, lane_name, status_var in (
             ("connected-js-settings.sh", "settings", "FIXTURE_SETTINGS_STATUS"),
+            ("connected-js-voice-settings.sh", "voice-settings", "FIXTURE_VOICE_SETTINGS_STATUS"),
+            ("connected-js-forward-service.sh", "forward-service", "FIXTURE_FORWARD_SERVICE_STATUS"),
             ("connected-js-account-sync.sh", "account-sync", "FIXTURE_ACCOUNT_SYNC_STATUS"),
             ("connected-js-account-picker.sh", "account-picker", "FIXTURE_ACCOUNT_PICKER_STATUS"),
             ("connected-js-gateway-docker.sh", "gateway", "FIXTURE_GATEWAY_STATUS"),
@@ -842,6 +873,8 @@ def exercise_packaged_lanes(label: str, *, smoke: int = 0, lifecycle: int = 0,
             "FIXTURE_HOTKEYS_RUN_ID": "js2884-run-1-hotkeys-fixture",
             "FIXTURE_OMIT_HOTKEYS_JUNIT": "1" if omit_hotkeys_junit else "0",
             "FIXTURE_SETTINGS_STATUS": str(settings),
+            "FIXTURE_VOICE_SETTINGS_STATUS": str(voice_settings),
+            "FIXTURE_FORWARD_SERVICE_STATUS": str(forward_service),
             "FIXTURE_ACCOUNT_SYNC_STATUS": str(account_sync),
             "FIXTURE_ACCOUNT_PICKER_STATUS": str(account_picker),
             "FIXTURE_GATEWAY_STATUS": str(gateway),
@@ -871,11 +904,11 @@ def exercise_packaged_lanes(label: str, *, smoke: int = 0, lifecycle: int = 0,
             f"Packaged API 35 lane statuses: smoke={smoke} lifecycle={lifecycle} "
             f"usage-ports={usage} files={files} composer={composer} composer-junit-copy=0 "
             f"composer-junit=0 hotkeys={hotkeys} hotkeys-junit={expected_hotkeys_junit} "
-            f"durable-storage={durable} settings={settings} account-sync={account_sync} account-picker={account_picker} gateway={gateway} shared-app={shared_app} account-vault={account_vault} key-vault={key_vault} "
+            f"durable-storage={durable} settings={settings} voice-settings={voice_settings} forward-service={forward_service} account-sync={account_sync} account-picker={account_picker} gateway={gateway} shared-app={shared_app} account-vault={account_vault} key-vault={key_vault} "
             f"signed-upgrade={signed_upgrade} smoke-junit-copy={expected_copy}"
         )
         expected_exit = 1 if any((smoke, lifecycle, usage, files, composer, hotkeys,
-                                  expected_hotkeys_junit, durable, settings, account_sync, account_picker, gateway, shared_app, account_vault, key_vault,
+                                  expected_hotkeys_junit, durable, settings, voice_settings, forward_service, account_sync, account_picker, gateway, shared_app, account_vault, key_vault,
                                   signed_upgrade, expected_copy)) else 0
         if result.returncode != expected_exit or expected_summary not in result.stdout:
             raise AssertionError(
@@ -885,7 +918,7 @@ def exercise_packaged_lanes(label: str, *, smoke: int = 0, lifecycle: int = 0,
         trace_lines = trace.read_text().splitlines()
         if [line.split("\t", 1)[0] for line in trace_lines] != [
             "smoke", "lifecycle", "usage-ports", "files", "durable-storage", "composer", "hotkeys",
-            "hotkeys-check", "settings", "account-sync", "account-picker", "gateway", "shared-app", "account-vault", "key-vault", "signed-upgrade",
+            "hotkeys-check", "settings", "voice-settings", "account-sync", "account-picker", "gateway", "shared-app", "account-vault", "forward-service", "key-vault", "signed-upgrade",
         ]:
             raise AssertionError(f"{label}: wrapper failed to execute every lane in order: {trace_lines!r}")
         if "--run-id js2861-run-1" not in trace_lines[1]:
@@ -925,15 +958,19 @@ def exercise_packaged_lanes(label: str, *, smoke: int = 0, lifecycle: int = 0,
             raise AssertionError(f"{label}: Fast Keys JUnit fixture did not match the requested report state")
         if trace_lines[8] != f"settings\t{settings}\t--suffix i2855ci --port 2222 --container pocketshell-test-agents --run-id js2861s-run-1 --test-only":
             raise AssertionError(f"{label}: settings lane arguments/status were not preserved: {trace_lines[8]!r}")
-        if trace_lines[9] != f"account-sync\t{account_sync}\t--suffix i2855ci --run-id js3020-run-1 --test-only":
-            raise AssertionError(f"{label}: account-sync lane arguments/status were not preserved: {trace_lines[9]!r}")
-        if trace_lines[10] != f"account-picker\t{account_picker}\t--suffix i2855ci --run-id js3063-run-1 --test-only":
-            raise AssertionError(f"{label}: account-picker lane arguments/status were not preserved: {trace_lines[10]!r}")
-        if trace_lines[11] != f"gateway\t{gateway}\t--suffix i3086gwlane --run-id gw3086-run-1 --test-only":
-            raise AssertionError(f"{label}: gateway lane arguments/status were not preserved: {trace_lines[11]!r}")
+        if trace_lines[9] != f"voice-settings\t{voice_settings}\t--suffix i2855ci --run-id js2857voice-run-1 --test-only":
+            raise AssertionError(f"{label}: voice-settings lane arguments/status were not preserved: {trace_lines[9]!r}")
+        if trace_lines[15] != f"forward-service\t{forward_service}\t--suffix i3097forward --port 2243 --run-id js3097-run-1":
+            raise AssertionError(f"{label}: forward-service lane arguments/status were not preserved: {trace_lines[15]!r}")
+        if trace_lines[10] != f"account-sync\t{account_sync}\t--suffix i2855ci --run-id js3020-run-1 --test-only":
+            raise AssertionError(f"{label}: account-sync lane arguments/status were not preserved: {trace_lines[10]!r}")
+        if trace_lines[11] != f"account-picker\t{account_picker}\t--suffix i2855ci --run-id js3063-run-1 --test-only":
+            raise AssertionError(f"{label}: account-picker lane arguments/status were not preserved: {trace_lines[11]!r}")
+        if trace_lines[12] != f"gateway\t{gateway}\t--suffix i3086gwlane --run-id gw3086-run-1 --test-only":
+            raise AssertionError(f"{label}: gateway lane arguments/status were not preserved: {trace_lines[12]!r}")
         expected_vault_args = "--suffix i2855ci --port 2243 --container pocketshell-test-agents-2243 --run-id vaultw4-run-1 --test-only"
-        if trace_lines[13] != f"account-vault\t{account_vault}\t{expected_vault_args}":
-            raise AssertionError(f"{label}: account-vault lane arguments/status were not preserved: {trace_lines[13]!r}")
+        if trace_lines[14] != f"account-vault\t{account_vault}\t{expected_vault_args}":
+            raise AssertionError(f"{label}: account-vault lane arguments/status were not preserved: {trace_lines[14]!r}")
         expected_upgrade_args = "--port 2244 --container pocketshell-test-agents-2244 --run-id up2926-run-1"
         if trace_lines[-1] != f"signed-upgrade\t{signed_upgrade}\t{expected_upgrade_args}":
             raise AssertionError(f"{label}: signed-upgrade lane arguments/status were not preserved: {trace_lines[-1]!r}")
@@ -963,6 +1000,8 @@ exercise_packaged_lanes("Fast Keys failure is fail-closed", hotkeys=29)
 exercise_packaged_lanes("Fast Keys result check failure is fail-closed", hotkeys_checker=31)
 exercise_packaged_lanes("missing Fast Keys JUnit is fail-closed", omit_hotkeys_junit=True)
 exercise_packaged_lanes("settings failure is fail-closed", settings=27)
+exercise_packaged_lanes("voice-settings failure is fail-closed", voice_settings=41)
+exercise_packaged_lanes("forward-service failure is fail-closed", forward_service=43)
 exercise_packaged_lanes("account-sync failure is fail-closed", account_sync=33)
 exercise_packaged_lanes("account-picker failure is fail-closed", account_picker=35)
 exercise_packaged_lanes("gateway failure is fail-closed", gateway=37)

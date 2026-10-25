@@ -608,7 +608,7 @@ PY
 set -euo pipefail
 state="${FAKE_DEVICE_STATE:?}"
 run_id="${FAKE_RUN_ID:?}"
-[[ "$*" == *":app:connectedDebugAndroidTest"* && "$*" == *"SshPtyDockerJourneyTest"* ]] \
+[[ "$*" == *":app:connectedDebugAndroidTest"* && "$*" == *"J06BackgroundGraceReturnJourney"* ]] \
   || { printf 'unexpected lifecycle Gradle invocation: %s\n' "$*" >&2; exit 91; }
 printf '%s\n' "$BASHPID" > "$state/$run_id.gradle-pid"
 printf '%s\n' "$PPID" > "$state/$run_id.instrumentation-parent-pid"

@@ -31,6 +31,7 @@ REQUIRED_CLASSES=(
   com.pocketshell.app.SpeechAudioPresenceTest
   com.pocketshell.app.SpeechRecognitionOptionsTest
   com.pocketshell.app.SpeechRecognitionPluginTest
+  com.pocketshell.app.SftpWriteChunksTest
   com.pocketshell.app.SshCapabilityPluginChannelRequestTest
   com.pocketshell.app.SshCapabilityPluginCloseTest
   com.pocketshell.app.SshCapabilityPluginConnectDeadlineTest

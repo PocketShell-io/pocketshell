@@ -7,12 +7,14 @@ import os
 from pathlib import Path
 import subprocess
 import tempfile
+import sys
+import xml.etree.ElementTree as ET
 
 
 ROOT = Path(__file__).resolve().parents[2]
 HELPER = ROOT / "scripts/lib/connected-js-usage-ports-artifacts.sh"
 RUNNER = ROOT / "scripts/connected-js-usage-ports.sh"
-JOURNEY = ROOT / "android/app/src/androidTest/java/com/pocketshell/app/smoke/UsagePortsDockerJourneyTest.java"
+JOURNEY = ROOT / "android/app/src/androidTest/java/com/pocketshell/app/smoke/UsagePortsJourneySupport.java"
 
 
 def check_failure_diagnostic_contract() -> None:
@@ -39,8 +41,39 @@ def check_failure_diagnostic_contract() -> None:
         raise AssertionError("the runner does not extract packaged failure artifacts before teardown evidence is lost")
 
 
+def check_split_journey_outcomes() -> None:
+    source = RUNNER.read_text(encoding="utf-8").split("<<'OUTCOME'\n", 1)[1].split("\nOUTCOME", 1)[0]
+    ports = ("com.pocketshell.app.smoke.J13PortForwardOpenJourney", "usageAndPortForwardingPoliciesUseDockerAndNativePlugin")
+    usage = ("com.pocketshell.app.smoke.J12UsagePanelJourney", "realHostQuotasRenderInUsagePanel")
+    old = ("com.pocketshell.app.smoke.UsagePortsDockerJourneyTest", ports[1])
+    probes = [
+        ([(usage, "passed"), (ports, "passed")], "passed"),
+        ([(usage, "passed"), (ports, "skipped")], "skipped"),
+        ([(usage, "passed"), (ports, "failed")], "failed"),
+        ([(usage, "passed")], "missing"),
+        ([(usage, "passed"), (old, "passed")], "missing"),
+        ([(usage, "passed"), (ports, "passed"), (ports, "passed")], "duplicate"),
+        ([(ports, "passed")], "usage-missing-duplicate-or-not-passed"),
+        ([(usage, "failed"), (ports, "passed")], "usage-missing-duplicate-or-not-passed"),
+        ([(usage, "skipped"), (ports, "passed")], "usage-missing-duplicate-or-not-passed"),
+    ]
+    with tempfile.TemporaryDirectory(prefix="usage-ports-split-outcomes-") as scratch:
+        directory = Path(scratch)
+        for cases, expected in probes:
+            suite = ET.Element("testsuite", tests=str(len(cases)))
+            for (class_name, method), status in cases:
+                case = ET.SubElement(suite, "testcase", classname=class_name, name=method)
+                if status != "passed": ET.SubElement(case, "skipped" if status == "skipped" else "failure")
+            ET.ElementTree(suite).write(directory / "TEST-split.xml")
+            result = subprocess.run([sys.executable, "-", str(directory)], input=source, text=True, capture_output=True, check=True)
+            if result.stdout.strip() != expected:
+                raise AssertionError(f"split journey routing expected {expected!r}, got {result.stdout!r}: {cases!r}")
+    print("PASS: exact J12/J13 JUnit outcomes preserve missing, failed, duplicate and quarantine routing (9 probes)")
+
+
 def main() -> int:
     check_failure_diagnostic_contract()
+    check_split_journey_outcomes()
     with tempfile.TemporaryDirectory(prefix="pocketshell-usage-ports-failure-") as raw_temp:
         temp = Path(raw_temp)
         results = temp / "results"

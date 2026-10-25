@@ -436,11 +436,27 @@ describe('Android PocketShellApi platform', () => {
     expect(native.execs.some((command) => command.includes('command -v pocketshell'))).toBe(true);
   });
 
+  it('routes shared Stop through the live core controller using the immutable host session id', async () => {
+    const { native, hosts, created } = platform();
+    hosts.save({ name: 'fixture', hostname: 'fixture', port: 2222, user: 'u', keyHandleId: 'handle-1' });
+    const connected = await created.api.ssh.connect({ host: 'fixture', port: 2222, user: 'u' });
+    expect(connected.ok).toBe(true);
+    open.push({ hub: created.hub, id: connected.connectionId! });
+    const result = await created.api.projects.killSession(connected.connectionId!, 'stale-tab-name', {
+      backend: 'aplexer', aplexerId: 'main-id',
+    });
+    expect(result).toEqual({ ok: true, code: null, error: null });
+    expect(native.execs.some((command) => command.includes("sessions kill -- 'main-id'"))).toBe(true);
+    expect(native.execs.some((command) => command.includes("sessions kill -- 'stale-tab-name'"))).toBe(false);
+    expect(native.sessions.some((session) => session.id === 'main-id')).toBe(false);
+    expect(await created.api.projects.killSession('missing-connection', 'session')).toMatchObject({ ok: false, code: 'kill-failed' });
+  });
+
   it('refuses unimplemented work by name instead of pretending', async () => {
     const { created } = platform();
     await expect(created.api.sftp.list('android-1', '/')).rejects.toBeInstanceOf(UnsupportedCapability);
     await expect(created.api.forwards.addManual('android-1', { kind: 'local', listenHost: '', listenPort: 1, destHost: '', destPort: 1 }))
-      .rejects.toThrow('forwards.addManual');
+      .rejects.toThrow('Only loopback local tunnels are supported.');
     expect(await created.api.forwards.list('android-1')).toEqual([]);
   });
 

@@ -5,6 +5,7 @@
 // unlock sheet is core's own (AppRoot mounts it; main.ts provides the vault).
 import { onMounted, watch } from 'vue';
 import AppRoot from '@ui/app/AppRoot.vue';
+import AndroidAttachmentBridge from './AndroidAttachmentBridge.vue';
 import { requestVaultUnlock } from '@ui/app/keyVault';
 import { useSyncStore } from '@ui/app/stores/sync';
 import AccountHostKeyGate from './AccountHostKeyGate.vue';
@@ -37,4 +38,5 @@ onMounted(async () => {
 <template>
   <AppRoot :mono-fallback="monoFallback" />
   <AccountHostKeyGate />
+  <AndroidAttachmentBridge />
 </template>

@@ -211,28 +211,7 @@ if (( test_exit_code != 0 )); then
   exit "$test_exit_code"
 fi
 
-python3 - "$RESULTS_DIR" "$test_class" "$test_method" <<'PY'
-from pathlib import Path
-import sys
-import xml.etree.ElementTree as ET
-
-root_dir, wanted_class, wanted_method = Path(sys.argv[1]), sys.argv[2], sys.argv[3]
-reports = sorted(root_dir.rglob('TEST-*.xml'))
-if not reports:
-    raise SystemExit(f'FAIL: no fresh instrumentation XML under {root_dir}')
-cases = []
-for report in reports:
-    root = ET.parse(report).getroot()
-    cases.extend(root.iter('testcase'))
-matching = [case for case in cases if case.attrib.get('classname') == wanted_class and case.attrib.get('name') == wanted_method]
-if len(cases) != 1 or len(matching) != 1:
-    found = ', '.join(f"{case.attrib.get('classname')}#{case.attrib.get('name')}" for case in cases)
-    raise SystemExit(f'FAIL: expected exactly {wanted_class}#{wanted_method}; found {found or "<none>"}')
-case = matching[0]
-if list(case.iter('failure')) or list(case.iter('error')) or list(case.iter('skipped')):
-    raise SystemExit(f'FAIL: required Voice settings journey failed or skipped: {wanted_class}#{wanted_method}')
-print(f'PASS: exact instrumentation result {wanted_class}#{wanted_method}')
-PY
+"$ROOT_DIR/scripts/check-js-voice-settings-results.py" --results-dir "$RESULTS_DIR"
 
 for required in voice-settings-controls.png voice-settings-changed.png voice-settings-after-navigation.png \
   voice-settings-after-activity-relaunch.png voice-settings-auto-language.png \

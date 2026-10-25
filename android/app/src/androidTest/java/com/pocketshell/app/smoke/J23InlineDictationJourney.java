@@ -53,7 +53,7 @@ import java.util.concurrent.atomic.AtomicReference;
 
 /** Real packaged fast-key controls with API 35 IME geometry and a Docker PTY byte oracle. */
 @RunWith(AndroidJUnit4.class)
-public final class JsFastKeysDockerJourneyTest {
+public final class J23InlineDictationJourney {
     private static final String ASSET_TAG = "PS2884Asset";
     private static final long WAIT_TIMEOUT_MILLIS = 45_000;
     private static final long JS_TIMEOUT_SECONDS = 15;

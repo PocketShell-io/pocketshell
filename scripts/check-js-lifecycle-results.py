@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any
 
 
-REQUIRED_CLASS = "com.pocketshell.app.smoke.SshPtyDockerJourneyTest"
+REQUIRED_CLASS = "com.pocketshell.app.smoke.J06BackgroundGraceReturnJourney"
 REQUIRED_METHOD = "sshSessionSwitchingGraceAndAbruptServerDropReconnectAgainstDockerFixture"
 DEFAULT_RESULTS = Path("android/app/build/outputs/androidTest-results/connected/debug")
 REQUIRED_ASSERTIONS = {

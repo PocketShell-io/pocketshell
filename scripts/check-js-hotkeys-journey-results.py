@@ -19,7 +19,7 @@ from datetime import date
 from pathlib import Path
 
 
-REQUIRED_CLASS = "com.pocketshell.app.smoke.JsFastKeysDockerJourneyTest"
+REQUIRED_CLASS = "com.pocketshell.app.smoke.J23InlineDictationJourney"
 REQUIRED_METHOD = "fastKeysStayReachableAndWriteExactBytesAcrossImeBackAndReconnect"
 REQUIRED_KEY = f"{REQUIRED_CLASS}#{REQUIRED_METHOD}"
 DEFAULT_RESULTS_DIR = Path("android/app/build/outputs/androidTest-results/connected/debug")

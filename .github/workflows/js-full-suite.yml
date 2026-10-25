@@ -127,7 +127,10 @@ jobs:
         run: python3 scripts/watch-ci.py --self-test
 
       - name: Check fail-closed feature journey qualification guard
-        run: scripts/check-js-journey-results.py --self-test
+        run: |
+          scripts/check-js-journey-results.py --self-test
+          scripts/check-js-voice-settings-results.py --self-test
+          scripts/check-js-forward-service-results.py --self-test
 
       - name: Check fail-closed packaged lifecycle result guard
         run: scripts/check-js-lifecycle-results.py --self-test
@@ -315,7 +318,7 @@ jobs:
 
       - name: Run packaged JS journeys on API 35
         id: packaged-smoke
-        timeout-minutes: 45
+        timeout-minutes: 90
         uses: reactivecircus/android-emulator-runner@e89f39f1abbbd05b1113a29cf4db69e7540cae5a # v2.37.0
         env:
           PATH: ${{ steps.emulator-js-runtime.outputs.path }}
@@ -378,16 +381,21 @@ jobs:
           run_check Signed-upgrade scripts/check-js-signed-upgrade-results.py \
             --artifacts-dir "android/app/build/outputs/js-key-vault-upgrade/up2926-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
 
+          run_check "Voice settings" scripts/check-js-voice-settings-results.py \
+            --results-dir "android/app/build/outputs/js-voice-settings/js2857voice-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/instrumentation-results"
+          run_check "Forward service" scripts/check-js-forward-service-results.py \
+            --results-dir "android/app/build/outputs/js-forward-service/js3097-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/instrumentation-results"
+
           composer_root="android/app/build/outputs/js-composer"
           composer_prefix="js2891-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-"
           shopt -s nullglob
           composer_runs=("$composer_root/$composer_prefix"*)
           if (( ${#composer_runs[@]} == 1 )); then
             composer_run="${composer_runs[0]}"
-            run_check "Composer prepare" scripts/check-js-composer-journey-results.py \
-              --results-dir "$composer_run/phase-prepare"
-            run_check "Composer resume" scripts/check-js-composer-journey-results.py \
-              --results-dir "$composer_run/phase-resume"
+            for phase in production no-speech prepare resume; do
+              run_check "Composer $phase" scripts/check-js-composer-journey-results.py \
+                --results-dir "$composer_run/phase-$phase" --phase "$phase"
+            done
           else
             printf 'FAIL: expected exactly one Composer report directory for prefix %s; found %s\n' \
               "$composer_prefix" "${#composer_runs[@]}" >&2
@@ -473,6 +481,8 @@ jobs:
             android/app/build/outputs/js-lifecycle/**
             android/app/build/outputs/js-files/**
             android/app/build/outputs/js-settings/**
+            android/app/build/outputs/js-voice-settings/**
+            android/app/build/outputs/js-forward-service/**
             android/app/build/outputs/js-account-sync/**
             android/app/build/outputs/js-key-vault/**
             android/app/build/outputs/js-key-vault-upgrade/**

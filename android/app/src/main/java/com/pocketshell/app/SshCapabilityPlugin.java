@@ -5,6 +5,7 @@ import android.os.Looper;
 import android.os.SystemClock;
 import android.util.Base64;
 import com.getcapacitor.JSObject;
+import com.getcapacitor.JSArray;
 import com.getcapacitor.Plugin;
 import com.getcapacitor.PluginCall;
 import com.getcapacitor.PluginMethod;
@@ -904,7 +905,7 @@ public final class SshCapabilityPlugin extends Plugin {
                     Set<OpenMode> modes = new HashSet<>(Arrays.asList(OpenMode.WRITE, OpenMode.CREAT));
                     modes.add(createOnly ? OpenMode.EXCL : OpenMode.TRUNC);
                     try (RemoteFile file = client.open(writePath, modes)) {
-                        file.write(0, bytes, 0, bytes.length);
+                        SftpWriteChunks.write(file::write, bytes);
                     }
                 } catch (Exception error) {
                     throw failureFor(error);
@@ -961,7 +962,7 @@ public final class SshCapabilityPlugin extends Plugin {
                             return sftpWriteConflict(requestId, "changed");
                         }
                         file.setLength(0);
-                        file.write(0, bytes, 0, bytes.length);
+                        SftpWriteChunks.write(file::write, bytes);
                     }
                 } catch (Exception error) {
                     throw failureFor(error);
@@ -1192,7 +1193,9 @@ public final class SshCapabilityPlugin extends Plugin {
                 Parameters parameters = localForwardParameters(remoteHost, remotePort, localPort);
                 forwarder = connection.client.newLocalPortForwarder(parameters, server);
                 forwarding = new SshForward(UUID.randomUUID().toString(), connection, server, forwarder, localPort);
+                forwarding.remotePort = remotePort;
                 forwards.put(forwarding.forwardId, forwarding);
+                updateForwardService();
                 LocalPortForwarder activeForwarder = forwarder;
                 SshForward activeForwarding = forwarding;
                 try {
@@ -1263,12 +1266,19 @@ public final class SshCapabilityPlugin extends Plugin {
 
     private JSObject resourceSnapshotFor(String requestId) {
         NativeResourceSnapshot snapshot = currentResourceSnapshot();
+        JSArray endpoints = new JSArray();
+        for (SshForward forward : forwards.values()) {
+            if (!forward.closed.get()) endpoints.put(new JSObject()
+                .put("connectionId", forward.connection.connectionId).put("generationId", forward.connection.generationId)
+                .put("remotePort", forward.remotePort).put("localPort", forward.localPort));
+        }
         return new JSObject()
             .put("requestId", requestId)
             .put("connections", snapshot.connections)
             .put("ptys", snapshot.ptys)
             .put("sftpClients", snapshot.sftpClients)
             .put("forwards", snapshot.forwards)
+            .put("forwardPorts", endpoints)
             .put("activeForwardWorkers", snapshot.activeForwardWorkers)
             .put("activeExecStreamReaders", snapshot.activeExecStreamReaders);
     }
@@ -1900,6 +1910,21 @@ public final class SshCapabilityPlugin extends Plugin {
         });
         forward.connection.channelPermits.release();
         FORWARD_PERMITS.release();
+        updateForwardService();
+    }
+
+    private void updateForwardService() {
+        // Native lifetime protection only. Discovery and desired state belong
+        // to the shared core PortForwardController.
+        if (getBridge() == null) return; // stand-alone resource-cleanup JVM tests
+        ForwardService.update(getContext(), this, forwards::size,
+            () -> forwards.values().stream().map(forward -> "127.0.0.1:" + forward.localPort)
+                .sorted().collect(java.util.stream.Collectors.joining(", ")), () -> {
+            CLEANUP_EXECUTOR.execute(() -> {
+                for (SshForward forward : new ArrayList<>(forwards.values())) closeForward(forward);
+                notifyListeners("forwardsStopped", new JSObject());
+            });
+        });
     }
 
     /** Keep production resource counts visible until native close returns, then return close evidence. */
@@ -2413,6 +2438,7 @@ public final class SshCapabilityPlugin extends Plugin {
         final ServerSocket serverSocket;
         final LocalPortForwarder forwarder;
         final int localPort;
+        int remotePort;
         final AtomicBoolean closed = new AtomicBoolean(false);
         final Runnable closeOperation;
         volatile String failure;

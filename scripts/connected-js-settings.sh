@@ -16,14 +16,14 @@ PREPARE_ONLY=0
 TEST_ONLY=0
 PORT=""
 CONTAINER=""
-test_class="com.pocketshell.app.smoke.JsSettingsSupportJourneyTest"
+test_class="com.pocketshell.app.smoke.J16SettingsSupportJourney"
 
 usage() {
   cat <<'USAGE'
 Usage: scripts/connected-js-settings.sh --port PORT --container NAME [--suffix TOKEN] [--run-id ID] [--prepare-only|--test-only]
 
 Build and run the packaged J16/J24 settings and support journeys
-(JsSettingsSupportJourneyTest). Evidence lands in
+(J16SettingsSupportJourney). Evidence lands in
 android/app/build/outputs/js-settings/<run-id>/ and is checked by
 scripts/check-js-settings-results.py.
 

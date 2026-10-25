@@ -52,7 +52,7 @@ import java.util.concurrent.atomic.AtomicReference;
 
 /** Packaged Android file browser/editor journey against a real Docker SFTP host. */
 @RunWith(AndroidJUnit4.class)
-public final class J10FilesBrowseEditJourneyTest {
+public final class J10FilesBrowseEditJourney {
     private static final long WAIT_TIMEOUT_MILLIS = 45_000;
     private static final long JS_TIMEOUT_SECONDS = 15;
     /**

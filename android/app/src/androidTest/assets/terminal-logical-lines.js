@@ -23,11 +23,17 @@
  * APK's assets) and tests/unit/terminalLogicalLines.test.ts (replays captured
  * failure texts), so the journey's matcher is the unit-tested one.
  */
-(function terminalHasLine(text, expected, mode, columns) {
+(function terminalHasLine(text, expected, mode, columns, occupiedColumns) {
   var rows = String(text).split('\n');
   var width = columns || 0;
   if (!columns) {
     for (var k = 0; k < rows.length; k++) width = Math.max(width, rows[k].length);
+  }
+  function fillsRow(index) {
+    // DOM glyph widths are authoritative when available: UTF-16 length is
+    // not terminal cell width (emoji, combining marks, renderer padding).
+    var occupied = occupiedColumns ? occupiedColumns[index] : rows[index].length;
+    return Number.isFinite(occupied) && Math.abs(occupied - width) < 0.15;
   }
   function matches(candidate) {
     var line = candidate.trim();
@@ -37,7 +43,7 @@
   for (var i = 0; i < rows.length; i++) {
     var joined = rows[i];
     if (matches(joined)) return true;
-    for (var j = i + 1; j < rows.length && rows[j - 1].length === width; j++) {
+    for (var j = i + 1; j < rows.length && fillsRow(j - 1); j++) {
       joined += rows[j];
       if (matches(joined)) return true;
     }

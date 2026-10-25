@@ -106,6 +106,12 @@ export class FakeNative {
           if (this.sessionListFailures.length > 0) throw this.sessionListFailures.shift();
           return { ...base, exitCode: 0, stdout: JSON.stringify({ schema: 3, sessions: this.sessions }) };
         }
+        if (options.command.includes('sessions kill -- ')) {
+          const selector = options.command.match(/sessions kill -- '([^']+)'$/)?.[1];
+          const before = this.sessions.length;
+          this.sessions = this.sessions.filter((session) => session.id !== selector && session.name !== selector);
+          return { ...base, exitCode: this.sessions.length < before ? 0 : 1, stdout: '' };
+        }
         if (options.command === 'printf %s "$HOME"') return { ...base, exitCode: 0, stdout: '/home/u' };
         if (options.command.includes('usage --json')) {
           return { ...base, exitCode: 0, stdout: '{"provider":"claude","window":"5h","used_pct":12}\n' };

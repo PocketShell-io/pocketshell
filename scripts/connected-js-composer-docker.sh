@@ -161,7 +161,7 @@ pocketshell_android_input_preflight "$ADB" "$ANDROID_SERIAL" "$evidence_dir/inpu
   || fail "Android input preflight failed on $ANDROID_SERIAL; see $evidence_dir/input-preflight.txt"
 
 RESULTS_DIR="$ROOT_DIR/android/app/build/outputs/androidTest-results/connected/debug"
-test_class='com.pocketshell.app.smoke.JsComposerDockerJourneyTest'
+test_class='com.pocketshell.app.smoke.J07ComposerSendJourney'
 APP_PACKAGE="com.pocketshell.app.$SUFFIX"
 DEVICE_KEY_PATH="/data/local/tmp/pocketshell-$SUFFIX-key.pem"
 TEST_PACKAGE="$APP_PACKAGE.test"
@@ -279,10 +279,27 @@ capture_phase_failure() {
 run_instrumentation_phase() {
   local phase="$1"
   local phase_dir="$evidence_dir/phase-$phase"
+  local test_method
+  case "$phase" in
+    production)
+      test_class="com.pocketshell.app.smoke.J08VoiceProductionProviderJourney"
+      test_method="realProviderStartReturnsWithoutCrashingTheProcess" ;;
+    prepare)
+      test_class="com.pocketshell.app.smoke.J08VoiceDictationJourney"
+      test_method="dictatedDraftSurvivesScreenOffAndProcessRestart" ;;
+    no-speech)
+      test_class="com.pocketshell.app.smoke.J08VoiceDictationJourney"
+      test_method="noSpeechWarningsKeepTheNativeKeyboardAndDraft" ;;
+    resume)
+      test_class="com.pocketshell.app.smoke.J07ComposerSendJourney"
+      test_method="composerWritesUtf8AndMultilineInsertAndRetainsAfterDrop" ;;
+    *) fail "unknown composer phase: $phase" ;;
+  esac
+
   "$ADB" -s "$ANDROID_SERIAL" push "$ROOT_DIR/tests/docker/test_key" "$DEVICE_KEY_PATH" >/dev/null
   local phase_artifact_run_id="$ARTIFACT_RUN_ID"
   if [[ "$phase" == no-speech ]]; then phase_artifact_run_id="$ARTIFACT_RUN_ID-nospeech"; fi
-  local phase_args=(-e class "$test_class" -e sshHost 10.0.2.2
+  local phase_args=(-e class "$test_class#$test_method" -e sshHost 10.0.2.2
     -e sshPort "$PORT" -e sshPrivateKeyPath "$DEVICE_KEY_PATH"
     -e sshSessionName "$SESSION_BASE" -e artifactRunId "$phase_artifact_run_id"
     -e composerPhase "$phase")
@@ -326,7 +343,7 @@ PY
     capture_phase_failure "$phase"
     fail "instrumentation phase $phase did not produce a non-skipped result for $test_class"
   fi
-  if ! "$ROOT_DIR/scripts/check-js-composer-journey-results.py" --results-dir "$RESULTS_DIR"; then
+  if ! "$ROOT_DIR/scripts/check-js-composer-journey-results.py" --results-dir "$RESULTS_DIR" --phase "$phase"; then
     capture_phase_failure "$phase"
     fail "the exact packaged composer result gate failed during phase $phase"
   fi
@@ -339,6 +356,7 @@ PY
 # This is an additional required regression, not a substitute for the full
 # prepare/resume journey. Check its real-host effects immediately, before any
 # later failure can hide its verdict (#3096, independent of #3095).
+run_instrumentation_phase production
 run_instrumentation_phase no-speech
 "$ROOT_DIR/scripts/extract-js-composer-artifacts.py" --no-speech-only \
   --run-id "$ARTIFACT_RUN_ID-nospeech" --logcat "$asset_logcat" --output-dir "$evidence_dir/no-speech"

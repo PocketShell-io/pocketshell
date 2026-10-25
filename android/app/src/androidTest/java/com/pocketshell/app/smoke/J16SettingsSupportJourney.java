@@ -48,7 +48,7 @@ import java.util.concurrent.atomic.AtomicReference;
  * #2897's voice-settings class to avoid the J24 file-name clash.
  */
 @RunWith(AndroidJUnit4.class)
-public final class JsSettingsSupportJourneyTest {
+public final class J16SettingsSupportJourney {
     private static final long JS_TIMEOUT_SECONDS = 15;
     private static final long WAIT_TIMEOUT_MILLIS = 15_000;
     private static final String SERVICES = "window.__ps2861PlatformServices";

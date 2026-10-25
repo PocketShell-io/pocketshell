@@ -17,17 +17,20 @@ from collections import Counter
 from pathlib import Path
 
 
-REQUIRED_CLASS = "com.pocketshell.app.smoke.SshKeyVaultDockerJourneyTest"
-REQUIRED_METHODS = frozenset(
-    {
-        "importsEncryptedDocumentConnectsAndKeepsSecretsOutOfWebViewState",
-        "pastesKeySharesPublicKeyAndInstallsGeneratedKeyOnHost",
-    }
-)
+REQUIRED_CLASS = "com.pocketshell.app.smoke.J04CreateSessionJourney"
+METHOD_CLASSES = {
+    "importsEncryptedDocumentConnectsAndKeepsSecretsOutOfWebViewState": "com.pocketshell.app.smoke.J04CreateSessionJourney",
+    "pastesKeySharesPublicKeyAndInstallsGeneratedKeyOnHost": "com.pocketshell.app.smoke.J17HostToolsJourney",
+}
+REQUIRED_METHODS = frozenset(METHOD_CLASSES)
 
 
 class GateFailure(ValueError):
     pass
+
+
+def _journey_class(method):
+    return METHOD_CLASSES.get(method, REQUIRED_CLASS)
 
 
 def validate_results(results: Path, methods: frozenset[str] = REQUIRED_METHODS) -> list[Path]:
@@ -57,12 +60,12 @@ def validate_results(results: Path, methods: frozenset[str] = REQUIRED_METHODS) 
     if not methods or not methods <= REQUIRED_METHODS:
         raise GateFailure(f"unknown key-vault method selection: {sorted(methods)}")
     actual = Counter((case.attrib.get("classname", ""), case.attrib.get("name", "")) for case in cases)
-    expected = Counter({(REQUIRED_CLASS, method): 1 for method in methods})
+    expected = Counter({(_journey_class(method), method): 1 for method in methods})
     if actual != expected:
         raise GateFailure(f"expected exactly {sorted(expected.elements())}; found {sorted(actual.elements())}")
     for case in cases:
         if any(list(case.iter(tag)) for tag in ("failure", "error", "skipped")):
-            raise GateFailure(f"{REQUIRED_CLASS}#{case.attrib.get('name')} failed or was skipped")
+            raise GateFailure(f"{case.attrib.get('classname')}#{case.attrib.get('name')} failed or was skipped")
     return reports
 
 
@@ -83,20 +86,20 @@ SETUP_METHOD = "pastesKeySharesPublicKeyAndInstallsGeneratedKeyOnHost"
 def self_test() -> int:
     one = frozenset({DOCUMENT_METHOD})
     cases = [
-        ("exact single cycle passes", one, [(REQUIRED_CLASS, DOCUMENT_METHOD, "passed")], True),
+        ("exact single cycle passes", one, [(_journey_class(DOCUMENT_METHOD), DOCUMENT_METHOD, "passed")], True),
         ("both cycles pass the full contract", REQUIRED_METHODS,
-         [(REQUIRED_CLASS, DOCUMENT_METHOD, "passed"), (REQUIRED_CLASS, SETUP_METHOD, "passed")], True),
-        ("full contract missing the setup cycle fails", REQUIRED_METHODS, [(REQUIRED_CLASS, DOCUMENT_METHOD, "passed")], False),
+         [(_journey_class(DOCUMENT_METHOD), DOCUMENT_METHOD, "passed"), (_journey_class(SETUP_METHOD), SETUP_METHOD, "passed")], True),
+        ("full contract missing the setup cycle fails", REQUIRED_METHODS, [(_journey_class(DOCUMENT_METHOD), DOCUMENT_METHOD, "passed")], False),
         ("zero tests fail closed", one, [], False),
         ("wrong method fails", one, [(REQUIRED_CLASS, "other", "passed")], False),
-        ("extra test fails", one, [(REQUIRED_CLASS, DOCUMENT_METHOD, "passed"), (REQUIRED_CLASS, "extra", "passed")], False),
+        ("extra test fails", one, [(_journey_class(DOCUMENT_METHOD), DOCUMENT_METHOD, "passed"), (REQUIRED_CLASS, "extra", "passed")], False),
         ("other cycle's method in a single-cycle check fails", one,
-         [(REQUIRED_CLASS, DOCUMENT_METHOD, "passed"), (REQUIRED_CLASS, SETUP_METHOD, "passed")], False),
-        ("duplicate exact test fails", one, [(REQUIRED_CLASS, DOCUMENT_METHOD, "passed"), (REQUIRED_CLASS, DOCUMENT_METHOD, "passed")], False),
-        ("failure fails", one, [(REQUIRED_CLASS, DOCUMENT_METHOD, "failure")], False),
+         [(_journey_class(DOCUMENT_METHOD), DOCUMENT_METHOD, "passed"), (_journey_class(SETUP_METHOD), SETUP_METHOD, "passed")], False),
+        ("duplicate exact test fails", one, [(_journey_class(DOCUMENT_METHOD), DOCUMENT_METHOD, "passed"), (_journey_class(DOCUMENT_METHOD), DOCUMENT_METHOD, "passed")], False),
+        ("failure fails", one, [(_journey_class(DOCUMENT_METHOD), DOCUMENT_METHOD, "failure")], False),
         ("setup failure fails the full contract", REQUIRED_METHODS,
-         [(REQUIRED_CLASS, DOCUMENT_METHOD, "passed"), (REQUIRED_CLASS, SETUP_METHOD, "failure")], False),
-        ("skip fails", one, [(REQUIRED_CLASS, DOCUMENT_METHOD, "skipped")], False),
+         [(_journey_class(DOCUMENT_METHOD), DOCUMENT_METHOD, "passed"), (_journey_class(SETUP_METHOD), SETUP_METHOD, "failure")], False),
+        ("skip fails", one, [(_journey_class(DOCUMENT_METHOD), DOCUMENT_METHOD, "skipped")], False),
         ("unknown method selection fails", frozenset({"other"}), [(REQUIRED_CLASS, "other", "passed")], False),
     ]
     failed = 0
@@ -141,7 +144,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"FAIL: {error}", file=sys.stderr)
         return 1
     for method in sorted(methods):
-        print(f"PASS: {REQUIRED_CLASS}#{method} executed exactly once")
+        print(f"PASS: {_journey_class(method)}#{method} executed exactly once")
     return 0
 
 

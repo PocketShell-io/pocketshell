@@ -2,7 +2,7 @@
 """Require the packaged #2861 settings/support journeys to execute (J16, J24).
 
 Verifies that fresh instrumentation XML contains exactly the two registered
-JsSettingsSupportJourneyTest methods, none skipped or failed, and (when a
+J16SettingsSupportJourney methods, none skipped or failed, and (when a
 screenshot directory is given) that every same-run screenshot the journeys
 capture was retrieved as a real PNG.
 
@@ -29,7 +29,7 @@ from pathlib import Path
 DEFAULT_RESULTS_DIR = Path(
     "android/app/build/outputs/androidTest-results/connected/debug"
 )
-REQUIRED_CLASS = "com.pocketshell.app.smoke.JsSettingsSupportJourneyTest"
+REQUIRED_CLASS = "com.pocketshell.app.smoke.J16SettingsSupportJourney"
 REQUIRED_METHODS = frozenset(
     {
         "j16SupportReportsCaptureNativeRuntimeAndSshFailuresAndExport",

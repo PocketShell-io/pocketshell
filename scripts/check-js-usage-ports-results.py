@@ -20,8 +20,11 @@ from datetime import date
 from pathlib import Path
 
 
-REQUIRED_CLASS = "com.pocketshell.app.smoke.UsagePortsDockerJourneyTest"
+REQUIRED_CLASS = "com.pocketshell.app.smoke.J13PortForwardOpenJourney"
 REQUIRED_METHOD = "usageAndPortForwardingPoliciesUseDockerAndNativePlugin"
+USAGE_CLASS = "com.pocketshell.app.smoke.J12UsagePanelJourney"
+USAGE_METHOD = "realHostQuotasRenderInUsagePanel"
+METHOD_CLASSES = {USAGE_METHOD: USAGE_CLASS, REQUIRED_METHOD: REQUIRED_CLASS}
 REQUIRED_KEY = f"{REQUIRED_CLASS}#{REQUIRED_METHOD}"
 DEFAULT_RESULTS = Path("android/app/build/outputs/androidTest-results/connected/debug")
 DEFAULT_QUARANTINE_FILE = Path(__file__).resolve().parent / "journey-quarantine.txt"
@@ -115,14 +118,16 @@ def validate(results: Path, quarantine_file: Path = DEFAULT_QUARANTINE_FILE) -> 
     if duplicates:
         raise GateFailure("duplicate test cases: " + ", ".join(sorted(duplicates)))
     identities = {(class_name, method) for class_name, method, _, _ in discovered}
-    required = {(REQUIRED_CLASS, REQUIRED_METHOD)}
-    if identities != required or len(discovered) != 1 or declared_tests != 1:
+    required = {(class_name, method) for method, class_name in METHOD_CLASSES.items()}
+    if identities != required or len(discovered) != 2 or declared_tests != 2:
         raise GateFailure(f"expected exactly {REQUIRED_CLASS}#{REQUIRED_METHOD}; found {sorted(identities)}")
     failures = [f"{name}#{method}" for name, method, failed, _ in discovered if failed]
     skipped = [f"{name}#{method}" for name, method, _, was_skipped in discovered if was_skipped]
     if failures:
         raise GateFailure("failed tests: " + ", ".join(failures))
     if skipped:
+        if any(name == USAGE_CLASS and was_skipped for name, _, _, was_skipped in discovered):
+            raise GateFailure("required usage panel journey was skipped")
         sanction, why = quarantine_sanction(quarantine_file)
         if sanction is None:
             raise GateFailure("skipped tests: " + ", ".join(skipped) + f" (no unexpired quarantine row sanctions it: {why})")
@@ -219,8 +224,9 @@ def write_report(directory: Path, cases: list[tuple[str, str, str]]) -> None:
 
 
 def self_test() -> int:
-    good = [(REQUIRED_CLASS, REQUIRED_METHOD, "passed")]
-    skip = [(REQUIRED_CLASS, REQUIRED_METHOD, "skipped")]
+    usage = [(USAGE_CLASS, USAGE_METHOD, "passed")]
+    good = usage + [(REQUIRED_CLASS, REQUIRED_METHOD, "passed")]
+    skip = usage + [(REQUIRED_CLASS, REQUIRED_METHOD, "skipped")]
     today = date.today()
     live = f"{REQUIRED_KEY}\t#3076\t{today.isoformat()}\t{date.fromordinal(today.toordinal() + 14).isoformat()}\tselftest\n"
     expired = f"{REQUIRED_KEY}\t#3076\t2020-01-01\t2020-01-15\tselftest\n"

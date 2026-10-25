@@ -22,8 +22,14 @@ final class TerminalTextOracle {
         return "(() => {const grid=JSON.parse(window.__ps2857TerminalBufferState || '{}');"
                 + "if (!(grid.cols > 0)) return false;"
                 + "const rows=[...document.querySelectorAll('.xterm-rows')].find(n=>n.offsetParent!==null);"
-                + "return (" + matcher() + ")(rows?.innerText ?? '', " + JSONObject.quote(marker)
-                + ", 'includes', grid.cols);})()";
+                + "const screen=rows?.closest('.xterm-screen')?.getBoundingClientRect();"
+                + "if (!rows || !screen || !(screen.width>0)) return false;"
+                + "const physical=Array.from(rows.children);const cellWidth=screen.width/grid.cols;"
+                + "const occupied=physical.map(row=>{const range=document.createRange();range.selectNodeContents(row);"
+                + "const rects=Array.from(range.getClientRects()).filter(rect=>rect.width>0);"
+                + "return rects.length?(Math.max(...rects.map(rect=>rect.right))-screen.left)/cellWidth:0;});"
+                + "return (" + matcher() + ")(physical.map(row=>row.innerText).join('\\n'), " + JSONObject.quote(marker)
+                + ", 'includes', grid.cols, occupied);})()";
     }
 
     private static synchronized String matcher() throws IOException {

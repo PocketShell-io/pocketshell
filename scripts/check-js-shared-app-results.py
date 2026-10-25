@@ -25,23 +25,24 @@ from collections import Counter
 from pathlib import Path
 
 
-REQUIRED_CLASS = "com.pocketshell.app.smoke.SharedAppDockerJourneyTest"
-REQUIRED_METHODS = frozenset(
-    {
-        "sharedAppListsAttachesAndTypesIntoFixtureSession",
-        "sharedTerminalDeliversImeEditsAsExactBytes",
-        # #2954: the D28 reconnect/EOF oracle on the shared shell.
-        "sharedAppRecoversAbruptServerDropWithOneControllerReconnect",
-        "sharedAppReportsARealSessionEndWithoutReconnecting",
-        # #3039: only the attach client dies; the pane silently re-joins.
-        "sharedAppSilentlyRejoinsWhenOnlyTheAttachClientDies",
-        # #2955: the D28 multi-session switch oracle (A -> B -> A -> B tabs).
-        "sharedAppSwitchesSessionTabsKeepingEachTerminal",
-        # #2953: the shared host-key prompt on first contact, and a changed key refused.
-        "firstContactHostKeyAsksAndHonoursRejectOnceAndAlways",
-        "changedHostKeyIsRefusedWithVisibleMessage",
-    }
-)
+REQUIRED_CLASS = "com.pocketshell.app.smoke.J01ConnectAndTrustJourney"
+METHOD_CLASSES = {'aThreeFileUploadShowsTheBarMidFlightAndLeavesNoResidueAfterCompletion': 'com.pocketshell.app.smoke.J20ComposerUploadProgressJourney',
+ 'androidShareStreamsReachTheChosenSessionOnTheRealHost': 'com.pocketshell.app.smoke.J11ShareUploadJourney',
+ 'androidSingleShareReachesTheChosenSessionOnTheRealHost': 'com.pocketshell.app.smoke.J11ShareUploadJourney',
+ 'changedHostKeyIsRefusedWithVisibleMessage': 'com.pocketshell.app.smoke.J01ConnectAndTrustJourney',
+ 'firstContactHostKeyAsksAndHonoursRejectOnceAndAlways': 'com.pocketshell.app.smoke.J01ConnectAndTrustJourney',
+ 'hostAddedThroughFormConnectsToFixture': 'com.pocketshell.app.smoke.J21HostAddConnectJourney',
+ 'hostFormSubmitRemainsReachableWithTheIme': 'com.pocketshell.app.smoke.J19HostFormImeJourney',
+ 'scrollTerminalDoesNotSendInputBytes': 'com.pocketshell.app.smoke.J15TerminalScrollJourney',
+ 'sharedAppListsAttachesAndTypesIntoFixtureSession': 'com.pocketshell.app.smoke.J02SessionTreeListJourney',
+ 'sharedAppRecoversAbruptServerDropWithOneControllerReconnect': 'com.pocketshell.app.smoke.J05ReconnectAfterDropJourney',
+ 'sharedAppReportsARealSessionEndWithoutReconnecting': 'com.pocketshell.app.smoke.J14StopSessionJourney',
+ 'sharedAppSilentlyRejoinsWhenOnlyTheAttachClientDies': 'com.pocketshell.app.smoke.J05ReconnectAfterDropJourney',
+ 'sharedAppSwitchesSessionTabsKeepingEachTerminal': 'com.pocketshell.app.smoke.J02SessionTreeListJourney',
+ 'sharedTerminalDeliversImeEditsAsExactBytes': 'com.pocketshell.app.smoke.J03AttachAndTypeJourney',
+ 'stopSessionFromTabKillsItOnTheHost': 'com.pocketshell.app.smoke.J14StopSessionJourney',
+ 'tunnelFormSubmitRemainsReachableWithTheIme': 'com.pocketshell.app.smoke.J19HostFormImeJourney'}
+REQUIRED_METHODS = frozenset(METHOD_CLASSES)
 # #3017: selection regressions supplement, never replace, the seven real journeys.
 REGRESSION_CLASS = "com.pocketshell.app.ime.ScriptedImeSelectionTest"
 REGRESSION_METHODS = frozenset({
@@ -133,7 +134,7 @@ def validate_results(results: Path) -> list[Path]:
             raise GateFailure(f"{report}: expected <testsuite> or <testsuites>, found <{root.tag}>")
 
     actual = Counter((case.attrib.get("classname", ""), case.attrib.get("name", "")) for case in cases)
-    expected = Counter({(REQUIRED_CLASS, method): 1 for method in REQUIRED_METHODS})
+    expected = Counter({(METHOD_CLASSES[method], method): 1 for method in REQUIRED_METHODS})
     expected.update({(REGRESSION_CLASS, method): 1 for method in REGRESSION_METHODS})
     if actual != expected:
         raise GateFailure(
@@ -206,7 +207,7 @@ def _write_report(path: Path, identities: list[tuple[str, str, str]]) -> None:
 
 
 def self_test() -> int:
-    every = [(REQUIRED_CLASS, method, "passed") for method in sorted(REQUIRED_METHODS)]
+    every = [(METHOD_CLASSES[method], method, "passed") for method in sorted(REQUIRED_METHODS)]
     regressions = [(REGRESSION_CLASS, method, "passed") for method in sorted(REGRESSION_METHODS)]
     every += regressions
     good_bytes = EXPECTED_IME_BYTES_HEX
@@ -251,7 +252,7 @@ def self_test() -> int:
         ),
         ("selection regressions alone cannot replace real journeys", regressions, good_bytes, False),
         ("real journeys alone cannot replace selection regressions",
-         [row for row in every if row[0] == REQUIRED_CLASS], good_bytes, False),
+         [row for row in every if row[0] != REGRESSION_CLASS], good_bytes, False),
         ("skipped selection regression blocks",
          [(c, m, "skipped" if m == regressions[0][1] else s) for c, m, s in every], good_bytes, False),
         ("unexpected class blocks", [("example.OtherJourney", every[0][1], "passed"), *every[1:]], good_bytes, False),
@@ -337,7 +338,7 @@ def main(argv: list[str] | None = None) -> int:
     except GateFailure as error:
         print(f"FAIL: {error}", file=sys.stderr)
         return 1
-    print(f"PASS: {REQUIRED_CLASS}#{{{', '.join(sorted(REQUIRED_METHODS))}}} each executed exactly once")
+    print(f"PASS: {len(METHOD_CLASSES)} registered feature methods and {len(REGRESSION_METHODS)} IME regressions each executed exactly once")
     print(f"PASS: {REGRESSION_CLASS}#{{{', '.join(sorted(REGRESSION_METHODS))}}} each executed exactly once")
     print(f"PASS: the host received exactly the scripted IME bytes ({EXPECTED_IME_BYTES_HEX})")
     print(f"PASS: #3039 phase traces kept and free of reconnects: {', '.join(PHASE_TRACE_NAMES)}")

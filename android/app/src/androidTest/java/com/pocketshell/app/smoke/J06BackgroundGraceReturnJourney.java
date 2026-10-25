@@ -58,7 +58,7 @@ import java.util.concurrent.atomic.AtomicReference;
 
 /** Packaged Android journey over a real sshd + aplexer Docker fixture. */
 @RunWith(AndroidJUnit4.class)
-public final class SshPtyDockerJourneyTest {
+public final class J06BackgroundGraceReturnJourney {
     private static final long WAIT_TIMEOUT_MILLIS = 45_000;
     private static final long BACKGROUND_GRACE_MILLIS = 30_000;
     private static final long SCREENSHOT_MARKER_WAIT_MILLIS = 8_000;

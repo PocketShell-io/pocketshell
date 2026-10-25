@@ -1,3 +1,4 @@
+import { createAndroidAttachments } from './attachments';
 /**
  * The Android half of the shared app's transport seam: one `PocketShellApi`
  * over the Capacitor native plugins, provided to the shared app tree
@@ -34,6 +35,7 @@ import {
   runHostBootstrap,
   unsupportedTransport,
   type ConnectionController,
+  type ConnectResult,
   type HomeResult,
   type HostEntry,
   type SshHostTarget,
@@ -42,6 +44,8 @@ import { AndroidConnectionHub, type ConnectionJournalEntry, type TofuDecision } 
 import { MissingHostCredential, type AndroidHostStore } from './hostStore';
 import { declinedAccountHostMessage, type AccountHostKeys } from './accountHosts';
 import { insecureGatewayMessage, resolveGatewayTarget, type GatewayConnectRequest, type GatewayPairings } from './gatewayTarget';
+import { AndroidForwards } from './forwards';
+import { sshCapability } from '@/native/sshCapability';
 import type { AndroidVault, GatewayAuthPolicy } from '@/vault/androidVault';
 
 /** The generation the hub's controller-backed exec answers for (the controller owns the real one). */
@@ -164,15 +168,54 @@ export interface AndroidPlatform {
   dispose(): void;
 }
 
+export const FORWARD_RESUME_STORAGE_KEY = 'pocketshell.android.forward-resume.v1';
+interface ForwardResumeIntent { name: string; hostname: string; port: number; user: string; hostId: string }
+
 export function createAndroidPlatform(deps: AndroidApiDeps): AndroidPlatform {
+  let disposed = false;
+  let forwards: AndroidForwards | undefined;
+  const pendingDials = new Map<string, Promise<ConnectResult>>();
+  const hostConnections = new Map<string, string>();
+  const connectionHosts = new Map<string, ForwardResumeIntent>();
+  function rememberedHosts(): ForwardResumeIntent[] {
+    try {
+      const rows: unknown = JSON.parse(localStorage.getItem(FORWARD_RESUME_STORAGE_KEY) ?? '[]');
+      return Array.isArray(rows) ? rows.filter((row): row is ForwardResumeIntent => !!row && typeof row.name === 'string' && typeof row.hostname === 'string' && typeof row.hostId === 'string' && typeof row.user === 'string' && Number.isInteger(row.port) && row.port > 0 && row.port < 65536) : [];
+    } catch { return []; }
+  }
+  function rememberForwardHost(id: string, enabled: boolean): void {
+    const host = connectionHosts.get(id);
+    if (!host) throw new Error('This host is no longer connected.');
+    const rows = rememberedHosts().filter((row) => row.hostId !== host.hostId);
+    if (enabled) rows.push(host);
+    localStorage.setItem(FORWARD_RESUME_STORAGE_KEY, JSON.stringify(rows));
+  }
+  async function resumeEnabledHosts(): Promise<void> {
+    const saved = await deps.hosts.list();
+    for (const intent of rememberedHosts()) {
+      if (disposed) return;
+      if (!forwards!.isRememberedAutoEnabled(intent.hostId)) continue;
+      // Never let a renamed/replaced saved host silently change the endpoint
+      // a user enabled. Credential resolution and trust remain the normal API.
+      const host = saved.find((host) => host.name === intent.name && host.hostname === intent.hostname && host.port === intent.port && host.user === intent.user);
+      if (!host) continue;
+      const outcome = await api.ssh.connect({ host: host.hostname, port: host.port, user: host.user, hostAlias: host.name, ...(host.gateway ? { gateway: host.gateway } : {}) });
+      if (!outcome.ok) deps.log?.({ kind: 'forward-resume', message: outcome.error ?? 'Could not resume the enabled forwarding host.' });
+    }
+  }
   const hub = new AndroidConnectionHub({
     createController: deps.createController,
-    observe: deps.observeConnections,
+    observe: (entry) => {
+      deps.observeConnections?.(entry);
+      const snapshot = hub.controllerOf(entry.connectionId)?.getSnapshot();
+      if (snapshot) forwards?.observe(entry.connectionId, snapshot);
+    },
   });
+  forwards = new AndroidForwards(hub, sshCapability);
   const unbindLifecycle = deps.lifecycle
     ? deps.lifecycle.onActiveChange((active) => {
-        if (active) void hub.returnToForeground();
-        else void hub.enterBackground(deps.backgroundGraceMs());
+        if (active) void hub.returnToForeground().then(() => forwards!.resume()).then(resumeEnabledHosts).catch((error) => deps.log?.({ kind: 'forward-resume', message: String(error) }));
+        else void hub.enterBackground(deps.backgroundGraceMs(), (id) => forwards!.hasActive(id));
       })
     : () => undefined;
 
@@ -326,14 +369,41 @@ export function createAndroidPlatform(deps: AndroidApiDeps): AndroidPlatform {
           ...payload,
           user: payload.user || target.username,
         });
-        return hub.connect(target, standing, hostLabel);
+        const existing = hostConnections.get(target.hostId);
+        if (existing && hub.controllerOf(existing)) {
+          const snapshot = hub.controllerOf(existing)!.getSnapshot();
+          if (snapshot.phase !== 'lost' && snapshot.phase !== 'idle' && !(snapshot.phase === 'error' && !snapshot.connectionId)) return { ok: true, connectionId: existing };
+          const recovering = pendingDials.get(target.hostId);
+          if (recovering) return recovering;
+          const recovery = hub.reconnect(existing).then((ok) => ok ? { ok: true, connectionId: existing } : { ok: false, error: 'Could not resume the forwarding host.' });
+          pendingDials.set(target.hostId, recovery);
+          try { return await recovery; } finally { pendingDials.delete(target.hostId); }
+        }
+        const pending = pendingDials.get(target.hostId);
+        if (pending) return pending;
+        if (disposed) return { ok: false, error: 'The Android platform was closed.' };
+        const dial = hub.connect(target, standing, hostLabel).then(async (result) => {
+          if (result.ok && result.connectionId) {
+            if (disposed) { await hub.close(result.connectionId); return { ok: false, error: 'The Android platform was closed.' }; }
+            hostConnections.set(target.hostId, result.connectionId);
+            connectionHosts.set(result.connectionId, { name: hostLabel, hostname: target.hostname, port: target.port, user: target.username, hostId: target.hostId });
+          }
+          return result;
+        });
+        pendingDials.set(target.hostId, dial);
+        try { return await dial; } finally { pendingDials.delete(target.hostId); }
       },
       // Android asks before trusting a first-contact key: the shared store
       // registers its prompt here and stops dialling with a standing
       // accept-always (the #2953 regression against the legacy screen).
       onTrustDecision: (decider) => hub.setTrustDecider(decider),
       exec,
-      close: (connectionId) => hub.close(connectionId),
+      close: async (connectionId) => {
+        await forwards!.close(connectionId);
+        for (const [host, id] of hostConnections) if (id === connectionId) hostConnections.delete(host);
+        connectionHosts.delete(connectionId);
+        return hub.close(connectionId);
+      },
       onState: (listener) => hub.onState(listener),
       // Its presence tells the shared store the controller owns recovery
       // (#2954): no store ladder, and Retry recovers the same logical id.
@@ -401,7 +471,16 @@ export function createAndroidPlatform(deps: AndroidApiDeps): AndroidPlatform {
       reposClone: unsupported('projects.reposClone'),
       startSession: unsupported('projects.startSession'),
       renameSession: unsupported('projects.renameSession'),
-      killSession: unsupported('projects.killSession'),
+      async killSession(connectionId, name, ref) {
+        const controller = hub.controllerOf(connectionId);
+        if (!controller) return { ok: false, code: 'kill-failed', error: 'The connection is no longer available.' };
+        // The shared core owns the host CLI and mutation reconciliation. Its
+        // immutable selector remains correct if another client renamed a tab.
+        const result = await controller.killSession(ref?.aplexerId || name);
+        return result.ok
+          ? { ok: true, code: null, error: null }
+          : { ok: false, code: 'kill-failed', error: result.message };
+      },
       onCloneProgress: () => () => undefined,
     },
 
@@ -431,32 +510,13 @@ export function createAndroidPlatform(deps: AndroidApiDeps): AndroidPlatform {
       onStats: () => () => undefined,
     },
 
-    // The workspace polls list/isAutoEnabled on every mount: empty is the
-    // honest answer until the native forward engine is wired (stage F2).
     forwards: {
-      scan: unsupported('forwards.scan'),
-      startAuto: unsupported('forwards.startAuto'),
-      stopAuto: unsupported('forwards.stopAuto'),
-      addManual: unsupported('forwards.addManual'),
-      remove: unsupported('forwards.remove'),
-      list: async () => [],
-      refresh: async () => false,
-      discovered: async () => [],
-      status: async () => null,
-      setName: unsupported('forwards.setName'),
-      setRemap: unsupported('forwards.setRemap'),
-      clearRemap: unsupported('forwards.clearRemap'),
-      setIntent: unsupported('forwards.setIntent'),
-      togglePort: unsupported('forwards.togglePort'),
-      isAutoEnabled: async () => false,
-      onStates: () => () => undefined,
+      ...forwards.api,
+      startAuto: async (id, config) => { const result = await forwards!.api.startAuto(id, config); rememberForwardHost(id, true); return result; },
+      stopAuto: async (id) => { const result = await forwards!.api.stopAuto(id); rememberForwardHost(id, false); return result; },
     },
 
-    attachments: {
-      stage: unsupported('attachments.stage'),
-      pickFiles: unsupported('attachments.pickFiles'),
-      readLocal: unsupported('attachments.readLocal'),
-    },
+    attachments: createAndroidAttachments(hub),
 
     agent: {
       kinds: async () => null,
@@ -501,11 +561,19 @@ export function createAndroidPlatform(deps: AndroidApiDeps): AndroidPlatform {
     },
   };
 
+  // A fresh WebView creates one fresh platform. Enabled forwarding hosts
+  // mount through exactly the same shared connection owner as picker dials.
+  void Promise.resolve().then(resumeEnabledHosts).catch((error) => deps.log?.({ kind: 'forward-resume', message: String(error) }));
+
   return {
     api,
     hub,
     dispose() {
+      disposed = true;
       unbindLifecycle();
+      forwards?.dispose();
+      for (const id of hostConnections.values()) void hub.close(id);
+      hostConnections.clear();
     },
   };
 }

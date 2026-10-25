@@ -140,7 +140,7 @@ ssh_remote "mkdir -m 700 '$REMOTE_ROOT' \
   && ln -s /etc/passwd '$REMOTE_ROOT/link.txt'"
 printf 'Seeded Docker SFTP fixture: %s\n' "$REMOTE_ROOT"
 
-test_class='com.pocketshell.app.smoke.J10FilesBrowseEditJourneyTest'
+test_class='com.pocketshell.app.smoke.J10FilesBrowseEditJourney'
 DOCUMENTSUI_UPLOAD_NAME="documentsui-upload-$RUN_ID.bin"
 DOCUMENTSUI_DOWNLOAD_NAME="documentsui-download-$RUN_ID.bin"
 DEVICE_KEY_PATH="/data/local/tmp/pocketshell-$SUFFIX-key.pem"
@@ -173,7 +173,7 @@ fi
   --evidence-dir "$ARTIFACTS_DIR/instrumentation-results"
 
 J10_LOGCAT="$(find "$ARTIFACTS_DIR/instrumentation-results" -type f \
-  -name 'logcat-com.pocketshell.app.smoke.J10FilesBrowseEditJourneyTest-*.txt' -print -quit)"
+  -name 'logcat-com.pocketshell.app.smoke.J10FilesBrowseEditJourney-*.txt' -print -quit)"
 [[ -n "$J10_LOGCAT" ]] || fail 'the packaged J10 logcat evidence artifact is missing'
 # The system DocumentsUI is com.android.documentsui on AOSP images and
 # com.google.android.documentsui on Google APIs images (the hosted CI emulator).

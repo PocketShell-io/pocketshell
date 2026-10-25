@@ -104,16 +104,16 @@ import org.junit.runner.RunWith;
  * and answers "remember" ({@link #trustFirstContactIfAsked}).
  */
 @RunWith(AndroidJUnit4.class)
-public class SharedAppDockerJourneyTest {
-    private static final String TAG = "PocketshellImeJourney";
-    private static final long WAIT_TIMEOUT_MILLIS = 45_000;
-    private static final String PIN_PREFIX = "pocketshell.ssh.host-key.";
-    private static final String HOSTS_STORAGE_KEY = "pocketshell.android.hosts.v1";
-    private static final String GATE = "[data-testid=host-key-trust-gate] [data-testid=host-key-decision]";
+public abstract class SharedAppDockerJourneyTest {
+    protected static final String TAG = "PocketshellImeJourney";
+    protected static final long WAIT_TIMEOUT_MILLIS = 45_000;
+    protected static final String PIN_PREFIX = "pocketshell.ssh.host-key.";
+    protected static final String HOSTS_STORAGE_KEY = "pocketshell.android.hosts.v1";
+    protected static final String GATE = "[data-testid=host-key-trust-gate] [data-testid=host-key-decision]";
     /** The visible terminal's text: hidden panes keep their own rows. */
-    private static final String VISIBLE_TERMINAL =
+    protected static final String VISIBLE_TERMINAL =
             "([...document.querySelectorAll('.xterm-rows')].find((n)=>n.offsetParent!==null)?.innerText ?? '')";
-    private static final String VISIBLE_TEXTAREA =
+    protected static final String VISIBLE_TEXTAREA =
             "[...document.querySelectorAll('.xterm')].find((n)=>n.offsetParent!==null)?.querySelector('.xterm-helper-textarea')";
     /**
      * The bytes {@link #sharedTerminalDeliversImeEditsAsExactBytes} must put on
@@ -137,11 +137,11 @@ public class SharedAppDockerJourneyTest {
     static final String CLIENT_DROP_JOURNAL = "ps3039-journal-client-drop.json";
 
     /** Both tests run in one instrumentation process; the first adds the run's host. */
-    private static boolean fixtureHostAdded;
+    protected static boolean fixtureHostAdded;
     /** The key-vault handle of the runner's key, imported once per run. */
-    private static String fixtureKeyHandle;
-    private ActivityScenario<MainActivity> scenario;
-    private ScriptedIme ime;
+    protected static String fixtureKeyHandle;
+    protected ActivityScenario<MainActivity> scenario;
+    protected ScriptedIme ime;
 
     @Before
     public void launchSharedApp() {
@@ -155,7 +155,6 @@ public class SharedAppDockerJourneyTest {
         if (ime != null) ime.close();
     }
 
-    @Test
     public void sharedAppListsAttachesAndTypesIntoFixtureSession() throws Exception {
         String run = sessionRun();
         String folderA = run + "-a";
@@ -209,7 +208,6 @@ public class SharedAppDockerJourneyTest {
      * then prints them as hex and writes them to a host file the runner checks
      * independently.
      */
-    @Test
     public void sharedTerminalDeliversImeEditsAsExactBytes() throws Exception {
         String run = sessionRun();
         String folderC = run + "-c";
@@ -274,7 +272,6 @@ public class SharedAppDockerJourneyTest {
                 hex(EXPECTED_IME_BYTES), hex);
     }
 
-    @Test
     public void sharedAppRecoversAbruptServerDropWithOneControllerReconnect() throws Exception {
         String run = Long.toString(System.currentTimeMillis(), 36);
         File artifacts = artifactDirectory(run);
@@ -422,7 +419,6 @@ public class SharedAppDockerJourneyTest {
      * closes its channels before its lost event); on a healthy transport the
      * answer must stay "ended": no reconnect, no new connection, no dial.
      */
-    @Test
     public void sharedAppReportsARealSessionEndWithoutReconnecting() throws Exception {
         String run = Long.toString(System.currentTimeMillis(), 36);
         File artifacts = artifactDirectory(run);
@@ -517,7 +513,6 @@ public class SharedAppDockerJourneyTest {
      * session itself ends and NOTHING may re-attach: the two exits look the
      * same on the transport, and only the host's fresh listing tells them apart.
      */
-    @Test
     public void sharedAppSilentlyRejoinsWhenOnlyTheAttachClientDies() throws Exception {
         String run = Long.toString(System.currentTimeMillis(), 36);
         File artifacts = artifactDirectory(run);
@@ -591,7 +586,6 @@ public class SharedAppDockerJourneyTest {
                 .put("entriesAfterDrop", after.length()));
     }
 
-    @Test
     public void firstContactHostKeyAsksAndHonoursRejectOnceAndAlways() throws Exception {
         String run = sessionRun();
         String port = requiredArgument("sshPort");
@@ -648,7 +642,6 @@ public class SharedAppDockerJourneyTest {
                 "!!document.querySelector('[data-testid=host-key-decision]')");
     }
 
-    @Test
     public void changedHostKeyIsRefusedWithVisibleMessage() throws Exception {
         String run = sessionRun();
         String port = requiredArgument("rekeyedPort");
@@ -702,23 +695,23 @@ public class SharedAppDockerJourneyTest {
      * runner passes {@code evidenceHoldMillis} (manual evidence runs only;
      * the lane leaves it unset, so CI waits nothing).
      */
-    private void holdForEvidence() throws InterruptedException {
+    protected void holdForEvidence() throws InterruptedException {
         String hold = InstrumentationRegistry.getArguments().getString("evidenceHoldMillis");
         if (hold != null) Thread.sleep(Long.parseLong(hold));
     }
 
-    private String fixtureHost() {
+    protected String fixtureHost() {
         return InstrumentationRegistry.getArguments().getString("sshHost", "10.0.2.2");
     }
 
-    private String requiredArgument(String name) {
+    protected String requiredArgument(String name) {
         String value = InstrumentationRegistry.getArguments().getString(name);
         assertNotNull("pass instrumentation argument " + name + " (scripts/connected-js-shared-app.sh does)", value);
         return value;
     }
 
     /** "keyType SHA256:..." entries the runner computed on the Docker host (base64: the list has spaces). */
-    private Set<String> hostKeys(String argument) {
+    protected Set<String> hostKeys(String argument) {
         Set<String> keys = new LinkedHashSet<>();
         String decoded = new String(Base64.getDecoder().decode(requiredArgument(argument + "Base64")), StandardCharsets.UTF_8);
         for (String entry : decoded.split(";")) {
@@ -729,7 +722,7 @@ public class SharedAppDockerJourneyTest {
     }
 
     /** The prompt's key type + fingerprint must be one of the server's real keys. */
-    private String assertPresentedKeyIn(Set<String> realKeys) throws Exception {
+    protected String assertPresentedKeyIn(Set<String> realKeys) throws Exception {
         String keyType = text("[data-testid=host-key-type]");
         String fingerprint = text("[data-testid=host-key-fingerprint]");
         assertTrue("the prompt shows a SHA-256 fingerprint: " + fingerprint, fingerprint.startsWith("SHA256:"));
@@ -738,12 +731,12 @@ public class SharedAppDockerJourneyTest {
         return fingerprint;
     }
 
-    private void tapHost(String name) throws Exception {
+    protected void tapHost(String name) throws Exception {
         evalString("(() => {[...document.querySelectorAll('.host-row')].find((n)=>n.textContent.includes("
                 + JSONObject.quote(name) + ")).click(); return 'ok';})()");
     }
 
-    private void backToPickerAndDisconnect() throws Exception {
+    protected void backToPickerAndDisconnect() throws Exception {
         click("button[title=\"Back to hosts\"]");
         awaitJsTrue("!!document.querySelector('.disconnect')");
         click(".disconnect");
@@ -752,7 +745,7 @@ public class SharedAppDockerJourneyTest {
     }
 
     /** Open SSH connections held by the native plugin — the layer below the shared app. */
-    private int nativeConnections() throws Exception {
+    protected int nativeConnections() throws Exception {
         evalString("(() => {window.__ps2953Snapshot = null;"
                 + "window.Capacitor.Plugins.SshCapability.resourceSnapshot({requestId: 'journey-' + Date.now()})"
                 + ".then((r) => {window.__ps2953Snapshot = String(r.connections);})"
@@ -767,7 +760,7 @@ public class SharedAppDockerJourneyTest {
      * Ask the runner's rotation controller (a socket on the Docker host) to
      * restart the rekeyed fixture; it answers with the new "type fp;..." keys.
      */
-    private Set<String> rotateRekeyedFixture() throws Exception {
+    protected Set<String> rotateRekeyedFixture() throws Exception {
         int port = Integer.parseInt(requiredArgument("rotationPort"));
         try (Socket socket = new Socket()) {
             socket.connect(new InetSocketAddress(fixtureHost(), port), 10_000);
@@ -788,16 +781,16 @@ public class SharedAppDockerJourneyTest {
         }
     }
 
-    private boolean exists(String selector) throws Exception {
+    protected boolean exists(String selector) throws Exception {
         return "true".equals(evalRaw("!!document.querySelector(" + JSONObject.quote(selector) + ")"));
     }
 
-    private String text(String selector) throws Exception {
+    protected String text(String selector) throws Exception {
         return evalString("(document.querySelector(" + JSONObject.quote(selector) + ")?.textContent ?? '').trim()");
     }
 
     /** Wait for {@code expression}; fail at once if {@code forbidden} ever holds meanwhile. */
-    private void awaitJsTrueNeverSeeing(String expression, String forbidden) throws Exception {
+    protected void awaitJsTrueNeverSeeing(String expression, String forbidden) throws Exception {
         long deadline = SystemClock.uptimeMillis() + WAIT_TIMEOUT_MILLIS;
         String last = "<not evaluated>";
         while (SystemClock.uptimeMillis() < deadline) {
@@ -819,7 +812,7 @@ public class SharedAppDockerJourneyTest {
      * host through the form is the fixture host's own journey, so this one is
      * written to the phone's host list directly and the app relaunched to load it.
      */
-    private void addSavedHostWithFixtureKey(String name, String host, String port) throws Exception {
+    protected void addSavedHostWithFixtureKey(String name, String host, String port) throws Exception {
         assertNotNull("the run's key must have been imported first", fixtureKeyHandle);
         JSONObject entry = new JSONObject()
                 .put("name", name).put("hostname", host).put("port", Integer.parseInt(port))
@@ -840,7 +833,6 @@ public class SharedAppDockerJourneyTest {
      * switches, and the Docker host's `a capture` of each session holds
      * exactly that session's markers and none of the other's.
      */
-    @Test
     public void sharedAppSwitchesSessionTabsKeepingEachTerminal() throws Exception {
         String run = Long.toString(System.currentTimeMillis(), 36);
         File artifacts = artifactDirectory(run);
@@ -981,7 +973,7 @@ public class SharedAppDockerJourneyTest {
      * each tab exactly once, after which both tabs type and the host holds
      * each tab's new marker exactly once, in its own session only.
      */
-    private JSONObject dropWithBothTabsOpen(String run, File artifacts, String tagA, String tagB, String idA,
+    protected JSONObject dropWithBothTabsOpen(String run, File artifacts, String tagA, String tagB, String idA,
             String idB, String transport, String generation) throws Exception {
         int opensAtDrop = Integer.parseInt(evalString("String(window.__ps2954.opens.length)"));
         int dialsAtDrop = nativeDialCount();
@@ -1064,18 +1056,18 @@ public class SharedAppDockerJourneyTest {
                 .put("hostMarkersExact", true);
     }
 
-    private static String tabExpression(String tag) {
+    protected static String tabExpression(String tag) {
         return "[...document.querySelectorAll('.folder-bar button.tab')].some((n)=>n.textContent.includes("
                 + JSONObject.quote(tag) + "))";
     }
 
-    private void selectTab(String tag) throws Exception {
+    protected void selectTab(String tag) throws Exception {
         evalString("(() => {const tab=[...document.querySelectorAll('.folder-bar button.tab')].find((n)=>n.textContent"
                 + ".includes(" + JSONObject.quote(tag) + ")); if(!tab) throw new Error('no tab'); tab.click(); return 'ok';})()");
     }
 
     /** The aplexer id of the session the controller last attached, once it is `tag`'s. */
-    private String awaitFocusedSessionId(String tag) throws Exception {
+    protected String awaitFocusedSessionId(String tag) throws Exception {
         String find = "[...(window.__pocketshellConnectionJournal ?? [])].reverse().find((e)=>e.phase==='live')";
         awaitJsTrue("(" + find + ")?.selectedTag===" + JSONObject.quote(tag), WAIT_TIMEOUT_MILLIS);
         return evalString("(" + find + ").selectedId");
@@ -1089,7 +1081,7 @@ public class SharedAppDockerJourneyTest {
      * later under a NEW logical connection — and the banner's Reconnect must
      * recover the same logical id and session through ONE controller ladder.
      */
-    private JSONObject refusedLoginsGiveUpThenRetry(String run, File artifacts, String logicalId, String sessionId,
+    protected JSONObject refusedLoginsGiveUpThenRetry(String run, File artifacts, String logicalId, String sessionId,
             String transport, String generation, int transportsBefore) throws Exception {
         int journalAtDrop = journalLength();
         int dialsAtDrop = nativeDialCount();
@@ -1189,7 +1181,157 @@ public class SharedAppDockerJourneyTest {
      * then create a shell session of this test's own — its own folder, so
      * neither the other tests nor earlier lanes share it — and open it.
      */
-    private void connectFixtureAndAttach(String run) throws Exception {
+    /** UI Stop must destroy the real session, rather than merely detach its pane. */
+    public void stopSessionFromTabKillsItOnTheHost() throws Exception {
+        String run = "j14-" + Long.toString(System.currentTimeMillis(), 36);
+        connectFixtureAndAttach(run);
+        installRecoveryRecorder();
+        JSONObject live = latestLiveJournalEntry();
+        String id = live.getString("selectedId");
+        String transport = live.getString("transportId");
+        String generation = live.getString("generationId");
+        click(".tab-close[title='Stop this session']");
+        awaitJsTrue("!!document.querySelector('.stop-confirm .btn-danger')");
+        click(".stop-confirm .btn-danger");
+        awaitJsTrue("!document.querySelector('.stop-confirm')");
+        // aplexer acknowledges Stop when accepted; its snapshot drops the
+        // record after the worker has terminated the process. Observe that
+        // host completion, rather than confuse acknowledgment with teardown.
+        JSONObject listed = null;
+        long deadline = SystemClock.uptimeMillis() + 15_000;
+        int attempt = 0;
+        while (SystemClock.uptimeMillis() < deadline) {
+            listed = awaitNativeExec("j14-list-" + run + "-" + attempt++, transport, generation,
+                    "PATH=\"$HOME/.local/bin:$PATH\" pocketshell sessions list --json");
+            assertEquals("session listing after UI stop succeeds", 0, listed.getInt("exitCode"));
+            if (!listed.getString("stdout").contains(id)) break;
+            SystemClock.sleep(150);
+        }
+        assertNotNull("host stop completion was observed", listed);
+        Log.i(TAG, "J14_HOST_STOP_ORACLE session=" + id + " result=" + listed);
+        screenshot("j14-session-stopped");
+        assertFalse("UI Stop removes the session from the HOST, not just the visible tab: " + listed,
+                listed.getString("stdout").contains(id));
+    }
+
+    /** A real Android drag over a raw-mode terminal must not send arrow bytes. */
+    public void scrollTerminalDoesNotSendInputBytes() throws Exception {
+        String run = "j15-" + Long.toString(System.currentTimeMillis(), 36);
+        connectFixtureAndAttach(run);
+        installRecoveryRecorder();
+        JSONObject live = latestLiveJournalEntry();
+        String path = "/tmp/" + run;
+        String program = "import os,sys,tty,termios,select,time\n"
+                + "fd=sys.stdin.fileno(); old=termios.tcgetattr(fd); tty.setraw(fd)\n"
+                + "os.write(1,b'J15_READY\\r\\n'); data=b''; deadline=time.monotonic()+6\n"
+                + "while time.monotonic()<deadline:\n"
+                + " if select.select([fd],[],[],0.1)[0]: data+=os.read(fd,4096)\n"
+                + "termios.tcsetattr(fd,termios.TCSANOW,old)\n"
+                + "open(sys.argv[1],'w').write(data.hex())\n"
+                + "print('J15_DONE',flush=True)\n";
+        JSONObject seeded = awaitNativeExec("j15-seed-" + run, live.getString("transportId"),
+                live.getString("generationId"), "printf %s " + shellQuote(program) + " > " + shellQuote(path + ".py"));
+        assertEquals(0, seeded.getInt("exitCode"));
+        typeLine("python3 " + path + ".py " + path + ".hex");
+        awaitJsTrue(VISIBLE_TERMINAL + ".includes('J15_READY')");
+        JSONObject rect = new JSONObject(evalString("(() => {const r=[...document.querySelectorAll('.xterm')].find(n=>n.offsetParent!==null).getBoundingClientRect();return JSON.stringify({x:r.x+r.width/2,y:r.y,height:r.height});})()"));
+        final int[] origin = new int[2];
+        final float[] density = new float[1];
+        scenario.onActivity(activity -> {
+            activity.getBridge().getWebView().getLocationOnScreen(origin);
+            density[0] = activity.getResources().getDisplayMetrics().density;
+        });
+        int x = origin[0] + Math.round((float) rect.getDouble("x") * density[0]);
+        int low = origin[1] + Math.round((float) (rect.getDouble("y") + rect.getDouble("height") * .75) * density[0]);
+        int high = origin[1] + Math.round((float) (rect.getDouble("y") + rect.getDouble("height") * .25) * density[0]);
+        assertTrue("the terminal has a visible drag area", low - high > 48);
+        long down = SystemClock.uptimeMillis();
+        for (int step = 0; step <= 30; step++) {
+            int action = step == 0 ? android.view.MotionEvent.ACTION_DOWN
+                    : step == 30 ? android.view.MotionEvent.ACTION_UP : android.view.MotionEvent.ACTION_MOVE;
+            android.view.MotionEvent event = android.view.MotionEvent.obtain(down, SystemClock.uptimeMillis(),
+                    action, x, low + (high - low) * step / 30f, 0);
+            try { InstrumentationRegistry.getInstrumentation().sendPointerSync(event); }
+            finally { event.recycle(); }
+            SystemClock.sleep(10);
+        }
+        awaitJsTrue(VISIBLE_TERMINAL + ".includes('J15_DONE')", 15_000);
+        JSONObject recorded = awaitNativeExec("j15-record-" + run, live.getString("transportId"),
+                live.getString("generationId"), "cat " + shellQuote(path + ".hex"));
+        assertEquals("raw reader record is available", 0, recorded.getInt("exitCode"));
+        Log.i(TAG, "J15_HOST_SCROLL_ORACLE " + recorded);
+        screenshot("j15-scrolled-terminal");
+        assertEquals("scrolling sends no input bytes, including arrow sequences, to the host", "", recorded.getString("stdout").trim());
+    }
+
+    protected void openAddHostForm() throws Exception {
+        evalString("(() => {const b=document.querySelector('button[title=\"New window\"]')"
+                + " || [...document.querySelectorAll('button')].find(n=>n.textContent.trim()==='Add a host');"
+                + "if(!b)throw Error('Add a host action missing');b.click();return 'ok';})()");
+    }
+
+    /** Host form submission remains in the visible viewport with the real IME open. */
+    public void hostFormSubmitRemainsReachableWithTheIme() throws Exception {
+        awaitJsTrue("!!document.querySelector('.host-list, .empty')");
+        openAddHostForm();
+        awaitJsTrue("!!document.querySelector('[data-testid=host-name]')");
+        evalString("document.querySelector('[data-testid=host-name]').focus();'focused'");
+        scenario.onActivity(activity -> {
+            WebView view = activity.getBridge().getWebView();
+            view.requestFocus();
+            ((InputMethodManager) activity.getSystemService(Context.INPUT_METHOD_SERVICE)).showSoftInput(view, 0);
+        });
+        runIme(ScriptedIme.script().commit("IME host"));
+        awaitJsTrue("document.querySelector('[data-testid=host-name]').value === 'IME host'");
+        evalString("document.querySelector('[data-testid=host-save]').scrollIntoView({block:'end'});'scrolled to submit'");
+        awaitJsTrue("(() => {const r=document.querySelector('[data-testid=host-save]').getBoundingClientRect();return r.height>=48 && r.top>=0 && r.bottom <= (window.visualViewport?.height ?? innerHeight)+1;})()");
+        final boolean[] keyboard = new boolean[1];
+        scenario.onActivity(activity -> keyboard[0] = androidx.core.view.ViewCompat.getRootWindowInsets(activity.getWindow().getDecorView()).isVisible(androidx.core.view.WindowInsetsCompat.Type.ime()));
+        screenshot("j19-host-form-ime");
+        assertTrue("host submit reachability is checked with the real Android keyboard visible", keyboard[0]);
+    }
+
+    /** The manual tunnel's Add action is reachable with the keyboard still open. */
+    public void tunnelFormSubmitRemainsReachableWithTheIme() throws Exception {
+        String run = "j19-" + Long.toString(System.currentTimeMillis(), 36);
+        connectFixtureAndAttach(run);
+        installRecoveryRecorder();
+        click("button[title^='Port forwarding']");
+        awaitJsTrue("!!document.querySelector('button.add-toggle')");
+        click("button.add-toggle");
+        awaitJsTrue("document.querySelector('section.add-form')?.offsetParent !== null");
+        setValue("section.add-form input[type=number]", "19001");
+        setValue("section.add-form input.host", "");
+        evalString("document.querySelector('section.add-form input.host').focus();'focused'");
+        scenario.onActivity(activity -> {
+            WebView view = activity.getBridge().getWebView();
+            view.requestFocus();
+            ((InputMethodManager) activity.getSystemService(Context.INPUT_METHOD_SERVICE)).showSoftInput(view, 0);
+        });
+        runIme(ScriptedIme.script().commit("localhost"));
+        awaitJsTrue("document.querySelector('section.add-form input.host').value === 'localhost'");
+        evalString("document.querySelector('section.add-form button.add-btn').scrollIntoView({block:'end'});'scrolled'");
+        screenshot("j19-tunnel-form-ime-before-assertion");
+        Log.i(TAG, "J19_TUNNEL_GEOMETRY " + evalString("(() => {const b=document.querySelector('section.add-form button.add-btn');const r=b.getBoundingClientRect();const ancestors=[];for(let n=b.parentElement;n;n=n.parentElement){const a=n.getBoundingClientRect(),s=getComputedStyle(n);ancestors.push({tag:n.tagName,class:n.className,top:a.top,bottom:a.bottom,height:a.height,overflowY:s.overflowY,scrollHeight:n.scrollHeight,clientHeight:n.clientHeight,scrollTop:n.scrollTop});}return JSON.stringify({button:{top:r.top,bottom:r.bottom,left:r.left,right:r.right,height:r.height,width:r.width},viewport:{height:visualViewport?.height,offsetTop:visualViewport?.offsetTop,innerHeight},controlHeight:getComputedStyle(b).getPropertyValue('--control-h'),ancestors});})()"));
+        awaitJsTrue("(() => {const r=document.querySelector('section.add-form button.add-btn').getBoundingClientRect(); return r.height>=48 && r.top>=0 && r.bottom<=(window.visualViewport?.height??innerHeight)+1;})()");
+        final boolean[] keyboard = new boolean[1];
+        scenario.onActivity(activity -> keyboard[0] = androidx.core.view.ViewCompat.getRootWindowInsets(activity.getWindow().getDecorView()).isVisible(androidx.core.view.WindowInsetsCompat.Type.ime()));
+        screenshot("j19-tunnel-form-ime");
+        assertTrue("tunnel submit reachability is checked under the real Android IME", keyboard[0]);
+    }
+
+    /** Add and save an independent host through the shipping form, then connect. */
+    public void hostAddedThroughFormConnectsToFixture() throws Exception {
+        String run = sessionRun() + "-j21";
+        fixtureHostAdded = false;
+        openFixtureHost(run);
+        awaitJsTrue("document.querySelectorAll('.dir-header').length > 0");
+        screenshot("j21-host-added-and-connected");
+        assertTrue("the saved new host connected and returned actual fixture sessions",
+                evalString("document.body.innerText").contains(sessionRun()));
+    }
+
+    protected void connectFixtureAndAttach(String run) throws Exception {
         openFixtureHost(sessionRun());
         awaitJsTrue("document.querySelectorAll('.dir-header').length > 0");
         String folder = "ps-shared-" + run;
@@ -1211,7 +1353,8 @@ public class SharedAppDockerJourneyTest {
      * (the plugin's own listener, not the app's), the shared lost-link
      * banner's text each time it changes, and native exec results.
      */
-    private void installRecoveryRecorder() throws Exception {
+    protected void installRecoveryRecorder() throws Exception {
+        awaitJsTrue("!!document.body && typeof window.Capacitor?.nativePromise === 'function' && typeof window.Capacitor?.Plugins?.SshCapability?.addListener === 'function'");
         String script = "(() => {window.__ps2954={lost:[],events:[],banners:[],dials:[],opens:[],closes:[],"
                 + "sawExited:false,sawReattached:false,execs:{},ready:false};"
                 + "const plugin=window.Capacitor?.Plugins?.SshCapability;"
@@ -1238,11 +1381,11 @@ public class SharedAppDockerJourneyTest {
                 + "plugin.addListener('connectionState',(e)=>{window.__ps2954.events.push({...e,at:Date.now()});"
                 + "if(e.state==='lost') window.__ps2954.lost.push({...e,at:Date.now()});})"
                 + ".then(()=>{window.__ps2954.ready=true;}); return 'installed';})()";
-        assertEquals("installed", evalString(script));
+        assertEquals("installed", evalString("(() => {try {return " + script + ";} catch(error) {return String(error?.stack ?? error);}})()"));
         awaitJsTrue("window.__ps2954?.ready === true", 10_000);
     }
 
-    private JSONObject latestLiveJournalEntry() throws Exception {
+    protected JSONObject latestLiveJournalEntry() throws Exception {
         String raw = evalString("JSON.stringify([...(window.__pocketshellConnectionJournal ?? [])].reverse()"
                 + ".find((e)=>e.phase==='live' && e.transportId && e.selectedId) ?? null)");
         assertTrue("the Android connection journal must record a live attach", raw != null && !"null".equals(raw));
@@ -1250,16 +1393,16 @@ public class SharedAppDockerJourneyTest {
     }
 
     /** Native SSH dials (connect calls at the Capacitor bridge) since the recorder was installed. */
-    private int nativeDialCount() throws Exception {
+    protected int nativeDialCount() throws Exception {
         return Integer.parseInt(evalString("String(window.__ps2954.dials.length)"));
     }
 
-    private int journalLength() throws Exception {
+    protected int journalLength() throws Exception {
         return Integer.parseInt(evalString("String((window.__pocketshellConnectionJournal ?? []).length)"));
     }
 
     /** Open native SSH connections, from the plugin itself. */
-    private int nativeConnectionCount() throws Exception {
+    protected int nativeConnectionCount() throws Exception {
         String request = "u1-resources-" + SystemClock.uptimeMillis();
         evalString("(() => {window.__ps2954.execs[" + JSONObject.quote(request) + "]={settled:false};"
                 + "window.Capacitor.Plugins.SshCapability.resourceSnapshot({requestId:" + JSONObject.quote(request) + "})"
@@ -1273,7 +1416,7 @@ public class SharedAppDockerJourneyTest {
         return result.getInt("connections");
     }
 
-    private String nativeExec(String requestId, String connectionId, String generationId, String command, int timeoutMs) {
+    protected String nativeExec(String requestId, String connectionId, String generationId, String command, int timeoutMs) {
         String key = JSONObject.quote(requestId);
         return "(() => {const entry={settled:false,result:null,error:''};"
                 + "(window.__ps2954 ??= {lost:[],banners:[],execs:{},ready:false}).execs[" + key + "]=entry;"
@@ -1285,7 +1428,7 @@ public class SharedAppDockerJourneyTest {
                 + "(e)=>{entry.error=String(e?.message??e);entry.settled=true;});return 'started';})()";
     }
 
-    private JSONObject awaitNativeExec(String requestId, String connectionId, String generationId, String command)
+    protected JSONObject awaitNativeExec(String requestId, String connectionId, String generationId, String command)
             throws Exception {
         assertEquals("started", evalString(nativeExec(requestId, connectionId, generationId, command, 20_000)));
         awaitJsTrue("window.__ps2954.execs[" + JSONObject.quote(requestId) + "]?.settled === true", 25_000);
@@ -1298,11 +1441,11 @@ public class SharedAppDockerJourneyTest {
         return result;
     }
 
-    private static String shellQuote(String value) {
+    protected static String shellQuote(String value) {
         return "'" + value.replace("'", "'\"'\"'") + "'";
     }
 
-    private static int countExactLines(String raw, String expected) {
+    protected static int countExactLines(String raw, String expected) {
         String plain = raw.replaceAll("\u001B\\[[0-?]*[ -/]*[@-~]", "");
         int count = 0;
         for (String line : plain.replace("\r\n", "\n").replace('\r', '\n').split("\n")) {
@@ -1311,7 +1454,7 @@ public class SharedAppDockerJourneyTest {
         return count;
     }
 
-    private static int countLinesEndingWith(String raw, String expected) {
+    protected static int countLinesEndingWith(String raw, String expected) {
         String plain = raw.replaceAll("\u001B\\[[0-?]*[ -/]*[@-~]", "");
         int count = 0;
         for (String line : plain.replace("\r\n", "\n").replace('\r', '\n').split("\n")) {
@@ -1320,7 +1463,7 @@ public class SharedAppDockerJourneyTest {
         return count;
     }
 
-    private File artifactDirectory(String run) {
+    protected File artifactDirectory(String run) {
         Context context = InstrumentationRegistry.getInstrumentation().getTargetContext();
         File root = context.getExternalFilesDir(null);
         assertNotNull("target app external files directory must be available for same-run artifacts", root);
@@ -1335,17 +1478,17 @@ public class SharedAppDockerJourneyTest {
      * after the run, so a passing run used to leave no phase trace to compare
      * a red one against. Copy it where the runner pulls evidence from.
      */
-    private static void keepForRunner(File file, String name) {
+    protected static void keepForRunner(File file, String name) {
         ScriptedIme.shell("cp " + file.getAbsolutePath() + " /data/local/tmp/" + name);
     }
 
-    private static void writeText(File file, String text) throws Exception {
+    protected static void writeText(File file, String text) throws Exception {
         try (FileOutputStream out = new FileOutputStream(file)) {
             out.write(text.getBytes(StandardCharsets.UTF_8));
         }
     }
 
-    private static void captureScreen(File file) throws Exception {
+    protected static void captureScreen(File file) throws Exception {
         Bitmap screen = InstrumentationRegistry.getInstrumentation().getUiAutomation().takeScreenshot();
         assertNotNull("a full-screen capture must be available", screen);
         try (FileOutputStream out = new FileOutputStream(file)) {
@@ -1355,7 +1498,7 @@ public class SharedAppDockerJourneyTest {
 
 
 
-    private String sessionRun() {
+    protected String sessionRun() {
         String run = InstrumentationRegistry.getArguments().getString("sessionRun");
         assertNotNull("pass the runner-created session run id with sessionRun", run);
         assertTrue("sessionRun must be a safe folder token", run.matches("[a-z0-9-]{6,40}"));
@@ -1367,7 +1510,7 @@ public class SharedAppDockerJourneyTest {
      * importing the runner's key) only if an earlier test of the run has not.
      * Its first contact meets the #2953 host-key prompt, answered "remember".
      */
-    private void openFixtureHost(String run) throws Exception {
+    protected void openFixtureHost(String run) throws Exception {
         ensureFixtureHost(run);
         tapHost("fixture-" + run);
         trustFirstContactIfAsked(hostKeys("agentsHostKeys"));
@@ -1378,7 +1521,7 @@ public class SharedAppDockerJourneyTest {
      * adding it (and importing the runner's key) only if an earlier test of
      * the run has not.
      */
-    private void ensureFixtureHost(String run) throws Exception {
+    protected void ensureFixtureHost(String run) throws Exception {
         var arguments = InstrumentationRegistry.getArguments();
         String host = arguments.getString("sshHost", "10.0.2.2");
         String port = arguments.getString("sshPort");
@@ -1401,17 +1544,18 @@ public class SharedAppDockerJourneyTest {
             fixtureHostAdded = true;
             // The fixture key enters the Android key vault from a content URI; only
             // its handle crosses into the WebView (#2926).
-            java.io.File keyDocument = SshKeyVaultTestSupport.copyDockerKeyDocument(
-                    InstrumentationRegistry.getInstrumentation().getTargetContext(), keyPath, run);
-            evalString(SshKeyVaultTestSupport.beginImport(SshKeyVaultTestSupport.asContentUri(
-                    InstrumentationRegistry.getInstrumentation().getTargetContext(), keyDocument), "Docker fixture key"));
-            awaitJsTrue("window." + SshKeyVaultTestSupport.IMPORT_RESULT + "?.state === 'ready'");
-            String handle = evalString("window." + SshKeyVaultTestSupport.IMPORT_RESULT + ".handleId");
-            keyDocument.delete();
-            fixtureKeyHandle = handle;
-
-            evalString("(() => {const b=[...document.querySelectorAll('button')].find((n)=>n.textContent.trim()==='Add a host');"
-                    + "if(!b) throw new Error('no Add a host action'); b.click(); return 'ok';})()");
+            String handle = fixtureKeyHandle;
+            if (handle == null) {
+                java.io.File keyDocument = SshKeyVaultTestSupport.copyDockerKeyDocument(
+                        InstrumentationRegistry.getInstrumentation().getTargetContext(), keyPath, run);
+                evalString(SshKeyVaultTestSupport.beginImport(SshKeyVaultTestSupport.asContentUri(
+                        InstrumentationRegistry.getInstrumentation().getTargetContext(), keyDocument), "Docker fixture key"));
+                awaitJsTrue("window." + SshKeyVaultTestSupport.IMPORT_RESULT + "?.state === 'ready'");
+                handle = evalString("window." + SshKeyVaultTestSupport.IMPORT_RESULT + ".handleId");
+                keyDocument.delete();
+                fixtureKeyHandle = handle;
+            }
+            openAddHostForm();
             awaitJsTrue("!!document.querySelector('[data-testid=android-add-host]')");
             setValue("[data-testid=host-name]", "fixture-" + run);
             setValue("[data-testid=host-hostname]", host);
@@ -1429,7 +1573,7 @@ public class SharedAppDockerJourneyTest {
      * (#2953) and is answered "remember" once its key is checked against the
      * runner's oracle; a pinned host connects without asking.
      */
-    private void trustFirstContactIfAsked(Set<String> realKeys) throws Exception {
+    protected void trustFirstContactIfAsked(Set<String> realKeys) throws Exception {
         awaitJsTrue("!!document.querySelector(" + JSONObject.quote(GATE) + ") || !!document.querySelector('button[title=\"Back to hosts\"]')");
         if (exists(GATE)) {
             assertPresentedKeyIn(realKeys);
@@ -1437,17 +1581,17 @@ public class SharedAppDockerJourneyTest {
         }
     }
 
-    private int pageStartCount() {
+    protected int pageStartCount() {
         AtomicReference<Integer> count = new AtomicReference<>();
         scenario.onActivity(activity -> count.set(activity.pageStartCount()));
         return count.get();
     }
 
-    private void awaitFolder(String folder) throws Exception {
+    protected void awaitFolder(String folder) throws Exception {
         awaitJsTrue("[...document.querySelectorAll('.dir-header')].some((n)=>n.textContent.includes(" + JSONObject.quote(folder) + "))");
     }
 
-    private void openFolder(String folder) throws Exception {
+    protected void openFolder(String folder) throws Exception {
         evalString("(() => {const row=[...document.querySelectorAll('.dir-header')].find((n)=>n.textContent.includes("
                 + JSONObject.quote(folder) + ")); if(!row) throw new Error('no folder row'); row.click(); return 'ok';})()");
     }
@@ -1458,7 +1602,7 @@ public class SharedAppDockerJourneyTest {
      * Enter as commits), then requires the terminal to still own focus: a key
      * event must not divert the rest of the line into the composer.
      */
-    private void typeLine(String text) throws Exception {
+    protected void typeLine(String text) throws Exception {
         focusTerminalForIme();
         Bundle typed = runIme(ScriptedIme.script().typeLikeLatinIme(text).commit("\n"));
         Log.i(TAG, "typed " + JSONObject.quote(text) + " " + ScriptedIme.describe(typed));
@@ -1469,7 +1613,7 @@ public class SharedAppDockerJourneyTest {
      * Gives the visible terminal's textarea DOM and Android focus and asks for
      * the keyboard, then waits until the scripted IME is bound to it.
      */
-    private void focusTerminalForIme() throws Exception {
+    protected void focusTerminalForIme() throws Exception {
         armInputTrace();
         CountDownLatch shown = new CountDownLatch(1);
         scenario.onActivity(activity -> {
@@ -1512,7 +1656,7 @@ public class SharedAppDockerJourneyTest {
                 + "\n" + ScriptedIme.inputMethodState());
     }
 
-    private Bundle runIme(ScriptedIme.Script script) throws Exception {
+    protected Bundle runIme(ScriptedIme.Script script) throws Exception {
         String app = InstrumentationRegistry.getInstrumentation().getTargetContext().getPackageName();
         try {
             return ime.run(script, app);
@@ -1526,7 +1670,7 @@ public class SharedAppDockerJourneyTest {
      * Diagnostics only: records, in the page, the keyboard/IME/focus events
      * the terminal's textarea sees, so a failure shows what the keyboard did.
      */
-    private void armInputTrace() throws Exception {
+    protected void armInputTrace() throws Exception {
         evalRaw("(() => {if (window.__ps2952Trace) return true; const trace = window.__ps2952Trace = [];"
                 + "const describe = (n) => n ? n.tagName + '.' + String(n.className ?? '').split(' ')[0] : 'null';"
                 + "for (const type of ['keydown','keyup','beforeinput','input','compositionstart','compositionupdate',"
@@ -1537,7 +1681,7 @@ public class SharedAppDockerJourneyTest {
                 + "return true;})()");
     }
 
-    private void logInputTrace(String context) {
+    protected void logInputTrace(String context) {
         try {
             String trace = evalString("JSON.stringify(window.__ps2952Trace ?? [])");
             Log.i(TAG, "input trace " + context + ": " + trace);
@@ -1547,7 +1691,7 @@ public class SharedAppDockerJourneyTest {
         }
     }
 
-    private void assertTerminalKeepsFocus(String context) throws Exception {
+    protected void assertTerminalKeepsFocus(String context) throws Exception {
         logInputTrace(context);
         String state = evalString("JSON.stringify({terminal: document.activeElement === " + VISIBLE_TEXTAREA + ","
                 + " active: document.activeElement?.tagName + '.' + String(document.activeElement?.className ?? '')})");
@@ -1560,14 +1704,14 @@ public class SharedAppDockerJourneyTest {
      * Android long-press Paste delivers.
      */
     /** Record the key of every keyup the page sees, in order, from now on. */
-    private void recordPageKeyUps() throws Exception {
+    protected void recordPageKeyUps() throws Exception {
         evalString("(() => {window.__psKeyUps=[];"
                 + "if(!window.__psKeyUpHook){window.__psKeyUpHook=true;"
                 + "document.addEventListener('keyup',(e)=>window.__psKeyUps.push(e.key),true);}"
                 + "return 'ok';})()");
     }
 
-    private void pasteIntoTerminal(String text) throws Exception {
+    protected void pasteIntoTerminal(String text) throws Exception {
         String result = evalString("JSON.stringify((() => {"
                 + "const textarea=" + VISIBLE_TEXTAREA + ";"
                 + "if(!textarea) throw new Error('no visible terminal'); textarea.focus();"
@@ -1579,7 +1723,7 @@ public class SharedAppDockerJourneyTest {
         assertTrue("the visible terminal must hold focus for the paste: " + result, paste.getBoolean("focused"));
     }
 
-    private String awaitCapturedHex() throws Exception {
+    protected String awaitCapturedHex() throws Exception {
         Pattern captured = Pattern.compile("PS2952_HEX:([0-9a-f]*):END");
         long deadline = SystemClock.uptimeMillis() + WAIT_TIMEOUT_MILLIS;
         String text = "";
@@ -1593,7 +1737,7 @@ public class SharedAppDockerJourneyTest {
     }
 
     /** Evidence only: the runner pulls /data/local/tmp/ps2952-*.png next to the results. */
-    private void screenshot(String name) {
+    protected void screenshot(String name) {
         ScriptedIme.shell("screencap -p /data/local/tmp/ps2952-" + name + ".png");
     }
 
@@ -1615,7 +1759,7 @@ public class SharedAppDockerJourneyTest {
      * in length run to run), so a line also matches as a run of consecutive
      * rows that join to exactly it.
      */
-    private void awaitTerminalLine(String line) throws Exception {
+    protected void awaitTerminalLine(String line) throws Exception {
         awaitJsTrue(terminalHasLine(line, "equals"));
     }
 
@@ -1626,14 +1770,14 @@ public class SharedAppDockerJourneyTest {
      * tests/unit/terminalLogicalLines.test.ts replays against captured texts
      * (an exactly full-width line, a wrapped one, 4- and 5-digit run ids).
      */
-    private static String terminalHasLine(String expected, String mode) throws java.io.IOException {
+    protected static String terminalHasLine(String expected, String mode) throws java.io.IOException {
         return "(" + logicalLineMatcher() + ")(" + VISIBLE_TERMINAL + ", " + JSONObject.quote(expected) + ", "
                 + JSONObject.quote(mode) + ")";
     }
 
-    private static String logicalLineMatcher;
+    protected static String logicalLineMatcher;
 
-    private static synchronized String logicalLineMatcher() throws java.io.IOException {
+    protected static synchronized String logicalLineMatcher() throws java.io.IOException {
         if (logicalLineMatcher == null) {
             try (java.io.InputStream input = InstrumentationRegistry.getInstrumentation().getContext().getAssets()
                     .open("terminal-logical-lines.js")) {
@@ -1644,28 +1788,28 @@ public class SharedAppDockerJourneyTest {
         return logicalLineMatcher;
     }
 
-    private static byte[] readAll(java.io.InputStream input) throws java.io.IOException {
+    protected static byte[] readAll(java.io.InputStream input) throws java.io.IOException {
         java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream();
         byte[] buffer = new byte[4096];
         for (int n; (n = input.read(buffer)) > 0; ) out.write(buffer, 0, n);
         return out.toByteArray();
     }
 
-    private void setValue(String selector, String value) throws Exception {
+    protected void setValue(String selector, String value) throws Exception {
         evalString("(() => {const node = document.querySelector(" + JSONObject.quote(selector) + ");"
                 + "if (!node) throw new Error('missing ' + " + JSONObject.quote(selector) + ");"
                 + "node.value = " + JSONObject.quote(value) + ";"
                 + "node.dispatchEvent(new Event('input', {bubbles: true})); return 'set';})()");
     }
 
-    private void setSelect(String selector, String value) throws Exception {
+    protected void setSelect(String selector, String value) throws Exception {
         evalString("(() => {const node = document.querySelector(" + JSONObject.quote(selector) + ");"
                 + "if (!node) throw new Error('missing ' + " + JSONObject.quote(selector) + ");"
                 + "node.value = " + JSONObject.quote(value) + ";"
                 + "node.dispatchEvent(new Event('change', {bubbles: true})); return 'set';})()");
     }
 
-    private void click(String selector) throws Exception {
+    protected void click(String selector) throws Exception {
         evalString("(() => {const node = document.querySelector(" + JSONObject.quote(selector) + ");"
                 + "if (!node) throw new Error('missing ' + " + JSONObject.quote(selector) + ");"
                 + "node.click(); return 'clicked';})()");
@@ -1677,7 +1821,7 @@ public class SharedAppDockerJourneyTest {
      * lost-link banner. Logged and put in the failure message, so a CI red is
      * diagnosable from its artifacts alone (#2954).
      */
-    private String connectionDiagnostics() {
+    protected String connectionDiagnostics() {
         try {
             return evalString("JSON.stringify({"
                     + "journal:(window.__pocketshellConnectionJournal ?? []).slice(-40),"
@@ -1690,11 +1834,11 @@ public class SharedAppDockerJourneyTest {
         }
     }
 
-    private void awaitJsTrue(String expression) throws Exception {
+    protected void awaitJsTrue(String expression) throws Exception {
         awaitJsTrue(expression, WAIT_TIMEOUT_MILLIS);
     }
 
-    private void awaitJsTrue(String expression, long timeoutMillis) throws Exception {
+    protected void awaitJsTrue(String expression, long timeoutMillis) throws Exception {
         long deadline = SystemClock.uptimeMillis() + timeoutMillis;
         String last = "<not evaluated>";
         while (SystemClock.uptimeMillis() < deadline) {
@@ -1709,12 +1853,12 @@ public class SharedAppDockerJourneyTest {
                 + "; diagnostics=" + diagnostics + ")");
     }
 
-    private String evalString(String expression) throws Exception {
+    protected String evalString(String expression) throws Exception {
         Object decoded = new JSONTokener(evalRaw(expression)).nextValue();
         return decoded == null ? null : decoded.toString();
     }
 
-    private String evalRaw(String expression) throws Exception {
+    protected String evalRaw(String expression) throws Exception {
         CountDownLatch latch = new CountDownLatch(1);
         AtomicReference<String> result = new AtomicReference<>();
         scenario.onActivity(activity -> {
