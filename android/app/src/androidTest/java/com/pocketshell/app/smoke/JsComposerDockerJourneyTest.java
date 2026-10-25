@@ -58,9 +58,9 @@ public final class JsComposerDockerJourneyTest {
     private static final int MAX_SELECTED_SCREENSHOT_ATTEMPTS = 4;
     private static final int MIN_DRAFT_PIXEL_CHANGES = 256;
     private static final int MIN_SELECTED_CHIP_PIXEL_CHANGES = 256;
-    /** The selected snippet's echo is the wrapped command visible above the keyboard-up composer. */
-    private static final String KEYBOARD_UP_WRAPPED_COMMAND_START = "$ printf 'alpha";
-    private static final String POST_SEND_WRAPPED_COMMAND_START = "$ printf '%s' 'caf";
+    /** Fresh PTY output supplies deterministic full-width rows at the accepted grid. */
+    private static final String KEYBOARD_GRID_PROBE_START = "PS_GRID_KEYBOARD_";
+    private static final String POST_SEND_GRID_PROBE_START = "PS_GRID_SENT_";
     private static final String POST_SEND_BYTE_OUTPUT = "636166c3a920f09fa7aa";
     /** #3060: words dictated before screen-off and before a scrim tap; both must survive a restart. */
     private static final String DICTATED_BEFORE_SCREEN_OFF = "dictated before the screen turned off";
@@ -248,7 +248,7 @@ public final class JsComposerDockerJourneyTest {
         String sentMarker = "PS2857_SENT_" + nameBase;
         String sentMarkerPrefix = "PS2857_SENT_";
         String unicodeCommand = "printf '%s' 'café 🧪' | od -An -tx1 | tr -d '[:space:]' | tee /tmp/"
-                + bytesSession + "-unicode.hex; printf '\\n%s%s\\n' '" + sentMarkerPrefix + "' '" + nameBase
+                + bytesSession + "-unicode.hex; " + terminalGridProbeCommand(POST_SEND_GRID_PROBE_START) + "; printf '%s%s\\n' '" + sentMarkerPrefix + "' '" + nameBase
                 + "' | tee /tmp/"
                 + bytesSession + "-sent-output.marker";
         assertTrue("the sent-output marker must not be present verbatim in the command echo", !unicodeCommand.contains(sentMarker));
@@ -1848,6 +1848,15 @@ public final class JsComposerDockerJourneyTest {
         return saved.get();
     }
 
+    private String terminalGridProbeCommand(String marker) throws Exception {
+        int cols = new JSONObject(evalString("window.__ps2857TerminalBufferState")).getInt("cols");
+        // Split the marker so shell echo cannot masquerade as probe output.
+        // ASCII fills one full row plus a short tail without Unicode-version
+        // differences between the host shell and xterm affecting the oracle.
+        return "printf '\\n%s%s%s\\n' 'PS_' '" + marker.substring(3) + "' '"
+                + "x".repeat(cols + 3 - marker.length()) + "'";
+    }
+
     private void showKeyboardAndCapture(String runId) throws Exception {
         tapDomCenter("[data-testid=prompt-draft]");
         awaitImeVisible(true);
@@ -1855,7 +1864,16 @@ public final class JsComposerDockerJourneyTest {
         awaitJsTrue("document.querySelector('.app-shell')?.dataset.keyboardComposerMode === 'true'");
         SystemClock.sleep(350);
         assertTrue("Android IME must still be open for the keyboard-up capture", isImeVisible());
-        keyboardUpGridFidelity = readTerminalGridFidelity(KEYBOARD_UP_WRAPPED_COMMAND_START, null);
+        // Shell command redisplay may have wrapped at an earlier PTY width.
+        // Emit fresh deterministic output only after this grid is accepted;
+        // command echo (including Unicode/run IDs) is not a full-width oracle.
+        readTerminalGridFidelity(KEYBOARD_GRID_PROBE_START, null);
+        String probeCommand = terminalGridProbeCommand(KEYBOARD_GRID_PROBE_START);
+        assertEquals("grid probe must traverse the real terminal PTY input path", "true", evalRaw(
+                "window.__ps2857InjectTerminalTestInput?.(" + JSONObject.quote(probeCommand + "\r") + ")"));
+        awaitJsTrue("document.querySelector('.xterm-rows')?.textContent.includes(" + JSONObject.quote(KEYBOARD_GRID_PROBE_START) + ")");
+        awaitWebViewVisualState();
+        keyboardUpGridFidelity = readTerminalGridFidelity(KEYBOARD_GRID_PROBE_START, null);
         assertTrue("capture the real keyboard-up composer before checking its visible bounds", saveKeyboardScreenshot(runId));
         String geometry = saveKeyboardGeometry(runId);
         try {
@@ -2449,7 +2467,7 @@ public final class JsComposerDockerJourneyTest {
         JSONObject measured = new JSONObject(report);
         measured.put("nativeImeVisible", isImeVisible());
         measured.put("terminalGridFidelity",
-                readTerminalGridFidelity(POST_SEND_WRAPPED_COMMAND_START, POST_SEND_BYTE_OUTPUT));
+                readTerminalGridFidelity(POST_SEND_GRID_PROBE_START, expectedMarker));
         measured.put("keyboardUpGridCols", keyboardUpGridFidelity == null ? JSONObject.NULL
                 : keyboardUpGridFidelity.opt("cols"));
         byte[] reportBytes = measured.toString().getBytes(StandardCharsets.UTF_8);
@@ -3028,14 +3046,16 @@ public final class JsComposerDockerJourneyTest {
                 + "const rects=Array.from(range.getClientRects()).filter(rect=>rect.width>0);"
                 + "const right=rects.length?Math.max(...rects.map(rect=>rect.right)):null;"
                 + "const cells=right===null||!cellWidth||!screenBox?0:Math.round((right-screenBox.left)/cellWidth*100)/100;"
-                + "return {index,text:(row.textContent||'').replace(/\\u00a0/g,' ').replace(/\\s+$/,''),right,cells};});"
+                + "const first=document.createTreeWalker(row,NodeFilter.SHOW_TEXT).nextNode();let firstGlyphCells=1;"
+                + "if(first?.textContent&&cellWidth){const glyph=document.createRange();glyph.setStart(first,0);"
+                + "glyph.setEnd(first,Array.from(first.textContent)[0].length);firstGlyphCells=Math.round(glyph.getBoundingClientRect().width/cellWidth);}"
+                + "return {index,text:(row.textContent||'').replace(/\\u00a0/g,' ').replace(/\\s+$/,''),right,cells,firstGlyphCells};});"
                 + "const rendered=rows.filter(row=>row.right!==null);"
                 + "const maxRowRight=rendered.length?Math.max(...rendered.map(row=>row.right)):null;"
                 + "const maxRowCells=rendered.length?Math.max(...rendered.map(row=>row.cells)):0;"
                 + "const overflowingRows=screenBox?rendered.filter(row=>row.right>screenBox.right+0.5).map(row=>({index:row.index,text:row.text,cells:row.cells})):[];"
                 + "const stopIndex=stopNeedle?rows.findIndex(row=>row.text.includes(stopNeedle)):-1;"
                 + "let startIndex=rows.findIndex(row=>row.text.includes(startNeedle));"
-                + "if(startIndex<0&&stopIndex>0)startIndex=0;"
                 + "const wrappedCommandRows=[];"
                 + "if(startIndex>=0){wrappedCommandRows.push(rows[startIndex]);"
                 + "for(let index=startIndex+1;index<rows.length;index+=1){const row=rows[index];"
@@ -3044,7 +3064,7 @@ public final class JsComposerDockerJourneyTest {
                 + "const accepted=/^(\\d+) \\u00d7 (\\d+) accepted by SSH$/.exec(resizeStatus);"
                 + "return JSON.stringify({cols,rows:gridRows,bufferType:state?.bufferType??null,cellWidth,viewport,clip,screen:screenBox,"
                 + "domRowCount:rows.length,maxRowRight,maxRowCells,overflowingRows,"
-                + "wrappedCommandRows:wrappedCommandRows.map(row=>({index:row.index,text:row.text,cells:row.cells,right:row.right})),"
+                + "wrappedCommandRows:wrappedCommandRows.map(row=>({index:row.index,text:row.text,cells:row.cells,right:row.right,firstGlyphCells:row.firstGlyphCells})),"
                 + "resizeStatus,acceptedCols:accepted?Number(accepted[1]):null,acceptedRows:accepted?Number(accepted[2]):null,"
                 + "startNeedle,stopNeedle});})(" + JSONObject.quote(startNeedle) + ","
                 + (stopNeedle == null ? "null" : JSONObject.quote(stopNeedle)) + ")";
@@ -3097,8 +3117,11 @@ public final class JsComposerDockerJourneyTest {
                 wrapped.length() >= 2);
         for (int index = 0; index < wrapped.length() - 1; index += 1) {
             double cells = wrapped.getJSONObject(index).getDouble("cells");
+            int nextGlyphCells = wrapped.getJSONObject(index + 1).getInt("firstGlyphCells");
+            assertTrue(stage + " must measure a one- or two-cell next glyph: " + fidelity,
+                    nextGlyphCells >= 1 && nextGlyphCells <= 2);
             assertTrue(stage + " wrapped command row " + index + " must fill the accepted width without exceeding it: "
-                    + fidelity, cells >= cols - 1 - 0.05 && cells <= cols + 0.05);
+                    + fidelity, cells >= cols - nextGlyphCells - 0.05 && cells <= cols + 0.05);
         }
     }
 

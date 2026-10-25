@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+import subprocess
 import tempfile
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -65,8 +66,11 @@ def validate_results(results_dir: Path) -> None:
     if actual != expected:
         raise GateFailure(f"expected exactly {REQUIRED_CLASS}#{REQUIRED_METHOD}; found {actual or '<zero tests>'}")
     case = testcases[0][2]
-    if list(case.iter("failure")) or list(case.iter("error")):
-        raise GateFailure(f"{REQUIRED_CLASS}#{REQUIRED_METHOD} failed")
+    failures = list(case.iter("failure")) + list(case.iter("error"))
+    if failures:
+        details = "; ".join((failure.get("message") or failure.text or "unspecified failure").strip()
+                            for failure in failures)
+        raise GateFailure(f"{REQUIRED_CLASS}#{REQUIRED_METHOD} failed: {details}")
     if list(case.iter("skipped")):
         raise GateFailure(f"{REQUIRED_CLASS}#{REQUIRED_METHOD} was skipped")
 
@@ -113,6 +117,38 @@ def self_test() -> int:
                 failures += 1
             else:
                 print(f"PASS: self-test {label}")
+        # Real direct-instrumentation converter + exact lane gate: a completed
+        # assertion/error must survive as phase JUnit, then fail with its cause.
+        converter = Path(__file__).with_name("instrumentation-log-to-junit-xml.sh")
+        for code in (-2, -1):
+            directory = root / f"assertion-{abs(code)}"
+            directory.mkdir()
+            transcript = directory / "composer-instrumentation.log"
+            detail = "keyboard-up composer wrapped command row 0 must fill the accepted width"
+            transcript.write_text(
+                f"INSTRUMENTATION_STATUS: class={REQUIRED_CLASS}\n"
+                f"INSTRUMENTATION_STATUS: test={REQUIRED_METHOD}\n"
+                "INSTRUMENTATION_STATUS_CODE: 1\n"
+                f"INSTRUMENTATION_STATUS: class={REQUIRED_CLASS}\n"
+                f"INSTRUMENTATION_STATUS: stack=java.lang.AssertionError: {detail}\n"
+                f"INSTRUMENTATION_STATUS: test={REQUIRED_METHOD}\n"
+                f"INSTRUMENTATION_STATUS_CODE: {code}\nINSTRUMENTATION_CODE: -1\n")
+            result = subprocess.run([str(converter), "--log", str(transcript), "--out",
+                                     str(directory / "TEST-composer.xml"), "--require-class", REQUIRED_CLASS],
+                                    text=True, capture_output=True)
+            try:
+                assert result.returncode == 0, result.stderr
+                try:
+                    validate_results(directory)
+                except GateFailure as error:
+                    assert detail in str(error), str(error)
+                else:
+                    raise AssertionError("failed instrumentation was accepted")
+            except AssertionError as error:
+                print(f"FAIL: assertion-only phase code {code} lost its JUnit/cause: {error}", file=sys.stderr)
+                failures += 1
+            else:
+                print(f"PASS: assertion-only phase code {code} produces JUnit and surfaces its actual cause")
     return 1 if failures else 0
 
 

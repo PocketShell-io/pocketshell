@@ -307,9 +307,12 @@ def _validate_terminal_grid_fidelity(fidelity: object, stage: str, *, require_fu
         wrapped = fidelity["wrappedCommandRows"]
         if not isinstance(wrapped, list) or len(wrapped) < 2:
             raise ExtractionFailure(f"{stage} did not measure a wrapped long command row")
-        for row in wrapped[:-1]:
+        for index, row in enumerate(wrapped[:-1]):
             cells = float(row["cells"])
-            if cells < cols - 1 - 0.05 or cells > cols + 0.05:
+            next_glyph_cells = wrapped[index + 1]["firstGlyphCells"]
+            if isinstance(next_glyph_cells, bool) or next_glyph_cells not in (1, 2):
+                raise ExtractionFailure(f"{stage} next wrapped row has no measured one- or two-cell glyph")
+            if cells < cols - next_glyph_cells - 0.05 or cells > cols + 0.05:
                 raise ExtractionFailure(f"{stage} wrapped command row does not fill the accepted {cols} columns: {row}")
     except ExtractionFailure:
         raise
@@ -734,9 +737,9 @@ def self_test() -> None:
         cell = 9.62
         left = 18.0
         rows = [
-            {"index": 0, "text": "$ printf '%s' 'cafe' | od", "cells": row_cells, "right": left + row_cells * cell},
-            {"index": 1, "text": "| tr -d '[:space:]'", "cells": cols, "right": left + cols * cell},
-            {"index": 2, "text": "s-sent-output.marker", "cells": 20.0, "right": left + 20 * cell},
+            {"index": 0, "text": "$ printf '%s' 'cafe' | od", "cells": row_cells, "right": left + row_cells * cell, "firstGlyphCells": 1},
+            {"index": 1, "text": "| tr -d '[:space:]'", "cells": cols, "right": left + cols * cell, "firstGlyphCells": 1},
+            {"index": 2, "text": "s-sent-output.marker", "cells": 20.0, "right": left + 20 * cell, "firstGlyphCells": 1},
         ]
         overflowing = [row for row in rows if row["right"] > screen_right + 0.5]
         return {
@@ -752,6 +755,26 @@ def self_test() -> None:
             "resizeStatus": f"{accepted_cols} \u00d7 9 accepted by SSH",
             "acceptedCols": accepted_cols, "acceptedRows": 9,
         }
+
+    # A two-cell glyph cannot split at the right edge. The preceding row
+    # legitimately ends one cell short; a genuinely over-wide row still fails.
+    wide_wrap = grid_fidelity(row_cells=37.0)
+    wide_wrap["wrappedCommandRows"][1]["text"] = "界" + "x" * 36
+    wide_wrap["wrappedCommandRows"][1]["firstGlyphCells"] = 2
+    # Exercise a two-cell gap too: the old shell redisplay may reserve its
+    # final column, independently of the next glyph's width.
+    wide_wrap["wrappedCommandRows"][0]["cells"] = 36.03
+    assert _validate_terminal_grid_fidelity(wide_wrap, "wide wrap", require_full_height=False) == 38
+    print("PASS: wrapped row ending short before a wide glyph is accepted")
+    for cells, next_width in ((35.0, 2), (36.0, 1), (39.0, 2)):
+        invalid_wrap = grid_fidelity(row_cells=cells)
+        invalid_wrap["wrappedCommandRows"][1]["firstGlyphCells"] = next_width
+        try:
+            _validate_terminal_grid_fidelity(invalid_wrap, "invalid wrap", require_full_height=False)
+        except ExtractionFailure:
+            print(f"PASS: wrapped row {cells} cells before width-{next_width} glyph fails closed")
+        else:
+            raise AssertionError(f"accepted invalid wrapped row: {cells}, next glyph {next_width}")
 
     png = png_fixture((24, 32, 40))
     selected_png = png_fixture((90, 48, 24))

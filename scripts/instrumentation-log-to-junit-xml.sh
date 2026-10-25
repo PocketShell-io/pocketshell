@@ -140,7 +140,7 @@ instrumentation_junit_convert() {
   fi
 
   if [[ -n "$require_class" ]]; then
-    if ! awk -F'\t' -v want="$require_class" '$1 == want && $3 == "ran" { found = 1 } END { exit found ? 0 : 1 }' "$tmp"; then
+    if ! awk -F'\t' -v want="$require_class" '$1 == want && ($3 == "ran" || $3 == "failed") { found = 1 } END { exit found ? 0 : 1 }' "$tmp"; then
       rm -f "$tmp"
       echo "::error title=Instrumentation JUnit XML (issue #2435)::$log has no NON-skipped result for $require_class — an all-skipped or absent class is not evidence" >&2
       return 1
@@ -184,7 +184,7 @@ instrumentation_junit_convert() {
   ' "$tmp" > "$out" || { rm -f "$tmp"; return 1; }
 
   local ran
-  ran="$(awk -F'\t' '$3 == "ran"' "$tmp" | wc -l | tr -d ' ')"
+  ran="$(awk -F'\t' '$3 == "ran" || $3 == "failed"' "$tmp" | wc -l | tr -d ' ')"
   rm -f "$tmp"
   printf 'instrumentation JUnit XML: %s (%s testcase(s), %s non-skipped)\n' "$out" "$rows" "$ran"
   return 0
