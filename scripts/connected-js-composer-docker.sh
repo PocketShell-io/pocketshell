@@ -13,6 +13,7 @@ SESSION_BASE="js2857-$(date +%s)"
 FORCE_FIRST_POST_ATTACH_TAP_MISS=0
 COMPOSER_FOCUS_MAX_ATTEMPTS=""
 FORCE_NO_SPEECH_STAGE_FAILURE=0
+NO_SPEECH_ONLY=0
 # Issue #3062 hang guard: one instrumentation phase may not run longer than
 # this. A hung phase is force-stopped and reported, instead of sitting until
 # the CI job cap with no failure reason.
@@ -27,7 +28,7 @@ usage() {
   cat <<'USAGE'
 Usage: scripts/connected-js-composer-docker.sh --port 2243|2244|2245 [--session-prefix NAME] [--suffix TOKEN]
        [--force-first-post-attach-tap-miss] [--composer-focus-max-attempts 1|2]
-       [--force-no-speech-stage-failure]
+       [--force-no-speech-stage-failure] [--no-speech-only]
 
 Builds and runs the packaged composer journey against an already healthy
 agents fixture pool lane, then checks exact bytes and insert/uncertain markers
@@ -37,6 +38,9 @@ Each instrumentation phase is bounded by COMPOSER_PHASE_TIMEOUT_SECONDS
 (default 900). --force-no-speech-stage-failure makes the #3062 stage fail on
 purpose after its warning appears, to prove that a failure ends the run with
 its message (and is expected to fail the lane).
+
+--no-speech-only runs the dedicated keyboard/no-speech regression and its
+Docker marker assertions. The default also requires the full prepare/resume flow.
 
 Start an unclaimed lane with scripts/agents-pool.sh up PORT first. This runner
 does not create or tear down Docker state.
@@ -62,6 +66,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --force-first-post-attach-tap-miss)
       FORCE_FIRST_POST_ATTACH_TAP_MISS=1
+      shift
+      ;;
+    --no-speech-only)
+      NO_SPEECH_ONLY=1
       shift
       ;;
     --force-no-speech-stage-failure)
@@ -272,9 +280,11 @@ run_instrumentation_phase() {
   local phase="$1"
   local phase_dir="$evidence_dir/phase-$phase"
   "$ADB" -s "$ANDROID_SERIAL" push "$ROOT_DIR/tests/docker/test_key" "$DEVICE_KEY_PATH" >/dev/null
+  local phase_artifact_run_id="$ARTIFACT_RUN_ID"
+  if [[ "$phase" == no-speech ]]; then phase_artifact_run_id="$ARTIFACT_RUN_ID-nospeech"; fi
   local phase_args=(-e class "$test_class" -e sshHost 10.0.2.2
     -e sshPort "$PORT" -e sshPrivateKeyPath "$DEVICE_KEY_PATH"
-    -e sshSessionName "$SESSION_BASE" -e artifactRunId "$ARTIFACT_RUN_ID"
+    -e sshSessionName "$SESSION_BASE" -e artifactRunId "$phase_artifact_run_id"
     -e composerPhase "$phase")
   mkdir -p "$phase_dir"
   if [[ "$phase" == resume ]]; then
@@ -325,6 +335,27 @@ PY
     > "$phase_dir/snippet-storage-logcat.txt"
   printf 'phase=%s\nresult=PASS\n' "$phase" > "$phase_dir/phase-result.txt"
 }
+
+# This is an additional required regression, not a substitute for the full
+# prepare/resume journey. Check its real-host effects immediately, before any
+# later failure can hide its verdict (#3096, independent of #3095).
+run_instrumentation_phase no-speech
+"$ROOT_DIR/scripts/extract-js-composer-artifacts.py" --no-speech-only \
+  --run-id "$ARTIFACT_RUN_ID-nospeech" --logcat "$asset_logcat" --output-dir "$evidence_dir/no-speech"
+probe_session="$SESSION_BASE-ime"
+probe_marker="PS3062_WORDS_$probe_session"
+probe_host_marker="$(ssh -q "${ssh_opts[@]}" testuser@127.0.0.1 "cat /tmp/$probe_session-3062.marker")"
+[[ "$probe_host_marker" == "$probe_marker" ]] || fail 'no-speech regression composer marker differs on the host'
+probe_inline="$(ssh -q "${ssh_opts[@]}" testuser@127.0.0.1 \
+  "a capture --workspace /home/testuser --tag '$probe_session' --bytes 8192")"
+[[ "$probe_inline" == *"echo PS3062_INLINE_$probe_session"* ]] \
+  || fail 'no-speech regression inline words are missing from the host PTY'
+printf 'PASS: dedicated no-speech host marker %s and inline PTY words match\n' "$probe_marker" \
+  | tee "$evidence_dir/no-speech-host-oracle.txt"
+if (( NO_SPEECH_ONLY )); then
+  printf 'PASS: dedicated no-speech regression only; full prepare/resume was not requested\n'
+  exit 0
+fi
 
 run_instrumentation_phase prepare
 

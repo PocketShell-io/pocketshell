@@ -97,6 +97,8 @@ public final class JsComposerDockerJourneyTest {
     private JSONObject lastPhysicalTapEvidence;
     private boolean focusTraceEmitted;
     private boolean focusFailureCaptured;
+    private boolean deferInlineImeMeasurement;
+    private JSONObject deferredInlineImeMeasurement;
 
     @Before
     public void launchPackagedShell() {
@@ -131,8 +133,9 @@ public final class JsComposerDockerJourneyTest {
         String keyPath = arguments.getString("sshPrivateKeyPath");
         String nameBase = arguments.getString("sshSessionName");
         String phase = arguments.getString("composerPhase", "resume");
-        assertTrue("composerPhase must be prepare or resume", phase.equals("prepare") || phase.equals("resume"));
-        artifactRunId = phase.equals("resume") ? arguments.getString("artifactRunId", nameBase) : null;
+        assertTrue("composerPhase must be no-speech, prepare or resume",
+                phase.equals("no-speech") || phase.equals("prepare") || phase.equals("resume"));
+        artifactRunId = !phase.equals("prepare") ? arguments.getString("artifactRunId", nameBase) : null;
         forceFirstPostAttachTapMiss = Boolean.parseBoolean(
                 arguments.getString("composerForceFirstPostAttachTapMiss", "false"));
         try {
@@ -151,6 +154,27 @@ public final class JsComposerDockerJourneyTest {
         String dictationSession = nameBase + "-dictation";
 
         awaitJsTrue("document.querySelector('[data-testid=build-status]')?.dataset.state === 'verified'");
+        // #3096 runs before unrelated Send/Insert oracles so their failures
+        // cannot prevent the keyboard-up no-speech regression from executing.
+        // The original resume phase still checks the same late transition too.
+        if (phase.equals("no-speech")) {
+            deferInlineImeMeasurement = true;
+            String probeSession = nameBase + "-ime";
+            setValue("[data-testid=ssh-host]", host);
+            setValue("[data-testid=ssh-port]", port);
+            setValue("[data-testid=ssh-username]", "testuser");
+            importAndSelectKey(keyPath, probeSession);
+            click("[data-testid=ssh-connect]");
+            awaitTrustOrConnected();
+            awaitJsTrue("['connected','listing'].includes(document.querySelector('.app-shell')?.dataset.sshPhase)");
+            evalString("window.__ps2857CaptureTerminalEvidence = true; 'terminal evidence enabled'");
+            // Replay the dictation/reattach history immediately preceding the
+            // original warning without depending on unrelated Insert oracles.
+            dictateThroughScreenOffAndScrimTapKeepsText(probeSession);
+            verifyDictatedDraftSurvivedRestartAndSendKeepsTail(probeSession, probeSession);
+            warnWhenDictationHearsNoWords(probeSession, probeSession);
+            return;
+        }
         String testTag = nameBase.substring(Math.max(0, nameBase.length() - 5));
         String chipLabel = "PS2885-M-" + testTag;
         String chipOutputPath = "/tmp/" + bytesSession + "-snippet-lines.txt";
@@ -655,38 +679,33 @@ public final class JsComposerDockerJourneyTest {
         awaitJsTrue("document.querySelector('.app-shell')?.dataset.sshPhase === 'live'"
                 + " && !document.querySelector('[data-testid=prompt-composer]')"
                 + " && document.querySelector('[data-testid=inline-dictation-toggle]')?.disabled === false", 20_000);
+        // Install before raising the IME so diagnostic round trips do not
+        // accidentally settle its compositor geometry before the Dictate tap.
+        installInlineNoSpeechFocusTrace();
         // Keyboard up on the terminal, as the maintainer dictates.
         raiseTerminalImeWithRetry();
         beginDictationStagesWithoutIdleSync();
         noSpeechStep("inline:ime-up");
+        if (deferInlineImeMeasurement) deferRealInlineImeTransitionMeasurement();
         String listeningCondition = "document.querySelector('[data-testid=inline-dictation-bar]')?.dataset.phase === 'listening'";
         String inlineToggle = "[data-testid=inline-dictation-toggle]";
-        for (int attempt = 1; attempt <= 3; attempt += 1) {
-            awaitJsTrue("(() => {const node=document.querySelector(" + JSONObject.quote(inlineToggle) + ");"
-                    + "const rect=node?.getBoundingClientRect();return !!node && !node.disabled && rect.height > 0;})()");
-            tapDomCenter(inlineToggle);
-            long deadline = SystemClock.uptimeMillis() + 4_000;
-            while (SystemClock.uptimeMillis() < deadline) {
-                String phase = evalRaw("document.querySelector('[data-testid=inline-dictation-bar]')?.dataset.phase ?? 'idle'");
-                if ("\"listening\"".equals(phase) || "listening".equals(phase)) {
-                    noSpeechStep("inline:listening-started|attempt=" + attempt);
-                    break;
-                }
-                if ("\"starting\"".equals(phase) || "starting".equals(phase)) {
-                    // Tap registered and phase is advancing; do not re-tap
-                    break;
-                }
-                SystemClock.sleep(100);
-            }
-            String phase = evalRaw("document.querySelector('[data-testid=inline-dictation-bar]')?.dataset.phase ?? 'idle'");
-            if ("\"listening\"".equals(phase) || "listening".equals(phase)
-                    || "\"starting\"".equals(phase) || "starting".equals(phase)) {
-                break;
-            }
-            Log.w(NO_SPEECH_TAG, "INLINE_TAP_RETRY|" + inlineToggle + "|attempt=" + attempt + "|" + lastPhysicalTapEvidence);
-        }
+        // Native IME visibility and the JS flag precede the compact dock's
+        // final layout. A point measured in that transition can land on the
+        // terminal-slot padding, blur xterm and hide the keyboard (#3096).
+        // Settle DOM geometry together with its native WebView mapping, then
+        // reject any subsequent change before injecting a single touch.
+        awaitJsTrue("document.querySelector('.app-shell')?.dataset.keyboardVisible === 'true'"
+                + " && document.querySelector('.app-shell')?.dataset.keyboardComposerMode === 'true'"
+                + " && document.activeElement?.classList.contains('xterm-helper-textarea') === true");
+        awaitWebViewVisualState();
+        JSONObject stableMicLayout = awaitStablePhysicalTapLayout(inlineToggle);
+        assertTrue("the inline Dictate tap starts with the native keyboard up", isImeVisible());
+        tapDomCenter(inlineToggle, stableMicLayout);
+        noSpeechStep("inline:tap|attempt=1|" + lastPhysicalTapEvidence);
+        recordInlineNoSpeechFocus("tap-1");
         awaitJsTrue(listeningCondition, 20_000);
         long listeningAt = SystemClock.uptimeMillis();
+        recordInlineNoSpeechFocus("listening");
         noSpeechStep("inline:listening");
         injectNativeDictationEvent("audio", null, "silence");
         SystemClock.sleep(2_000);
@@ -707,6 +726,7 @@ public final class JsComposerDockerJourneyTest {
                 + "appTimer:(s?.dataset.elapsedAtWarning || document.querySelector('[data-testid=inline-dictation-elapsed]')?.textContent.trim())??'',"
                 + "rect:{top:r.top,bottom:r.bottom,left:r.left,right:r.right},"
                 + "viewport:{width:vv?.width??innerWidth,height:vv?.height??innerHeight}});})()");
+        recordInlineNoSpeechFocus("warning");
         boolean imeVisible = isImeVisible();
         noSpeechStep("inline:state-read|ime=" + imeVisible + "|" + state);
         assertEquals("role=status", "status", state.getString("role"));
@@ -741,6 +761,96 @@ public final class JsComposerDockerJourneyTest {
         emitArtifact(artifactRunId, "inline-no-speech-warning.png", png);
         emitArtifact(artifactRunId, "inline-no-speech-warning.json", state.toString().getBytes(StandardCharsets.UTF_8));
         evalString("window.__ps2857DictationTestMode = false; 'debug speech event mode disabled'");
+    }
+
+    /** Same-run touch/focus and native IME evidence for #3096, including failed taps. */
+    private void installInlineNoSpeechFocusTrace() throws Exception {
+        evalString("(() => {window.__ps3096FocusEvents=[];window.__ps3096Layouts=[];"
+                + "const label=n=>n?{tag:n.tagName||'',testid:n.getAttribute?.('data-testid')||'',"
+                + "className:typeof n.className==='string'?n.className:''}:null;"
+                + "const shell=document.querySelector('.app-shell');const sample=reason=>{"
+                + "const r=document.querySelector('[data-testid=inline-dictation-toggle]')?.getBoundingClientRect();"
+                + "return {reason,atMs:performance.now(),keyboardVisible:shell?.dataset.keyboardVisible,"
+                + "keyboardComposerMode:shell?.dataset.keyboardComposerMode,terminalFocused:shell?.dataset.terminalViewportFocused,"
+                + "active:label(document.activeElement),vvHeight:visualViewport?.height,innerHeight,"
+                + "scrollY,mic:r?{top:r.top,left:r.left,bottom:r.bottom,right:r.right}:null};};"
+                + "window.__ps3096DeferredTapMeasurement=null;"
+                + "const record=reason=>{const state=sample(reason);window.__ps3096Layouts.push(state);"
+                + "if(window.__ps3096Layouts.length>40)window.__ps3096Layouts.shift();"
+                + "if(!window.__ps3096DeferredTapMeasurement&&state.keyboardVisible==='true'&&state.terminalFocused==='true'){"
+                + "const r=state.mic,x=(r.left+r.right)/2,y=(r.top+r.bottom)/2,hit=document.elementFromPoint(x,y);"
+                + "window.__ps3096DeferredTapMeasurement={selector:'[data-testid=inline-dictation-toggle]',"
+                + "x,y,width:innerWidth,cssHeight:innerHeight,height:visualViewport?.height??innerHeight,"
+                + "top:r.top,bottom:r.bottom,left:r.left,right:r.right,targetWidth:r.right-r.left,targetHeight:r.bottom-r.top,"
+                + "visualViewport:{width:visualViewport?.width??innerWidth,height:visualViewport?.height??innerHeight,"
+                + "offsetLeft:visualViewport?.offsetLeft??0,offsetTop:visualViewport?.offsetTop??0},"
+                + "centerHit:label(hit),centerHitMatchesTarget:!!hit?.closest?.('[data-testid=inline-dictation-toggle]'),"
+                + "activeElementBefore:label(document.activeElement),disabled:false,recordedAtMs:state.atMs};}};"
+                + "record('installed');new MutationObserver(()=>record('shell-mutation')).observe(shell,{attributes:true,"
+                + "attributeFilter:['data-keyboard-visible','data-keyboard-composer-mode','data-terminal-viewport-focused']});"
+                + "visualViewport?.addEventListener('resize',()=>record('viewport-resize'));"
+                + "for(const type of ['pointerdown','pointerup','pointercancel','click','focusin','focusout']){"
+                + "document.addEventListener(type,e=>{const event={type,atMs:performance.now(),trusted:e.isTrusted,"
+                + "target:label(e.target),button:label(e.target?.closest?.('button')),clientX:e.clientX,clientY:e.clientY,"
+                + "active:label(document.activeElement),defaultPrevented:e.defaultPrevented,layout:sample(type),"
+                + "hitAtPointer:label(Number.isFinite(e.clientX)?document.elementFromPoint(e.clientX,e.clientY):null)};"
+                + "window.__ps3096FocusEvents.push(event);queueMicrotask(()=>{event.defaultPrevented=e.defaultPrevented;"
+                + "event.activeAfter=label(document.activeElement);});},false);}return 'installed';})()");
+    }
+
+    private void recordInlineNoSpeechFocus(String stage) throws Exception {
+        JSONObject focus = evalJson("(() => {const a=document.activeElement;return JSON.stringify({"
+                + "atMs:performance.now(),active:{tag:a?.tagName||'',testid:a?.getAttribute?.('data-testid')||'',"
+                + "className:typeof a?.className==='string'?a.className:''},"
+                + "keyboardVisible:document.querySelector('.app-shell')?.dataset.keyboardVisible,"
+                + "phase:document.querySelector('[data-testid=inline-dictation-bar]')?.dataset.phase,"
+                + "events:window.__ps3096FocusEvents.slice(-4)});})()");
+        AtomicReference<JSONObject> nativeFocus = new AtomicReference<>();
+        onActivity(activity -> {
+            View decor = activity.getWindow().getDecorView();
+            View focused = decor.findFocus();
+            WindowInsets insets = decor.getRootWindowInsets();
+            try {
+                nativeFocus.set(new JSONObject().put("imeVisible", insets != null && insets.isVisible(WindowInsets.Type.ime()))
+                        .put("windowHasFocus", decor.hasWindowFocus())
+                        .put("focusedView", focused == null ? "" : focused.getClass().getName())
+                        .put("uptimeMs", SystemClock.uptimeMillis()));
+            } catch (JSONException error) { throw new RuntimeException(error); }
+        });
+        noSpeechStep("inline:layouts|" + stage + "|" + evalRaw("JSON.stringify(window.__ps3096Layouts.slice(-5))"));
+        noSpeechStep("inline:native-focus|" + stage + "|" + nativeFocus.get());
+        noSpeechStep("inline:focus|" + stage + "|" + focus);
+    }
+
+    /**
+     * Regression fixture: retain an actual DOM measurement from the native IME
+     * transition, then let that transition finish before the test's native
+     * dispatch consumes it. This models delayed snapshot-to-injection scheduling
+     * without changing CSS, focus, IME state, or the product. The unguarded tap
+     * uses this stale point; the fixed predispatch sampler must reject it.
+     */
+    private void deferRealInlineImeTransitionMeasurement() throws Exception {
+        awaitJsTrue("!!window.__ps3096DeferredTapMeasurement");
+        deferredInlineImeMeasurement = evalJson("JSON.stringify(window.__ps3096DeferredTapMeasurement)");
+        awaitJsTrue("(() => {const old=window.__ps3096DeferredTapMeasurement;"
+                + "const r=document.querySelector('[data-testid=inline-dictation-toggle]').getBoundingClientRect();"
+                + "return Math.abs(r.top-old.top)>0.5||Math.abs(r.left-old.left)>0.5;})()", 5_000);
+        noSpeechStep("inline:deferred-real-measurement|" + deferredInlineImeMeasurement);
+        noSpeechStep("inline:after-natural-layout-transition|" + evalString("(() => {const old=window.__ps3096DeferredTapMeasurement;"
+                + "const r=document.querySelector('[data-testid=inline-dictation-toggle]').getBoundingClientRect();"
+                + "const hit=document.elementFromPoint(old.x,old.y);return JSON.stringify({atMs:performance.now(),"
+                + "currentMic:{top:r.top,left:r.left,bottom:r.bottom,right:r.right},"
+                + "stalePointHit:{tag:hit?.tagName,className:typeof hit?.className==='string'?hit.className:'',"
+                + "testid:hit?.getAttribute?.('data-testid')??''},active:document.activeElement?.className,"
+                + "keyboardVisible:document.querySelector('.app-shell')?.dataset.keyboardVisible});})()"));
+    }
+
+    private JSONObject consumeDeferredInlineImeMeasurement(String selector, JSONObject current) {
+        if (!selector.equals("[data-testid=inline-dictation-toggle]") || deferredInlineImeMeasurement == null) return current;
+        JSONObject delayed = deferredInlineImeMeasurement;
+        deferredInlineImeMeasurement = null;
+        noSpeechStep("inline:consume-delayed-dom-measurement|" + delayed);
+        return delayed;
     }
 
     /**
@@ -2821,6 +2931,7 @@ public final class JsComposerDockerJourneyTest {
                 + "centerHit:label(hit),centerHitMatchesTarget:targetHit(" + JSONObject.quote(selector) + "),"
                 + "activeElementBefore:{tag:document.activeElement?.tagName||'',id:document.activeElement?.id||'',"
                 + "testid:document.activeElement?.getAttribute?.('data-testid')||''},disabled:!!element.disabled});})()");
+        point = consumeDeferredInlineImeMeasurement(selector, point);
         assertTrue("WebView touch target must exist", !point.optBoolean("missing"));
         assertTrue("WebView touch target must be enabled", !point.optBoolean("disabled"));
         assertTrue("WebView touch target must be visibly inside the Android viewport: " + point,
@@ -2952,7 +3063,9 @@ public final class JsComposerDockerJourneyTest {
                 + "visualViewport:{width:window.visualViewport?.width??innerWidth,height:window.visualViewport?.height??innerHeight,"
                 + "offsetLeft:window.visualViewport?.offsetLeft??0,offsetTop:window.visualViewport?.offsetTop??0},"
                 + "centerHitMatchesTarget:!!hit?.closest?.(" + JSONObject.quote(selector) + "),disabled:!!element.disabled});})()");
+        layout = consumeDeferredInlineImeMeasurement(selector, layout);
         if (layout.optBoolean("missing")) return layout;
+        JSONObject measuredLayout = layout;
         AtomicReference<JSONObject> nativeMapping = new AtomicReference<>();
         scenario.onActivity(activity -> {
             WebView webView = findWebView(activity.getWindow().getDecorView());
@@ -2960,8 +3073,8 @@ public final class JsComposerDockerJourneyTest {
             int[] location = new int[2];
             webView.getLocationOnScreen(location);
             WindowInsets insets = activity.getWindow().getDecorView().getRootWindowInsets();
-            double cssWidth = layout.optDouble("width");
-            double cssHeight = layout.optDouble("cssHeight");
+            double cssWidth = measuredLayout.optDouble("width");
+            double cssHeight = measuredLayout.optDouble("cssHeight");
             float scaleX = webView.getWidth() / (float) cssWidth;
             float scaleY = webView.getHeight() / (float) cssHeight;
             try {

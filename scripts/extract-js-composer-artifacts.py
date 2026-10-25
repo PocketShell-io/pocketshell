@@ -35,6 +35,7 @@ REQUIRED_NAMES = {
     "inline-no-speech-warning.png",
     "inline-no-speech-warning.json",
 }
+NO_SPEECH_NAMES = {name for name in REQUIRED_NAMES if "no-speech-warning" in name}
 OPTIONAL_NAMES = {
     "composer-focus-failure.png",
     "composer-focus-failure.json",
@@ -322,7 +323,7 @@ def _validate_terminal_grid_fidelity(fidelity: object, stage: str, *, require_fu
 
 
 def parse_assets(log_text: str, run_id: str, *, validate_layout: bool = True,
-                 expected_terminal_marker: str | None = None) -> dict[str, bytes]:
+                 expected_terminal_marker: str | None = None, no_speech_only: bool = False) -> dict[str, bytes]:
     assets: dict[str, dict[str, object]] = {}
     for line in log_text.splitlines():
         if TAG not in line:
@@ -363,7 +364,7 @@ def parse_assets(log_text: str, run_id: str, *, validate_layout: bool = True,
         else:
             raise ExtractionFailure(f"unknown artifact record {kind!r} for {name}")
 
-    required_names = REQUIRED_NAMES if validate_layout else {"composer-keyboard.png"}
+    required_names = NO_SPEECH_NAMES if no_speech_only else REQUIRED_NAMES if validate_layout else {"composer-keyboard.png"}
     if not required_names.issubset(assets) or set(assets) - EXPECTED_NAMES:
         raise ExtractionFailure(f"expected at least {sorted(required_names)} without extras, found {sorted(assets)}")
 
@@ -389,6 +390,9 @@ def parse_assets(log_text: str, run_id: str, *, validate_layout: bool = True,
         screenshot = decoded.get(name)
         if screenshot is not None and (not screenshot.startswith(b"\x89PNG\r\n\x1a\n") or len(screenshot) < 1024):
             raise ExtractionFailure(f"{name} is not a non-empty PNG")
+    if no_speech_only:
+        _validate_no_speech_evidence(decoded)
+        return decoded
     screenshot = decoded["composer-keyboard.png"]
     if not screenshot.startswith(b"\x89PNG\r\n\x1a\n") or len(screenshot) < 1024:
         raise ExtractionFailure("keyboard screenshot is not a non-empty PNG")
@@ -702,13 +706,13 @@ def _validate_no_speech_evidence(decoded: dict[str, bytes]) -> None:
 
 
 def extract(run_id: str, logcat: Path, output: Path, *, validate_layout: bool = True,
-            expected_terminal_marker: str | None = None) -> list[str]:
+            expected_terminal_marker: str | None = None, no_speech_only: bool = False) -> list[str]:
     try:
         log_text = logcat.read_text(encoding="utf-8", errors="replace")
     except OSError as error:
         raise ExtractionFailure(f"could not read Android logcat {logcat}: {error}") from error
     artifacts = parse_assets(log_text, run_id, validate_layout=validate_layout,
-                             expected_terminal_marker=expected_terminal_marker)
+                             expected_terminal_marker=expected_terminal_marker, no_speech_only=no_speech_only)
     output.mkdir(parents=True, exist_ok=True)
     for name, payload in artifacts.items():
         (output / name).write_bytes(payload)
@@ -1164,6 +1168,22 @@ def self_test() -> None:
             print(f"PASS: {label} fails closed ({error})")
         else:
             raise AssertionError(f"{label} unexpectedly passed")
+    narrow_lines = [line for line in lines if any(f"|{name}|" in line or line.endswith(f"|{name}")
+                                                   for name in NO_SPEECH_NAMES)]
+    assert set(parse_assets("\n".join(narrow_lines), run_id, no_speech_only=True)) == NO_SPEECH_NAMES
+    print("PASS: dedicated no-speech extraction requires complete warning screenshots and state")
+    for label, altered in (
+        ("missing dedicated inline screenshot", [line for line in narrow_lines if "inline-no-speech-warning.png" not in line]),
+        ("dedicated inline keyboard hidden", [line for line in make_lines(
+            inline_no_speech_bytes=no_speech_with(inline_no_speech_value, nativeImeVisible=False))
+            if any(f"|{name}|" in line or line.endswith(f"|{name}") for name in NO_SPEECH_NAMES)]),
+    ):
+        try:
+            parse_assets("\n".join(altered), run_id, no_speech_only=True)
+        except ExtractionFailure:
+            print(f"PASS: {label} fails closed")
+        else:
+            raise AssertionError(f"{label} unexpectedly passed")
     focus_failure_lines = list(lines)
     for name, payload in (
         ("composer-focus-failure.png", png),
@@ -1199,6 +1219,8 @@ def main() -> int:
     parser.add_argument("--output-dir", type=Path)
     parser.add_argument("--expected-terminal-marker")
     parser.add_argument("--self-test", action="store_true")
+    parser.add_argument("--no-speech-only", action="store_true",
+                        help="require the dedicated no-speech warning screenshots and keyboard/timer records")
     parser.add_argument("--preserve-on-failure", action="store_true",
                         help="extract complete hash-checked artifacts without accepting IME bounds")
     args = parser.parse_args()
@@ -1211,12 +1233,12 @@ def main() -> int:
         return 0
     if not args.run_id or not args.logcat or not args.output_dir:
         parser.error("--run-id, --logcat, and --output-dir are required unless --self-test is used")
-    if not args.preserve_on_failure and not args.expected_terminal_marker:
+    if not args.preserve_on_failure and not args.no_speech_only and not args.expected_terminal_marker:
         parser.error("--expected-terminal-marker is required for accepted evidence")
     try:
         names = extract(args.run_id, args.logcat, args.output_dir,
                         validate_layout=not args.preserve_on_failure,
-                        expected_terminal_marker=args.expected_terminal_marker)
+                        expected_terminal_marker=args.expected_terminal_marker, no_speech_only=args.no_speech_only)
     except ExtractionFailure as error:
         print(f"FAIL: composer artifact extraction: {error}", file=sys.stderr)
         return 1
