@@ -41,6 +41,36 @@ def check_failure_diagnostic_contract() -> None:
         raise AssertionError("the runner does not extract packaged failure artifacts before teardown evidence is lost")
 
 
+def check_independent_one_time_fixture_keys() -> None:
+    runner = RUNNER.read_text(encoding="utf-8")
+    journey = JOURNEY.read_text(encoding="utf-8")
+    staging = runner.split('DEVICE_KEY_PATH=', 1)[1].split("printf 'Running packaged", 1)[0]
+    staging = 'DEVICE_KEY_PATH=' + staging
+    with tempfile.TemporaryDirectory(prefix="usage-ports-independent-keys-") as scratch:
+        root = Path(scratch)
+        fixture = root / 'tests/docker/test_key'
+        fixture.parent.mkdir(parents=True)
+        fixture.write_text('test-only-fixture-placeholder')
+        fake_adb = root / 'adb'
+        fake_adb.write_text("#!/usr/bin/env python3\nimport os,shutil,sys\nfrom pathlib import Path\np=Path(os.environ['STAGING_ROOT'])/Path(sys.argv[-1]).name\nshutil.copyfile(sys.argv[-2],p)\n")
+        fake_adb.chmod(0o755)
+        env = dict(os.environ, ROOT_DIR=str(root), ADB=str(fake_adb), ANDROID_SERIAL='fixture-device',
+                   SUFFIX='fixture', STAGING_ROOT=str(root))
+        subprocess.run(['bash', '-euc', staging], env=env, check=True, capture_output=True)
+        keys = list(root.glob('pocketshell-*.pem'))
+        if len(keys) != 2:
+            raise AssertionError(f'the two journey classes need independent one-use staged keys, got {len(keys)}')
+        for key in keys:
+            if key.read_text() != fixture.read_text():
+                raise AssertionError('staged fixture copy differs')
+            key.unlink()  # Reproduce copyDockerKeyDocument consuming each class input.
+        if 'sshUsagePanelPrivateKeyPath=$DEVICE_PANEL_KEY_PATH' not in runner:
+            raise AssertionError('the J12 staged key is not passed to instrumentation')
+        if 'usageOnly() ? "sshUsagePanelPrivateKeyPath" : "sshPrivateKeyPath"' not in journey:
+            raise AssertionError('the two source classes do not select their independent staged input')
+    print('PASS: two native-import journeys receive independent destructively consumed staged keys')
+
+
 def check_split_journey_outcomes() -> None:
     source = RUNNER.read_text(encoding="utf-8").split("<<'OUTCOME'\n", 1)[1].split("\nOUTCOME", 1)[0]
     ports = ("com.pocketshell.app.smoke.J13PortForwardOpenJourney", "usageAndPortForwardingPoliciesUseDockerAndNativePlugin")
@@ -72,6 +102,7 @@ def check_split_journey_outcomes() -> None:
 
 
 def main() -> int:
+    check_independent_one_time_fixture_keys()
     check_failure_diagnostic_contract()
     check_split_journey_outcomes()
     with tempfile.TemporaryDirectory(prefix="pocketshell-usage-ports-failure-") as raw_temp:

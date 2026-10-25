@@ -109,6 +109,7 @@ source "$ROOT_DIR/scripts/lib/disk-preflight.sh"
 source "$ROOT_DIR/scripts/lib/gradle-output-lock.sh"
 source "$ROOT_DIR/scripts/lib/avd-lock.sh"
 source "$ROOT_DIR/scripts/lib/agents-pool.sh"
+source "$ROOT_DIR/scripts/lib/android-input-preflight.sh"
 
 pocketshell_disk_preflight "$ROOT_DIR/android" 'connected-js-shared-app.sh' || exit $?
 pocketshell_acquire_gradle_output_lock "$ROOT_DIR/android" '' "connected-js-shared-app.sh suffix=$SUFFIX"
@@ -267,6 +268,8 @@ for stale in map(Path, sys.argv[1:]):
     elif stale.exists():
         stale.unlink()
 PY
+pocketshell_android_input_preflight "$ADB" "$ANDROID_SERIAL" "$SHARED_APP_RESULTS_DIR/input-preflight.txt" \
+  || fail "Android input preflight failed on $ANDROID_SERIAL"
 # The host's own record of the IME journey's bytes (the independent oracle).
 fetch_host_bytes() {
   fixture "cat ~/$SESSION_RUN-c/ps2952-bytes.hex" > "$HOST_BYTES_FILE" 2>/dev/null || rm -f "$HOST_BYTES_FILE"

@@ -216,7 +216,10 @@ release_usage_ports_locks() {
 trap release_usage_ports_locks EXIT
 
 DEVICE_KEY_PATH="/data/local/tmp/pocketshell-$SUFFIX-key.pem"
+# Each exact class consumes its staged raw key during native document import.
+DEVICE_PANEL_KEY_PATH="/data/local/tmp/pocketshell-$SUFFIX-panel-key.pem"
 "$ADB" -s "$ANDROID_SERIAL" push "$ROOT_DIR/tests/docker/test_key" "$DEVICE_KEY_PATH" >/dev/null
+"$ADB" -s "$ANDROID_SERIAL" push "$ROOT_DIR/tests/docker/test_key" "$DEVICE_PANEL_KEY_PATH" >/dev/null
 printf 'Running packaged usage/ports journey on %s (API %s), fixture %s:%s, run %s\n' \
   "$ANDROID_SERIAL" "$device_api" "$CONTAINER" "$PORT" "$RUN_ID"
 "$ADB" -s "$ANDROID_SERIAL" logcat -c
@@ -237,6 +240,7 @@ if pocketshell_run_connected_js_usage_ports_gradle \
     -Pandroid.testInstrumentationRunnerArguments.sshHost=10.0.2.2 \
     "-Pandroid.testInstrumentationRunnerArguments.sshPort=$PORT" \
     "-Pandroid.testInstrumentationRunnerArguments.sshPrivateKeyPath=$DEVICE_KEY_PATH" \
+    "-Pandroid.testInstrumentationRunnerArguments.sshUsagePanelPrivateKeyPath=$DEVICE_PANEL_KEY_PATH" \
     "-Pandroid.testInstrumentationRunnerArguments.sshSessionName=$RUN_ID" \
     --stacktrace --console=plain; then
   :

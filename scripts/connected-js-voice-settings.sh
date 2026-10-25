@@ -22,7 +22,7 @@ usage() {
 Usage: scripts/connected-js-voice-settings.sh [--suffix TOKEN] [--run-id ID] [--prepare-only|--test-only]
 
 Build and run the production Voice settings screen journey in the packaged
-JS-first Android app. The journey enters BCP-47 language text and changes the
+JS-first Android app. The journey selects a language and changes the Advanced
 silence range through Android touch input, then verifies storage after route
 navigation and a fresh Activity relaunch. It captures same-run screen,
 DOM geometry, accessible semantics, and instrumentation XML evidence.
@@ -132,9 +132,10 @@ printf 'Running %s#%s with run id %s\n' "$test_class" "$test_method" "$RUN_ID"
 
 test_exit_code=0
 connected_log="$ARTIFACT_DIR/connected-gradle-test.log"
-artifacts=(voice-settings-controls.png voice-settings-changed.png voice-settings-after-navigation.png \
+artifacts=(voice-settings-controls-language.png voice-settings-changed-language.png voice-settings-after-navigation-language.png \
+  voice-settings-after-activity-relaunch-language.png voice-settings-auto-language-language.png voice-settings-controls.png voice-settings-changed.png voice-settings-after-navigation.png \
   voice-settings-after-activity-relaunch.png voice-settings-auto-language.png \
-  voice-settings-invalid-language.png voice-settings-journey.json)
+  voice-settings-language-options.png voice-settings-journey.json)
 
 # Gradle removes the target and test APKs during connected-test cleanup. Harvest
 # app-private evidence while the packaged process is still under test.
@@ -215,7 +216,7 @@ fi
 
 for required in voice-settings-controls.png voice-settings-changed.png voice-settings-after-navigation.png \
   voice-settings-after-activity-relaunch.png voice-settings-auto-language.png \
-  voice-settings-invalid-language.png voice-settings-journey.json; do
+  voice-settings-language-options.png voice-settings-journey.json; do
   [[ -s "$ARTIFACT_DIR/$required" ]] || fail "journey passed but required same-run artifact is missing: $required"
 done
 sha256sum "$ARTIFACT_DIR"/*.png "$ARTIFACT_DIR/voice-settings-journey.json"

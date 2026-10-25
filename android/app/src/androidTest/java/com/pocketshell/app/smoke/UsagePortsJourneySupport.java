@@ -117,7 +117,7 @@ public abstract class UsagePortsJourneySupport {
         var arguments = InstrumentationRegistry.getArguments();
         String host = arguments.getString("sshHost", "10.0.2.2");
         String port = arguments.getString("sshPort");
-        String keyPath = arguments.getString("sshPrivateKeyPath");
+        String keyPath = arguments.getString(usageOnly() ? "sshUsagePanelPrivateKeyPath" : "sshPrivateKeyPath");
         String runId = arguments.getString("sshSessionName", "js2859-" + System.currentTimeMillis());
         if (usageOnly()) runId += "-panel";
         activeRunId = runId.matches("[A-Za-z0-9][A-Za-z0-9_-]{2,38}") ? runId : "usage-ports-failure";

@@ -89,87 +89,106 @@ public final class J24SettingsReachJourney {
 
         awaitBuildVerified();
         JSONObject launchState = readSettingsSnapshot();
-        assertEquals("the clean packaged run must start with automatic language detection",
-                "auto", launchState.getJSONObject("saved").optString("dictationLanguageTag", "auto"));
-        assertEquals("the clean packaged run must start at the product's four-second default",
-                4_000, launchState.getJSONObject("saved").optInt("dictationSilenceWindowMs", 4_000));
-
+        assertEquals("auto", launchState.getJSONObject("saved").optString("voiceLanguage", "auto"));
+        assertEquals(4, launchState.getJSONObject("saved").optInt("voiceSilenceSeconds", 4));
         openVoiceSettings();
         JSONObject initial = captureVoiceScreen("voice-settings-controls.png");
         journeyEvidence.put("initial", initial);
-        assertVoiceControls(initial, "auto", 4, false);
-        JSONArray initialAccessibility = captureAccessibilityTree();
-        journeyEvidence.put("initialAccessibilityTree", initialAccessibility);
-        JSONObject initialAccessibilityStatus = accessibilityCaptureStatus(initialAccessibility);
-        journeyEvidence.put("nativeAccessibilityCapture", initialAccessibilityStatus);
         saveEvidenceJson();
-        assertNativeWebViewHost(initialAccessibility);
-        if (initialAccessibilityStatus.getBoolean("webVirtualDescendantsAvailable")) {
-            assertTalkBackSemantics(initialAccessibility);
-        }
+        assertVoiceControls(initial, "auto", 4);
+        saveEvidenceJson();
 
-        enterTextThroughKeyboard("[data-testid=setting-dictation-language]", "de-DE");
-        awaitJsTrue("JSON.parse(localStorage.getItem(" + JSONObject.quote(SETTINGS_KEY)
-                + ") || '{}').dictationLanguageTag === 'de-DE'");
+        selectLanguageThroughAndroid("German", "de");
+        openAdvancedFromVoice();
         dragSilenceSliderTo(9);
-        awaitJsTrue("document.querySelector('[data-testid=setting-dictation-silence]')?.value === '9'"
-                + " && document.querySelector('[data-testid=dictation-silence-value]')?.textContent.trim() === '9 seconds'"
-                + " && JSON.parse(localStorage.getItem(" + JSONObject.quote(SETTINGS_KEY)
-                + ") || '{}').dictationSilenceWindowMs === 9000");
+        awaitJsTrue("JSON.parse(localStorage.getItem(" + JSONObject.quote(SETTINGS_KEY)
+                + ") || '{}').voiceSilenceSeconds === 9");
+        returnToVoiceFromAdvanced();
         JSONObject changed = captureVoiceScreen("voice-settings-changed.png");
         journeyEvidence.put("changed", changed);
-        assertVoiceControls(changed, "de-DE", 9, false);
+        assertVoiceControls(changed, "de", 9);
         saveEvidenceJson();
 
         leaveVoiceSettingsForSettings();
         openVoiceFromSettings();
-        JSONObject afterNavigation = captureVoiceScreen("voice-settings-after-navigation.png");
-        journeyEvidence.put("afterNavigation", afterNavigation);
-        assertVoiceControls(afterNavigation, "de-DE", 9, false);
+        JSONObject navigated = captureVoiceScreen("voice-settings-after-navigation.png");
+        journeyEvidence.put("afterNavigation", navigated);
+        assertVoiceControls(navigated, "de", 9);
         saveEvidenceJson();
 
         relaunchActivity();
         openVoiceSettings();
-        JSONObject afterRelaunch = captureVoiceScreen("voice-settings-after-activity-relaunch.png");
-        journeyEvidence.put("afterActivityRelaunch", afterRelaunch);
-        assertVoiceControls(afterRelaunch, "de-DE", 9, false);
+        JSONObject relaunched = captureVoiceScreen("voice-settings-after-activity-relaunch.png");
+        journeyEvidence.put("afterActivityRelaunch", relaunched);
+        assertVoiceControls(relaunched, "de", 9);
         saveEvidenceJson();
 
-        enterTextThroughKeyboard("[data-testid=setting-dictation-language]", "auto");
-        awaitJsTrue("JSON.parse(localStorage.getItem(" + JSONObject.quote(SETTINGS_KEY)
-                + ") || '{}').dictationLanguageTag === 'auto'");
+        selectLanguageThroughAndroid("Auto-detect", "auto");
         JSONObject automatic = captureVoiceScreen("voice-settings-auto-language.png");
         journeyEvidence.put("explicitAutoLanguage", automatic);
-        assertVoiceControls(automatic, "auto", 9, false);
+        assertVoiceControls(automatic, "auto", 9);
+        // The approved compact picker accepts only these six choices; malformed
+        // arbitrary tags cannot be submitted. Do not resurrect branch-only text input.
+        JSONObject options = evalJson("JSON.stringify({values:Array.from(document.querySelector('[data-testid=setting-voice-language]').options).map(o=>o.value),"
+                + "value:document.querySelector('[data-testid=setting-voice-language]').value})");
+        assertEquals("[\"auto\",\"en\",\"ru\",\"de\",\"fr\",\"es\"]", options.getJSONArray("values").toString());
+        assertTrue("malformed language tags cannot be selected", !options.getJSONArray("values").toString().contains("en_US"));
+        assertEquals("auto", options.getString("value"));
+        journeyEvidence.put("constrainedLanguageOptions", options);
+        writeAppFile("voice-settings-language-options.png", captureScreenshot());
         saveEvidenceJson();
+    }
 
-        enterTextThroughKeyboard("[data-testid=setting-dictation-language]", "de-DE");
-        awaitJsTrue("JSON.parse(localStorage.getItem(" + JSONObject.quote(SETTINGS_KEY)
-                + ") || '{}').dictationLanguageTag === 'de-DE'");
-
-        enterTextThroughKeyboard("[data-testid=setting-dictation-language]", "en_US");
-        awaitJsTrue("document.querySelector('[data-testid=setting-dictation-language]')?.getAttribute('aria-invalid') === 'true'"
-                + " && document.querySelector('[data-testid=setting-dictation-language]')?.getAttribute('aria-describedby')"
-                + " === 'dictation-language-help dictation-language-error'"
-                + " && document.querySelector('[data-testid=setting-dictation-language]')?.value === 'de-DE'"
-                + " && document.querySelector('#dictation-language-error[role=alert]') !== null"
-                + " && JSON.parse(localStorage.getItem(" + JSONObject.quote(SETTINGS_KEY)
-                + ") || '{}').dictationLanguageTag === 'de-DE'");
-        JSONObject invalid = captureVoiceScreen("voice-settings-invalid-language.png");
-        journeyEvidence.put("invalidLanguage", invalid);
-        assertVoiceControls(invalid, "de-DE", 9, true);
-        JSONArray invalidAccessibility = captureAccessibilityTree();
-        journeyEvidence.put("invalidLanguageAccessibilityTree", invalidAccessibility);
-        JSONObject invalidAccessibilityStatus = accessibilityCaptureStatus(invalidAccessibility);
-        journeyEvidence.put("invalidNativeAccessibilityCapture", invalidAccessibilityStatus);
-        if (invalidAccessibilityStatus.getBoolean("webVirtualDescendantsAvailable")) {
-            String invalidTree = invalidAccessibility.toString().toLowerCase(Locale.ROOT);
-            assertTrue("native accessibility tree must announce the invalid BCP-47 explanation",
-                    invalidTree.contains("valid bcp-47"));
+    private void selectLanguageThroughAndroid(String label, String value) throws Exception {
+        tapDomCenter("[data-testid=setting-voice-language]");
+        long deadline = SystemClock.uptimeMillis() + WAIT_TIMEOUT_MILLIS;
+        while (SystemClock.uptimeMillis() < deadline) {
+            InstrumentationRegistry.getInstrumentation().getUiAutomation().clearCache();
+            AccessibilityNodeInfo root = InstrumentationRegistry.getInstrumentation().getUiAutomation().getRootInActiveWindow();
+            if (root != null) {
+                java.util.List<AccessibilityNodeInfo> matches = root.findAccessibilityNodeInfosByText(label);
+                for (AccessibilityNodeInfo match : matches) {
+                    if (label.equals(charSequence(match.getText())) && match.isVisibleToUser()) {
+                        Rect bounds = new Rect();
+                        match.getBoundsInScreen(bounds);
+                        PhysicalTap.tap(bounds.exactCenterX(), bounds.exactCenterY());
+                        root.recycle();
+                        awaitJsTrue("document.querySelector('[data-testid=setting-voice-language]')?.value === " + JSONObject.quote(value)
+                                + " && JSON.parse(localStorage.getItem(" + JSONObject.quote(SETTINGS_KEY) + ")||'{}').voiceLanguage === " + JSONObject.quote(value));
+                        awaitActivityWindowFocus();
+                        tapDomCenter("#voice-settings-title");
+                        awaitJsTrue("document.activeElement !== document.querySelector('[data-testid=setting-voice-language]')");
+                        return;
+                    }
+                }
+                root.recycle();
+            }
+            SystemClock.sleep(100);
         }
-        assertTrue("invalid BCP-47 input must expose its actionable DOM validation explanation",
-                findControl(invalid, "language").getString("error").contains("valid BCP-47"));
-        saveEvidenceJson();
+        assertTrue("Android language picker must expose option " + label, false);
+    }
+
+    private void awaitActivityWindowFocus() {
+        long deadline = SystemClock.uptimeMillis() + WAIT_TIMEOUT_MILLIS;
+        while (SystemClock.uptimeMillis() < deadline) {
+            AtomicReference<Boolean> focused = new AtomicReference<>(false);
+            scenario.onActivity(activity -> focused.set(activity.hasWindowFocus()));
+            if (focused.get()) return;
+            SystemClock.sleep(100);
+        }
+        assertTrue("native language popup must dismiss and return focus to the Activity", false);
+    }
+
+    private void openAdvancedFromVoice() throws Exception {
+        leaveVoiceSettingsForSettings();
+        tapDomCenter("[data-testid=open-advanced-settings]");
+        awaitJsTrue("document.querySelector('[data-testid=setting-voice-silence-seconds]')?.type === 'range'");
+    }
+
+    private void returnToVoiceFromAdvanced() throws Exception {
+        InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK);
+        awaitJsTrue("document.querySelector('.app-shell')?.dataset.route === 'settings'");
+        openVoiceFromSettings();
     }
 
     private void openVoiceSettings() throws Exception {
@@ -208,27 +227,25 @@ public final class J24SettingsReachJourney {
     }
 
     private JSONObject captureVoiceScreen(String screenshotName) throws Exception {
-        JSONObject dom = readSettingsSnapshot();
-        JSONArray controls = new JSONArray()
-                .put(dom.getJSONObject("language"))
-                .put(dom.getJSONObject("silence"));
-        JSONObject screen = new JSONObject()
-                .put("route", dom.optString("route"))
-                .put("viewport", dom.getJSONObject("viewport"))
-                .put("saved", dom.getJSONObject("saved"))
-                .put("controls", controls);
-        byte[] screenshot = captureScreenshot();
-        writeAppFile(screenshotName, screenshot);
-        screen.put("screenshot", screenshotName);
-        return screen;
+        JSONObject language = readSettingsSnapshot();
+        JSONArray languageTree = captureAccessibilityTree();
+        writeAppFile(screenshotName.replace(".png", "-language.png"), captureScreenshot());
+        openAdvancedFromVoice();
+        JSONObject silence = readSettingsSnapshot();
+        JSONArray silenceTree = captureAccessibilityTree();
+        writeAppFile(screenshotName, captureScreenshot());
+        returnToVoiceFromAdvanced();
+        return new JSONObject().put("languageScreen", language).put("silenceScreen", silence)
+                .put("languageAccessibility", languageTree).put("silenceAccessibility", silenceTree)
+                .put("screenshot", screenshotName);
     }
 
     private JSONObject readSettingsSnapshot() throws Exception {
         JSONObject dom = evalJson("(() => {"
                 + "const shell=document.querySelector('.app-shell');"
-                + "const language=document.querySelector('[data-testid=setting-dictation-language]');"
-                + "const silence=document.querySelector('[data-testid=setting-dictation-silence]');"
-                + "const value=document.querySelector('[data-testid=dictation-silence-value]');"
+                + "const language=document.querySelector('[data-testid=setting-voice-language]');"
+                + "const silence=document.querySelector('[data-testid=setting-voice-silence-seconds]');"
+                + "const value=document.querySelector('[data-testid=voice-silence-value]');"
                 + "const box=(element)=>{if(!element)return null;const r=element.getBoundingClientRect();"
                 + "const s=getComputedStyle(element);return {left:r.left,top:r.top,right:r.right,bottom:r.bottom,width:r.width,height:r.height,"
                 + "minHeight:s.minHeight,display:s.display,visible:r.width>0&&r.height>0};};"
@@ -239,7 +256,7 @@ public final class J24SettingsReachJourney {
                 + "return JSON.stringify({route:shell?.dataset.route||'',viewport:{width:innerWidth,height:innerHeight,"
                 + "visualHeight:visualViewport?.height??innerHeight,devicePixelRatio,scrollY:document.querySelector('.screen-content')?.scrollTop??0},"
                 + "saved,language:{value:language?.value??null,tagName:language?.tagName??null,type:language?.type??null,"
-                + "implicitRole:language?.type==='text'?'textbox':null,label:languageLabel?.textContent.trim()??null,"
+                + "implicitRole:language?.tagName==='SELECT'?'combobox':null,label:languageLabel?.textContent.trim()??null,"
                 + "labels:Array.from(language?.labels||[]).map(label=>label.innerText.trim()),help:languageHelp?.textContent.trim()??null,"
                 + "ariaLabelledby:language?.getAttribute('aria-labelledby'),ariaDescribedby:language?.getAttribute('aria-describedby'),"
                 + "ariaInvalid:language?.getAttribute('aria-invalid'),error:document.querySelector('#dictation-language-error')?.textContent.trim()??null,"
@@ -255,7 +272,7 @@ public final class J24SettingsReachJourney {
     }
 
     private void addScreenBounds(JSONObject dom) throws Exception {
-        if (!"settings-voice".equals(dom.optString("route"))) return;
+        if (!"settings-voice".equals(dom.optString("route")) && !"settings-advanced".equals(dom.optString("route"))) return;
         JSONObject viewport = dom.getJSONObject("viewport");
         double cssWidth = viewport.getDouble("width");
         AtomicReference<int[]> locationAndWidth = new AtomicReference<>();
@@ -272,6 +289,7 @@ public final class J24SettingsReachJourney {
         JSONArray controls = new JSONArray();
         for (String key : new String[] { "language", "silence" }) {
             JSONObject control = dom.getJSONObject(key);
+            if (control.isNull("bounds")) continue;
             JSONObject bounds = control.getJSONObject("bounds");
             JSONObject screen = new JSONObject()
                     .put("left", Math.round(host[0] + bounds.getDouble("left") * scale))
@@ -285,55 +303,46 @@ public final class J24SettingsReachJourney {
                 .put("left", host[0]).put("top", host[1]).put("width", host[2]));
     }
 
-    private void assertVoiceControls(JSONObject state, String language, int silence, boolean invalid) throws Exception {
-        assertEquals("real app must remain on the Voice settings route", "settings-voice", state.getString("route"));
-        JSONObject viewport = state.getJSONObject("viewport");
-        JSONObject languageControl = findControl(state, "language");
-        JSONObject silenceControl = findControl(state, "silence");
-        assertEquals(language, languageControl.getString("value"));
-        assertEquals("INPUT", languageControl.getString("tagName"));
-        assertEquals("text", languageControl.getString("type"));
-        assertEquals("textbox", languageControl.getString("implicitRole"));
-        assertEquals(language, state.getJSONObject("saved").optString("dictationLanguageTag", "auto"));
-        assertEquals(silence * 1_000, state.getJSONObject("saved").optInt("dictationSilenceWindowMs", silence * 1_000));
-        assertEquals(Integer.toString(silence), silenceControl.getString("value"));
-        assertEquals("INPUT", silenceControl.getString("tagName"));
-        assertEquals("range", silenceControl.getString("type"));
-        assertEquals("slider", silenceControl.getString("implicitRole"));
-        assertEquals(silence + " seconds", silenceControl.getString("output"));
-        assertEquals(silence + " seconds", silenceControl.getString("ariaValueText"));
-        assertEquals("2", silenceControl.getString("min"));
-        assertEquals("60", silenceControl.getString("max"));
-        assertEquals("1", silenceControl.getString("step"));
-        assertEquals("48px", languageControl.getJSONObject("bounds").getString("minHeight"));
-        assertEquals("48px", silenceControl.getJSONObject("bounds").getString("minHeight"));
-        assertTrue("language control has a real 48 CSS-pixel hit box", languageControl.getJSONObject("bounds").getDouble("height") >= 48);
-        assertTrue("silence slider has a real 48 CSS-pixel hit box", silenceControl.getJSONObject("bounds").getDouble("height") >= 48);
-        assertTrue("language field is on screen in the real WebView", onScreen(languageControl, viewport));
-        assertTrue("silence slider is on screen in the real WebView", onScreen(silenceControl, viewport));
-        assertEquals("dictation-language-label", languageControl.getString("ariaLabelledby"));
-        assertEquals("Dictation language", languageControl.getString("label"));
-        assertTrue("language field's visible hint must explain the automatic and BCP-47 choices",
-                languageControl.getString("help").contains("Use auto")
-                        && languageControl.getString("help").contains("BCP-47"));
-        assertEquals("dictation-language-help", languageControl.getString("ariaDescribedby").split(" ")[0]);
-        JSONArray describedTargets = languageControl.getJSONArray("describedTargets");
-        assertTrue("the language help target named by aria-describedby must exist",
-                describedTargets.getJSONObject(0).getBoolean("exists"));
-        assertEquals(invalid ? "true" : "false", languageControl.getString("ariaInvalid"));
-        if (invalid) {
-            assertEquals("alert", languageControl.getString("errorRole"));
-            assertTrue("invalid BCP-47 hint gives an actionable error", languageControl.getString("error").contains("valid BCP-47"));
-            assertEquals("de-DE", state.getJSONObject("saved").optString("dictationLanguageTag"));
-            assertEquals("aria-describedby must add the validation error node", 2, describedTargets.length());
-            assertTrue("the described validation error node must exist", describedTargets.getJSONObject(1).getBoolean("exists"));
-        } else {
-            assertEquals("null", languageControl.optString("errorRole", "null"));
+    private void assertVoiceControls(JSONObject state, String language, int seconds) throws Exception {
+        JSONObject languageScreen = state.getJSONObject("languageScreen");
+        JSONObject silenceScreen = state.getJSONObject("silenceScreen");
+        assertEquals("settings-voice", languageScreen.getString("route"));
+        assertEquals("settings-advanced", silenceScreen.getString("route"));
+        JSONArray languageTree = state.getJSONArray("languageAccessibility");
+        JSONArray silenceTree = state.getJSONArray("silenceAccessibility");
+        assertNativeWebViewHost(languageTree);
+        assertNativeWebViewHost(silenceTree);
+        if (accessibilityCaptureStatus(languageTree).getBoolean("webVirtualDescendantsAvailable")) {
+            assertTrue("TalkBack announces the language picker", languageTree.toString().toLowerCase(Locale.ROOT).contains("dictation language"));
         }
-    }
-
-    private JSONObject findControl(JSONObject state, String name) throws Exception {
-        return state.getJSONArray("controls").getJSONObject("language".equals(name) ? 0 : 1);
+        if (accessibilityCaptureStatus(silenceTree).getBoolean("webVirtualDescendantsAvailable")) {
+            assertTrue("TalkBack exposes the silence slider", silenceTree.toString().toLowerCase(Locale.ROOT).contains("android.widget.seekbar"));
+        }
+        JSONObject picker = languageScreen.getJSONObject("language");
+        JSONObject slider = silenceScreen.getJSONObject("silence");
+        assertEquals("SELECT", picker.getString("tagName"));
+        assertEquals("combobox", picker.getString("implicitRole"));
+        assertEquals("select-one", picker.getString("type"));
+        assertEquals(language, picker.getString("value"));
+        assertTrue("language picker has an accessible visible label", picker.getJSONArray("labels").toString().contains("Dictation language"));
+        assertEquals("INPUT", slider.getString("tagName"));
+        assertEquals("range", slider.getString("type"));
+        assertEquals("slider", slider.getString("implicitRole"));
+        assertEquals(Integer.toString(seconds), slider.getString("value"));
+        assertEquals(seconds + " s", slider.getString("output"));
+        assertEquals("2", slider.getString("min"));
+        assertEquals("60", slider.getString("max"));
+        assertEquals("1", slider.getString("step"));
+        assertEquals("Recognizer silence window in seconds", slider.getString("ariaLabel"));
+        for (JSONObject screen : new JSONObject[] { languageScreen, silenceScreen }) {
+            assertEquals(language, screen.getJSONObject("saved").optString("voiceLanguage", "auto"));
+            assertEquals(seconds, screen.getJSONObject("saved").optInt("voiceSilenceSeconds", 4));
+        }
+        for (JSONObject control : new JSONObject[] { picker, slider }) {
+            assertTrue("real mobile control retains a 48 CSS-pixel hit target", control.getJSONObject("bounds").getDouble("height") >= 48);
+        }
+        assertTrue("language picker is fully visible", onScreen(picker, languageScreen.getJSONObject("viewport")));
+        assertTrue("silence slider is fully visible", onScreen(slider, silenceScreen.getJSONObject("viewport")));
     }
 
     private boolean onScreen(JSONObject control, JSONObject viewport) throws Exception {
@@ -347,6 +356,7 @@ public final class J24SettingsReachJourney {
     private JSONArray captureAccessibilityTree() throws Exception {
         awaitWebViewDrawn();
         InstrumentationRegistry.getInstrumentation().waitForIdleSync();
+        InstrumentationRegistry.getInstrumentation().getUiAutomation().clearCache();
         AccessibilityNodeInfo root = InstrumentationRegistry.getInstrumentation().getUiAutomation().getRootInActiveWindow();
         assertNotNull("Android accessibility service must expose the active packaged window", root);
         JSONArray nodes = new JSONArray();
@@ -406,51 +416,11 @@ public final class J24SettingsReachJourney {
                 accessibilityCaptureStatus(nodes).getBoolean("webViewHostVisible"));
     }
 
-    private void assertTalkBackSemantics(JSONArray nodes) {
-        String tree = nodes.toString().toLowerCase(Locale.ROOT);
-        assertTrue("TalkBack tree must announce the language label", tree.contains("dictation language"));
-        assertTrue("TalkBack tree must expose the language input as editable", tree.contains("\"editable\":true"));
-        assertTrue("TalkBack tree must announce the recognition silence window", tree.contains("recognition silence window in seconds"));
-        assertTrue("TalkBack tree must expose the silence window as a SeekBar", tree.contains("android.widget.seekbar"));
-    }
-
-    private void enterTextThroughKeyboard(String selector, String value) throws Exception {
-        tapDomCenter(selector);
-        awaitJsTrue("document.activeElement === document.querySelector(" + JSONObject.quote(selector) + ")");
-        awaitImeVisible(true);
-        selectAllWithHardwareKeys();
-        InstrumentationRegistry.getInstrumentation().sendStringSync(value);
-        awaitJsTrue("document.querySelector(" + JSONObject.quote(selector) + ")?.value === " + JSONObject.quote(value));
-        tapDomCenter("#voice-settings-title");
-        awaitJsTrue("document.activeElement !== document.querySelector(" + JSONObject.quote(selector) + ")");
-        if (isImeVisible()) {
-            InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK);
-            awaitImeVisible(false);
-        }
-        awaitJsTrue("document.querySelector('.app-shell')?.dataset.route === 'settings-voice'"
-                + " && document.querySelector(" + JSONObject.quote(selector) + ") !== null");
-    }
-
-    private void selectAllWithHardwareKeys() {
-        android.app.Instrumentation instrumentation = InstrumentationRegistry.getInstrumentation();
-        long down = SystemClock.uptimeMillis();
-        injectKey(instrumentation, down, KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_CTRL_LEFT, 0);
-        injectKey(instrumentation, down, KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_A, KeyEvent.META_CTRL_ON);
-        injectKey(instrumentation, down, KeyEvent.ACTION_UP, KeyEvent.KEYCODE_A, KeyEvent.META_CTRL_ON);
-        injectKey(instrumentation, down, KeyEvent.ACTION_UP, KeyEvent.KEYCODE_CTRL_LEFT, 0);
-    }
-
-    private void injectKey(android.app.Instrumentation instrumentation, long down, int action, int code, int meta) {
-        long now = SystemClock.uptimeMillis();
-        KeyEvent event = new KeyEvent(down, now, action, code, 0, meta);
-        InstrumentationRegistry.getInstrumentation().getUiAutomation().injectInputEvent(event, true);
-    }
-
     private void dragSilenceSliderTo(int targetSeconds) throws Exception {
-        awaitJsTrue("document.querySelector('.app-shell')?.dataset.route === 'settings-voice'"
-                + " && document.querySelector('[data-testid=setting-dictation-silence]')?.type === 'range'");
+        awaitJsTrue("document.querySelector('.app-shell')?.dataset.route === 'settings-advanced'"
+                + " && document.querySelector('[data-testid=setting-voice-silence-seconds]')?.type === 'range'");
         awaitWebViewDrawn();
-        JSONObject geometry = evalJson("(() => {const input=document.querySelector('[data-testid=setting-dictation-silence]');"
+        JSONObject geometry = evalJson("(() => {const input=document.querySelector('[data-testid=setting-voice-silence-seconds]');"
                 + "if(!input)return JSON.stringify({missing:true,route:document.querySelector('.app-shell')?.dataset.route??null});"
                 + "const r=input.getBoundingClientRect();return JSON.stringify({left:r.left,top:r.top,width:r.width,height:r.height,"
                 + "min:Number(input.min),max:Number(input.max),value:Number(input.value),viewportWidth:innerWidth});})()");
@@ -505,6 +475,9 @@ public final class J24SettingsReachJourney {
     }
 
     private void tapDomCenter(String selector) throws Exception {
+        awaitJsTrue("document.querySelector(" + JSONObject.quote(selector) + ") !== null");
+        evalString("document.querySelector(" + JSONObject.quote(selector) + ").scrollIntoView({block:'center'})");
+        awaitWebViewDrawn();
         JSONObject point = evalJson("(() => {const element=document.querySelector(" + JSONObject.quote(selector) + ");"
                 + "if(!element)return JSON.stringify({missing:true});const r=element.getBoundingClientRect();"
                 + "return JSON.stringify({x:r.left+r.width/2,y:r.top+r.height/2,viewportWidth:innerWidth});})()");

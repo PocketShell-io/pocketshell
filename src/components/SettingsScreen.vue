@@ -212,6 +212,14 @@ function setVoiceSilence(event: Event) {
 </template>
 
 <style scoped>
+/* Android preferences keep the phone's full thumb target. */
+@media (pointer: coarse) {
+  .settings-control [data-testid="setting-voice-language"],
+  .settings-control [data-testid="setting-voice-silence-seconds"] {
+    min-height: 48px;
+  }
+}
+
 .voice-silence-control__value {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 48px;

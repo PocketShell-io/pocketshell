@@ -1270,17 +1270,62 @@ public abstract class SharedAppDockerJourneyTest {
                 + "if(!b)throw Error('Add a host action missing');b.click();return 'ok';})()");
     }
 
+    /** A bound InputConnection can accept text before its native keyboard is visible. */
+    private void focusJ19FormInputWithNativeIme(String selector) throws Exception {
+        String quoted = JSONObject.quote(selector);
+        evalString("document.querySelector(" + quoted + ").scrollIntoView({block:'center'});'scrolled'");
+        JSONObject target = new JSONObject(evalString("(() => {const r=document.querySelector(" + quoted
+                + ").getBoundingClientRect();return JSON.stringify({x:r.x+r.width/2,y:r.y+r.height/2,width:innerWidth,height:innerHeight});})()"));
+        final int[] origin = new int[2];
+        final int[] pixels = new int[2];
+        scenario.onActivity(activity -> {
+            WebView view = activity.getBridge().getWebView();
+            view.getLocationOnScreen(origin);
+            pixels[0] = view.getWidth(); pixels[1] = view.getHeight();
+        });
+        float x = origin[0] + (float) (target.getDouble("x") * pixels[0] / target.getDouble("width"));
+        float y = origin[1] + (float) (target.getDouble("y") * pixels[1] / target.getDouble("height"));
+        long down = SystemClock.uptimeMillis();
+        android.view.MotionEvent press = android.view.MotionEvent.obtain(down, down, android.view.MotionEvent.ACTION_DOWN, x, y, 0);
+        android.view.MotionEvent release = android.view.MotionEvent.obtain(down, down + 50, android.view.MotionEvent.ACTION_UP, x, y, 0);
+        try {
+            InstrumentationRegistry.getInstrumentation().sendPointerSync(press);
+            SystemClock.sleep(50);
+            InstrumentationRegistry.getInstrumentation().sendPointerSync(release);
+        } finally { press.recycle(); release.recycle(); }
+        awaitJsTrue("document.activeElement === document.querySelector(" + quoted + ")");
+        scenario.onActivity(activity -> {
+            WebView view = activity.getBridge().getWebView();
+            ((InputMethodManager) activity.getSystemService(Context.INPUT_METHOD_SERVICE)).showSoftInput(view, 0);
+        });
+        long deadline = SystemClock.uptimeMillis() + 10_000;
+        int stable = 0;
+        String last = "not sampled";
+        while (SystemClock.uptimeMillis() < deadline) {
+            final boolean[] visible = new boolean[1];
+            scenario.onActivity(activity -> {
+                androidx.core.view.WindowInsetsCompat insets = androidx.core.view.ViewCompat.getRootWindowInsets(activity.getWindow().getDecorView());
+                visible[0] = insets != null && insets.isVisible(androidx.core.view.WindowInsetsCompat.Type.ime());
+            });
+            String focused = evalString("String(document.activeElement === document.querySelector(" + quoted + "))");
+            last = "selector=" + selector + " nativeIme=" + visible[0] + " editorFocused=" + focused;
+            stable = visible[0] && "true".equals(focused) ? stable + 1 : 0;
+            if (stable >= 3) {
+                Log.i(TAG, "J19_NATIVE_IME_READY " + last);
+                return;
+            }
+            SystemClock.sleep(150);
+        }
+        screenshot("j19-ime-readiness-failure");
+        throw new AssertionError("the real native keyboard must be stably visible before form geometry: " + last);
+    }
+
     /** Host form submission remains in the visible viewport with the real IME open. */
     public void hostFormSubmitRemainsReachableWithTheIme() throws Exception {
         awaitJsTrue("!!document.querySelector('.host-list, .empty')");
         openAddHostForm();
         awaitJsTrue("!!document.querySelector('[data-testid=host-name]')");
-        evalString("document.querySelector('[data-testid=host-name]').focus();'focused'");
-        scenario.onActivity(activity -> {
-            WebView view = activity.getBridge().getWebView();
-            view.requestFocus();
-            ((InputMethodManager) activity.getSystemService(Context.INPUT_METHOD_SERVICE)).showSoftInput(view, 0);
-        });
+        focusJ19FormInputWithNativeIme("[data-testid=host-name]");
         runIme(ScriptedIme.script().commit("IME host"));
         awaitJsTrue("document.querySelector('[data-testid=host-name]').value === 'IME host'");
         evalString("document.querySelector('[data-testid=host-save]').scrollIntoView({block:'end'});'scrolled to submit'");
@@ -1302,12 +1347,7 @@ public abstract class SharedAppDockerJourneyTest {
         awaitJsTrue("document.querySelector('section.add-form')?.offsetParent !== null");
         setValue("section.add-form input[type=number]", "19001");
         setValue("section.add-form input.host", "");
-        evalString("document.querySelector('section.add-form input.host').focus();'focused'");
-        scenario.onActivity(activity -> {
-            WebView view = activity.getBridge().getWebView();
-            view.requestFocus();
-            ((InputMethodManager) activity.getSystemService(Context.INPUT_METHOD_SERVICE)).showSoftInput(view, 0);
-        });
+        focusJ19FormInputWithNativeIme("section.add-form input.host");
         runIme(ScriptedIme.script().commit("localhost"));
         awaitJsTrue("document.querySelector('section.add-form input.host').value === 'localhost'");
         evalString("document.querySelector('section.add-form button.add-btn').scrollIntoView({block:'end'});'scrolled'");

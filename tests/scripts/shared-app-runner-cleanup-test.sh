@@ -38,6 +38,10 @@ printf '%s\n' '#!/bin/sh' \
   '  devices) printf "List of devices attached\nemulator-5554\tdevice\n" ;;' \
   '  *get-state*) echo device ;;' \
   '  *getprop*) echo 35 ;;' \
+  '  *"cmd package query-activities"*) echo "No activities found" ;;' \
+  '  *"settings get global hide_error_dialogs"*) echo 1 ;;' \
+  '  *"settings get secure long_press_timeout"*) echo 3000 ;;' \
+  '  *"settings get secure show_ime_with_hard_keyboard"*) echo 1 ;;' \
   'esac' \
   'exit 0' > "$BIN/adb"
 printf '%s\n' '#!/bin/sh' \
@@ -92,6 +96,10 @@ run_case() {
   if ! grep -q "$expected" "$log"; then
     cat "$log" >&2
     fail "$name: the run did not reach the exit path under test ($expected)"
+  fi
+  if [[ "$name" == failed-instrumentation-run ]] && ! grep -q 'PASS: Android input preflight' "$log"; then
+    cat "$log" >&2
+    fail "$name: shared journeys must establish the standard native input preconditions before dispatch"
   fi
   local creates kills
   creates="$(grep -c 'sessions create' "$calls" || true)"
