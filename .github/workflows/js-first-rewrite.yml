@@ -8,7 +8,10 @@ on:
 
 concurrency:
   group: js-first-rewrite-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.ref }}
-  queue: max
+  # A newer push supersedes the previous run on the same PR: only the newest
+  # commit burns the ~25-50 min emulator lane. Main pushes keep run-to-finish
+  # (cancel is false there) so every main commit is still validated.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read

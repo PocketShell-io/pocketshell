@@ -4,6 +4,13 @@ on:
     types: [opened, synchronize, reopened, edited, labeled, unlabeled]
 permissions:
   contents: read
+
+# One run per PR ref: a newer synchronize/labeled event cancels the stale
+# scope check instead of stacking duplicates.
+concurrency:
+  group: scope-guard-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
 jobs:
   scope:
     runs-on: ubuntu-latest
