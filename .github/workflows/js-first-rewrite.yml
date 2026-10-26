@@ -69,6 +69,23 @@ jobs:
           done
           pnpm --version
 
+      # Keep setup-node's cache opt-out (#2855): pnpm may only be probed
+      # after Corepack activation has succeeded and pnpm --version has run.
+      - name: Resolve pnpm store path
+        id: pnpm-store
+        shell: bash
+        run: |
+          store_path="$(pnpm store path --silent)"
+          printf 'path=%s\n' "$store_path" >> "$GITHUB_OUTPUT"
+
+      - name: Cache pnpm dependency store
+        uses: actions/cache@v5
+        with:
+          path: ${{ steps.pnpm-store.outputs.path }}
+          key: ${{ runner.os }}-${{ runner.arch }}-pnpm-store-12.5.1-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ runner.arch }}-pnpm-store-12.5.1-
+
       - name: Set up JDK 21
         uses: actions/setup-java@v5
         with:
