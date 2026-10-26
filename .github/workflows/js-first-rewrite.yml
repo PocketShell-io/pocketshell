@@ -271,6 +271,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v6
         with:
+          retention-days: 7
           name: pocketshell-browser-dev-smoke-${{ github.run_id }}-${{ github.run_attempt }}
           path: build/dev-browser-smoke/
           if-no-files-found: warn
@@ -445,6 +446,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v6
         with:
+          retention-days: 7
           name: pocketshell-js-first-composer-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             android/app/build/outputs/js-composer/
@@ -455,6 +457,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v6
         with:
+          retention-days: 7
           name: pocketshell-js-first-hotkeys-${{ github.run_id }}-${{ github.run_attempt }}
           path: android/app/build/outputs/js-hotkeys/
           if-no-files-found: error
@@ -471,6 +474,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v6
         with:
+          retention-days: 7
           name: pocketshell-js-first-packaged-journeys
           path: |
             android/app/build/outputs/apk/debug/app-debug.apk

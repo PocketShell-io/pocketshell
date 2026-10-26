@@ -396,6 +396,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v6
         with:
+          retention-days: 7
           name: js-release-validation-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             build/js-release-validation/summary.md
@@ -424,6 +425,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v6
         with:
+          retention-days: 7
           name: pocketshell-js-release-composer-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             android/app/build/outputs/js-composer/
@@ -434,6 +436,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v6
         with:
+          retention-days: 7
           name: pocketshell-js-release-hotkeys-${{ github.run_id }}-${{ github.run_attempt }}
           path: android/app/build/outputs/js-hotkeys/
           if-no-files-found: warn
@@ -442,6 +445,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v6
         with:
+          retention-days: 7
           name: pocketshell-js-release-packaged-journeys-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             android/app/build/outputs/apk/debug/app-debug.apk
