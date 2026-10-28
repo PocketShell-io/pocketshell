@@ -231,9 +231,16 @@ mkdir -p "$(dirname "$rekeyed_lock_file")"
 exec 7>"$rekeyed_lock_file"
 flock -w 900 7 || fail "port $REKEYED_PORT (sshd-rekeyed) is held by another run"
 
+# Hub intake 8a7a09c7 (AC1): this run tears its rekeyed fixture back down on
+# normal exit, failure and interrupt (on_exit releases everything else; the
+# teardown stack flushes through pocketshell_release_all there). Scoped to the
+# one service, NOT `compose down`: the default compose project is shared with
+# the legacy 2222 fixture and a sibling single-lane run.
+pocketshell_test_register_teardown "shared-app-rekeyed-fixture" \
+  docker compose -f "$COMPOSE_FILE" rm -sf sshd-rekeyed
 docker compose -f "$COMPOSE_FILE" up -d --build --no-deps sshd-rekeyed 7>&- \
   || fail 'could not start the sshd-rekeyed fixture'
-wait_for_container_healthy "$COMPOSE_FILE" sshd-rekeyed "$HOST_KEY_DIR/sshd-rekeyed-health.log" 90 \
+wait_for_container_healthy "$COMPOSE_FILE" sshd-rekeyed "$HOST_KEY_DIR/sshd-rekeyed-health.log" 120 \
   || fail 'the sshd-rekeyed fixture did not become healthy'
 
 agents_host_keys="$("$HOST_KEY_FIXTURE" keys --port "$PORT")" || fail "no host keys answered on agents port $PORT"

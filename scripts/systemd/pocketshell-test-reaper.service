@@ -1,0 +1,16 @@
+[Unit]
+Description=PocketShell docker test-container TTL reaper
+Documentation=https://github.com/PocketShell-io/pocketshell#docs/testing.md
+# Only touches containers labeled pocketshell.test=1; never unlabeled or
+# Coolify containers (Hub intake 8a7a09c7).
+After=docker.service
+Wants=docker.service
+
+[Service]
+Type=oneshot
+# Install step (docs/testing.md "Docker test-harness hygiene"): copy this
+# script somewhere stable and point ExecStart at it, e.g.
+#   sudo install -m 0755 scripts/docker-test-reaper.sh /usr/local/bin/
+#   sudo install -m 0644 scripts/systemd/pocketshell-test-reaper.{service,timer} /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now pocketshell-test-reaper.timer
+ExecStart=/usr/local/bin/docker-test-reaper.sh

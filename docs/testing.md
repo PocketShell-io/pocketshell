@@ -351,6 +351,54 @@ Port 2222 belongs to the default `agents` fixture. It is reserved for the
 Docker `agents` target and must not be taken over by an unrelated container.
 Use `scripts/agents-pool.sh` for isolated ports when parallel lanes are needed.
 
+## Docker test-harness hygiene
+
+Hub intake `8a7a09c7` exists because test containers outlived their runs by
+WEEKS on this box: the 2026-10-26 cleanup found 28 orphans
+(`pocketshell-test-agents-*`, `docker-bootstrap-*`, `tests-docker-*`) carrying
+~790 aplexer workers and ~760 login shells and a material slice of ~586
+forks/s of host load. Three defences, all shipped:
+
+1. **Teardown on exit, failure and interrupt (AC1).** Every harness entry
+   point that creates containers registers the teardown BEFORE creating
+   anything, in `scripts/lib/docker-test-hygiene.sh`'s stack, flushed by
+   `pocketshell_release_all` (or the lib's own EXIT/INT/TERM dispatcher):
+   the `pocketshell_claim_agents_port` lanes (compose `down -v` of the lane's
+   own project), the pre-release confidence gate and the screenshot capture
+   (their compose fleet), the shared-app lane's rekeyed fixture, the gateway
+   lane's project, and the fixture contract suite (`docker run --rm`).
+   A lane's fixture is therefore no longer left running warm after the lane
+   exits - bring one up explicitly with `scripts/agents-pool.sh up` when you
+   want one to survive between commands, and `... down` it when done.
+2. **Labels (AC2).** Every test container carries
+   `pocketshell.test=1`, `agent.session=<session id>` (the aplexer session
+   id, `ci-<run>-<attempt>` in CI, `unknown` for a manual compose up) and a
+   `pocketshell.test.created` epoch, so a leftover is attributable without
+   guessing from its name. List ours:
+   `docker ps -a --filter label=pocketshell.test=1`.
+3. **TTL reaper (AC3).** `scripts/docker-test-reaper.sh` force-removes
+   labeled containers older than the TTL (default 6h, `--ttl-hours N` to
+   override; `--dry-run` to preview) and logs every removal to
+   `~/.local/state/pocketshell/docker-test-reaper.log`. It selects ONLY on
+   `label=pocketshell.test=1`, so unlabeled and Coolify containers are
+   untouchable by construction.
+
+Install the systemd timer on this box (root):
+
+```bash
+sudo install -m 0755 scripts/docker-test-reaper.sh /usr/local/bin/
+sudo install -m 0644 scripts/systemd/pocketshell-test-reaper.service \
+  scripts/systemd/pocketshell-test-reaper.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now pocketshell-test-reaper.timer
+```
+
+No systemd? The equivalent cron line:
+
+```cron
+*/30 * * * * /usr/local/bin/docker-test-reaper.sh >> /var/log/docker-test-reaper-cron.log 2>&1
+```
+
 ## Session journeys (legacy app2, `release/0.5.x`)
 
 The load-bearing app2 journeys use real aplexer records:

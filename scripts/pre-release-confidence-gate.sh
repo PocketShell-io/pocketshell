@@ -5,6 +5,9 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
 source "$ROOT_DIR/scripts/lib/avd-lock.sh"
+# Hub intake 8a7a09c7: the teardown stack the compose fleet below registers
+# into (flushed by pocketshell_release_all in on_exit/early_release_exit).
+source "$ROOT_DIR/scripts/lib/docker-test-hygiene.sh"
 source "$ROOT_DIR/scripts/lib/scope-run.sh"
 source "$ROOT_DIR/scripts/lib/gradle-profile.sh"
 source "$ROOT_DIR/scripts/lib/disk-preflight.sh"
@@ -2084,13 +2087,24 @@ POCKETSHELL_AGENT_FIXTURE_VERSION="$APP_VERSION_NAME"
 # shellcheck source=scripts/lib/agents-fixture-version.sh
 source "$ROOT_DIR/scripts/lib/agents-fixture-version.sh"
 export_agents_fixture_version
+# Hub intake 8a7a09c7 (AC1): registered BEFORE the first container exists, so
+# the whole compose fleet this gate creates (agents, network-fault-proxy,
+# agents-old-cli - containers, network and volumes) comes back down on normal
+# exit, failure and interrupt; pocketshell_release_all in both EXIT traps
+# flushes the stack. This is what used to leave the 2222 fixture - aplexer
+# workers, login shells, 2s healthchecks and all - running for weeks after a
+# gate died mid-run (the Hetzner orphan buildup this intake exists for).
+if declare -F pocketshell_test_register_teardown >/dev/null 2>&1; then
+  pocketshell_test_register_teardown "gate-compose-fleet" \
+    docker compose -f "$COMPOSE_FILE" down -v --remove-orphans
+fi
 run_step "docker-agents-up" docker compose -f "$COMPOSE_FILE" up -d --build agents
 # Issue #150: wait on the compose `healthcheck:` block via
 # `docker inspect`. The follow-up SSH sanity check still verifies the
 # fixture's tool surface (`claude codex opencode a aplexer quse uv`), but
 # the readiness poll itself is event-based, not retry-sleep.
 run_bash_step "docker-agents-health" \
-  "source '$ROOT_DIR/tests/docker/lib/wait-for-healthy.sh' && wait_for_container_healthy '$COMPOSE_FILE' agents '$RUN_DIR/docker-agents-health.log' 60"
+  "source '$ROOT_DIR/tests/docker/lib/wait-for-healthy.sh' && wait_for_container_healthy '$COMPOSE_FILE' agents '$RUN_DIR/docker-agents-health.log' 120"
 run_bash_step "docker-agents-pocketshell-version" \
   "$(docker_agents_pocketshell_version_script "$APP_VERSION_NAME")"
 run_bash_step "docker-agents-ssh-sanity" \
@@ -2132,7 +2146,7 @@ run_bash_step "docker-network-fault-proxy-ready" \
 
 run_step "docker-agents-old-cli-up" docker compose -f "$COMPOSE_FILE" up -d --build agents-old-cli
 run_bash_step "docker-agents-old-cli-health" \
-  "source '$ROOT_DIR/tests/docker/lib/wait-for-healthy.sh' && wait_for_container_healthy '$COMPOSE_FILE' agents-old-cli '$RUN_DIR/docker-agents-old-cli-health.log' 60"
+  "source '$ROOT_DIR/tests/docker/lib/wait-for-healthy.sh' && wait_for_container_healthy '$COMPOSE_FILE' agents-old-cli '$RUN_DIR/docker-agents-old-cli-health.log' 120"
 # The old CLI rejects `tree` BEFORE reading stdin (Click exits on the unknown
 # command), so we don't need a valid JSON payload — `</dev/null` is enough. A
 # zero exit would mean the fixture is NOT an old CLI, which fails the gate.

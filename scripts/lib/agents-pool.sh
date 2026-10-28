@@ -37,6 +37,13 @@ if ! declare -F export_agents_fixture_version >/dev/null 2>&1; then
   source "${BASH_SOURCE[0]%/*}/agents-fixture-version.sh"
 fi
 
+# Hub intake 8a7a09c7: AC2 test labels (routed through the single compose-env
+# funnel below) and the AC1 teardown stack the claim path registers into.
+if ! declare -F pocketshell_test_register_teardown >/dev/null 2>&1; then
+  # shellcheck source=scripts/lib/docker-test-hygiene.sh
+  source "${BASH_SOURCE[0]%/*}/docker-test-hygiene.sh"
+fi
+
 # --- configuration --------------------------------------------------------
 
 # Candidate host ports, first-free wins. 2243-2245 sit clear of the existing
@@ -146,6 +153,13 @@ pocketshell_agents_compose_env_for_port() {
   # invocation in this file routes its environment through.
   export_agents_fixture_version
   printf 'POCKETSHELL_AGENT_FIXTURE_VERSION=%s\n' "${POCKETSHELL_AGENT_FIXTURE_VERSION:-}"
+  # Hub intake 8a7a09c7 (AC2): the same single point stamps the test labels
+  # (`pocketshell.test=1` is static in the compose file; the session id and
+  # creation epoch come from here) into every lane compose invocation, so any
+  # leftover container is attributable without guessing from its name.
+  pocketshell_test_hygiene_init
+  printf 'POCKETSHELL_TEST_SESSION=%s\n' "$POCKETSHELL_TEST_SESSION"
+  printf 'POCKETSHELL_TEST_CREATED_AT=%s\n' "$POCKETSHELL_TEST_CREATED_AT"
 }
 
 # ---------------------------------------------------------------------------
@@ -758,13 +772,19 @@ pocketshell_agents_release_port_lock() {
 
 # Claim the first free agents port from the candidate list, bring its fixture
 # up + healthy, and export POCKETSHELL_AGENTS_PORT for the caller. Installs an
-# EXIT trap to release the flock on the way out (the container is left running
-# warm for the next lane — teardown is a separate explicit `down`).
+# EXIT trap to release the flock on the way out, and (Hub intake 8a7a09c7,
+# AC1) tears the lane's own fixture down on normal exit, failure and
+# interrupt: the teardown is registered into the docker-test-hygiene stack
+# BEFORE `fixture_up` runs, so even a failed or interrupted bring-up brings
+# its half-created compose project back down.
 #
 # On success:
 #   * exports POCKETSHELL_AGENTS_PORT=<claimed port>
 #   * exports POCKETSHELL_AGENTS_HOLDER_PID / POCKETSHELL_AGENTS_OWNER_PID
-#   * registers pocketshell_release_all (shared with the AVD release) on EXIT
+#   * registers pocketshell_release_all (shared with the AVD release) on EXIT;
+#     release_all flushes the teardown stack first, so the fixture goes down
+#   * the stack also flushes via the hygiene lib's INT/TERM dispatcher when a
+#     script installed it, so SIGINT mid-run cannot orphan the fixture
 # Returns non-zero if no port could be claimed / brought healthy.
 #
 # Optional env:
@@ -857,6 +877,16 @@ BANNER
       local holder_pid
       if _pocketshell_agents_try_lock_port "$root_dir" "$port"; then
         holder_pid="$POCKETSHELL_AGENTS_TRY_HOLDER_PID"
+        # Hub intake 8a7a09c7 (AC1): the teardown is registered BEFORE the
+        # fixture is created, so failure or interrupt mid-bring-up still tears
+        # the (possibly half-created) compose project down. A failed attempt
+        # that moves on to the next candidate leaves a second, harmless
+        # registration behind: `down -v` on a project that is already gone is
+        # a no-op.
+        if declare -F pocketshell_test_register_teardown >/dev/null 2>&1; then
+          pocketshell_test_register_teardown "agents-fixture-$port" \
+            pocketshell_agents_fixture_down "$root_dir" "$port"
+        fi
         # Won the port lock. Bring its fixture up + wait healthy; if that
         # fails, release the lock and try the next candidate.
         if ! pocketshell_agents_fixture_up "$root_dir" "$port" \

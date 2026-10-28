@@ -42,16 +42,28 @@ x-gwlane-base: &gwlane-base
   image: pocketshell-test:agents
   pull_policy: never
 
+# Hub intake 8a7a09c7 (AC2): the same test labels the main tests/docker
+# compose file stamps on every fixture (see that file for the field-by-field
+# rationale). Every service here merges these in - the base-image services via
+# a sequence merge with *gwlane-base, `host` directly - so the TTL reaper
+# (scripts/docker-test-reaper.sh) can account for the whole lane, not just the
+# sshd fixture.
+x-test-labels: &test-labels
+  labels:
+    pocketshell.test: "1"
+    agent.session: ${POCKETSHELL_TEST_SESSION:-unknown}
+    pocketshell.test.created: ${POCKETSHELL_TEST_CREATED_AT:-}
+
 services:
   jwks:
-    <<: *gwlane-base
+    <<: [*gwlane-base, *test-labels]
     entrypoint: ["/gw/gwfixture", "jwks", "-key", "/broker/broker-key.pem", "-listen", ":8088"]
     volumes:
       - ${GWLANE_BIN:?}:/gw:ro
       - ${GWLANE_STATE:?}/broker:/broker:ro
 
   gateway:
-    <<: *gwlane-base
+    <<: [*gwlane-base, *test-labels]
     entrypoint: ["/gw/gateway"]
     command:
       - "-listen"
@@ -78,7 +90,7 @@ services:
       - jwks
 
   tlsfront:
-    <<: *gwlane-base
+    <<: [*gwlane-base, *test-labels]
     entrypoint: ["/gw/gwfixture", "tlsfront", "-cert", "/tls/server.pem", "-key", "/tls/server.key", "-listen", ":8443", "-upstream", "gateway:8080"]
     ports:
       - "127.0.0.1:${GWLANE_TLS_PORT:?}:8443"
@@ -89,6 +101,7 @@ services:
       - gateway
 
   host:
+    <<: *test-labels
     image: pocketshell-test:agents
     pull_policy: never
     environment:
@@ -99,7 +112,7 @@ services:
     entrypoint: ["/bin/sh", "-c", "printf '\\nLogLevel VERBOSE\\n' >> /etc/ssh/sshd_config && exec /usr/local/bin/pocketshell-agent-entrypoint"]
 
   agent:
-    <<: *gwlane-base
+    <<: [*gwlane-base, *test-labels]
     # Production topology: the agent reaches ITS OWN sshd on loopback.
     network_mode: "service:host"
     entrypoint: ["/bin/bash", "/gwlane/agent-entrypoint.sh"]

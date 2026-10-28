@@ -63,13 +63,44 @@ x-ssh-healthcheck:
       -o UserKnownHostsFile=/dev/null
       -i /root/test_key
       testuser@localhost true
-  interval: 2s
-  timeout: 5s
+  # Hub intake 8a7a09c7 (AC5): the interval used to be 2s. That was tuned for
+  # fast lane bring-up, but it kept firing every 2 seconds for the WEEKS an
+  # orphaned fixture survived its run - each probe forks ssh + `sshd -T` inside
+  # the container, and the 2026-10-26 Hetzner cleanup found 28 such containers
+  # as a material slice of a ~586 forks/s host load. 30s keeps detection within
+  # the wait_for_container_healthy deadlines callers use (bumped to 120s in the
+  # same change; a cold start settles at the first probe, ~30-35s) while
+  # cutting an orphan's idle probe load 15x. Retries stay at 10, so a truly
+  # broken fixture is still declared unhealthy after ~5 minutes.
+  interval: 30s
+  timeout: 10s
   retries: 10
   start_period: 5s
 
+# Hub intake 8a7a09c7 (AC2): every test container is labeled so leftovers can
+# be identified - and reaped by scripts/docker-test-reaper.sh - without
+# guessing from names:
+#   pocketshell.test=1          marks this container as OURS, and is the ONLY
+#                               thing the reaper selects on (unlabeled and
+#                               Coolify containers are untouchable by design);
+#   agent.session=<id>          who created it (APLEXER_SESSION_ID, or
+#                               POCKETSHELL_TEST_SESSION; "unknown" for a
+#                               manual `docker compose up`);
+#   pocketshell.test.created    epoch at creation (POCKETSHELL_TEST_CREATED_AT;
+#                               the reaper falls back to the container's real
+#                               creation time when blank).
+# A changed label is a changed config, so a new run's `up` recreates the
+# previous run's container instead of silently reusing it - intended: a fresh
+# run gets a fixture attributed to THAT run.
+x-test-labels: &test-labels
+  labels:
+    pocketshell.test: "1"
+    agent.session: ${POCKETSHELL_TEST_SESSION:-unknown}
+    pocketshell.test.created: ${POCKETSHELL_TEST_CREATED_AT:-}
+
 services:
   sshd:
+    <<: *test-labels
     build:
       context: .
       dockerfile: Dockerfile.ssh
@@ -104,6 +135,7 @@ services:
   # starts this service: the `integration` job is Testcontainers-only and builds
   # `Dockerfile.ssh-rekeyed` itself, so there is no CI collision.
   sshd-rekeyed:
+    <<: *test-labels
     build:
       context: .
       dockerfile: Dockerfile.ssh-rekeyed
@@ -142,6 +174,7 @@ services:
   #     AGENTS_HOST_PORT=2243 AGENTS_CONTAINER_NAME=pocketshell-test-agents-2243 \
   #     docker compose -f tests/docker/docker-compose.yml down -v
   agents:
+    <<: *test-labels
     build:
       context: ../..
       dockerfile: tests/docker/Dockerfile.agents
@@ -170,6 +203,7 @@ services:
   # mismatch instead of hanging. NOT started by the default workflow; the
   # connected test that uses it is gated accordingly.
   agents-old-cli:
+    <<: *test-labels
     build:
       context: ../..
       dockerfile: tests/docker/Dockerfile.agents-old-cli
@@ -204,6 +238,7 @@ services:
   # agents-pool/2243-2245). NOT started by the default
   # workflow; the connected test that uses it is gated accordingly (Assume).
   agents-daemon:
+    <<: *test-labels
     build:
       context: ../..
       dockerfile: tests/docker/Dockerfile.agents-daemon
@@ -223,6 +258,7 @@ services:
   # `<project>_bootstrap-<scenario>_<n>`, so parallel shards don't conflict.
   # Callers address these fixtures by host port, never by container name.
   bootstrap-ready:
+    <<: *test-labels
     build:
       context: .
       dockerfile: Dockerfile.bootstrap
@@ -234,6 +270,7 @@ services:
     healthcheck: *ssh-healthcheck
 
   bootstrap-uv-install:
+    <<: *test-labels
     build:
       context: .
       dockerfile: Dockerfile.bootstrap
@@ -245,6 +282,7 @@ services:
     healthcheck: *ssh-healthcheck
 
   bootstrap-uv-upgrade:
+    <<: *test-labels
     build:
       context: .
       dockerfile: Dockerfile.bootstrap
@@ -256,6 +294,7 @@ services:
     healthcheck: *ssh-healthcheck
 
   bootstrap-unsupported:
+    <<: *test-labels
     build:
       context: .
       dockerfile: Dockerfile.bootstrap
@@ -267,6 +306,7 @@ services:
     healthcheck: *ssh-healthcheck
 
   bootstrap-daemon-disabled:
+    <<: *test-labels
     build:
       context: .
       dockerfile: Dockerfile.bootstrap
@@ -278,6 +318,7 @@ services:
     healthcheck: *ssh-healthcheck
 
   bootstrap-user-local-path:
+    <<: *test-labels
     build:
       context: .
       dockerfile: Dockerfile.bootstrap
@@ -289,6 +330,7 @@ services:
     healthcheck: *ssh-healthcheck
 
   bootstrap-fish-user-local-path:
+    <<: *test-labels
     build:
       context: .
       dockerfile: Dockerfile.bootstrap
@@ -308,6 +350,7 @@ services:
   # (distinct from the other bootstrap variants 2230-2236, old-cli 2238,
   # daemon 2239).
   bootstrap-notifications:
+    <<: *test-labels
     build:
       context: .
       dockerfile: Dockerfile.bootstrap
@@ -334,6 +377,7 @@ services:
   # tests that use it are gated with `pocketshellNetworkFaultProofs=true` and
   # skipped on CI unless the workflow is explicitly expanded later.
   network-fault-proxy:
+    <<: *test-labels
     image: ghcr.io/shopify/toxiproxy:2.9.0
     container_name: ${NETWORK_FAULT_CONTAINER_NAME:-pocketshell-test-network-fault-proxy}
     command: ["-host", "0.0.0.0"]
@@ -353,6 +397,7 @@ services:
   # proof test is gated by `pocketshellNetworkFaultProofs=true` and skipped on
   # CI unless the workflow starts this service explicitly in a future change.
   packet-loss-proxy:
+    <<: *test-labels
     build:
       context: .
       dockerfile: packet-loss-proxy/Dockerfile

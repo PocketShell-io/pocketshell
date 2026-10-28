@@ -1,0 +1,12 @@
+[Unit]
+Description=Run the PocketShell docker test-container TTL reaper every 30 minutes
+
+[Timer]
+# Twice an hour, ± a small jitter so fleets of boxes do not reap in lockstep.
+# Persistent=true catches up a missed slot (box was off) on the next boot.
+OnCalendar=*:0/30
+RandomizedDelaySec=300
+Persistent=true
+
+[Install]
+WantedBy=timers.target

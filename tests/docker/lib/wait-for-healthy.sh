@@ -26,10 +26,12 @@
 #              entered `unhealthy`, or `docker inspect` could not find
 #              the container
 #
-# Default deadline: 60 seconds. The compose healthcheck itself uses
-# interval=2s retries=10 start_period=5s, so a fully cold start usually
-# settles in ~1–10 s; the 60 s deadline is generous slack for image
-# build + service start on cold CI runners.
+# Default deadline: 120 seconds. The compose healthcheck itself uses
+# interval=30s retries=10 start_period=5s (Hub intake 8a7a09c7 raised the
+# interval from 2s: a 2s SSH probe on an orphaned fixture was a material
+# slice of the Hetzner fork-storm cleanup), so a cold start settles at the
+# first probe, ~30-35 s; the 120 s deadline still covers a first-probe
+# miss plus image build + service start on cold CI runners.
 
 if [[ -n "${POCKETSHELL_WAIT_FOR_HEALTHY_SH:-}" ]]; then
   return 0
@@ -40,7 +42,7 @@ wait_for_container_healthy() {
   local compose_file="$1"
   local service="$2"
   local log_file="${3:-/dev/null}"
-  local deadline_seconds="${4:-60}"
+  local deadline_seconds="${4:-120}"
 
   if [[ -z "$compose_file" || -z "$service" ]]; then
     printf 'wait_for_container_healthy: compose_file and service are required\n' >&2

@@ -124,7 +124,12 @@ cleanup() {
   docker image rm -f "$IMAGE" >/dev/null 2>&1 || true
   rm -rf "$TMP_DIR"
 }
+# Hub intake 8a7a09c7 (AC1): the container comes back down on normal exit,
+# failure AND interrupt. INT/TERM run cleanup and exit immediately (a signal
+# trap does not imply exit, and resuming the suite after a SIGINT would limp
+# through failing steps against a container that no longer exists).
 trap cleanup EXIT
+trap 'cleanup; exit 130' INT TERM
 
 printf '\nBuilding %s...\n' "$IMAGE"
 if ! docker build --file "$DOCKERFILE" --tag "$IMAGE" "$ROOT_DIR" >"$TMP_DIR/build.log" 2>&1; then
@@ -133,7 +138,16 @@ if ! docker build --file "$DOCKERFILE" --tag "$IMAGE" "$ROOT_DIR" >"$TMP_DIR/bui
 fi
 ok "agents image built with its build-time aplexer lifecycle"
 
-docker run -d --name "$CONTAINER" -p 127.0.0.1::22 "$IMAGE" >/dev/null
+# Hub intake 8a7a09c7 (AC1/AC2): `--rm` so even an untrapped kill cannot leave
+# the container behind, plus the standard test labels so the TTL reaper and
+# `docker ps --filter label=pocketshell.test=1` see it.
+source "$ROOT_DIR/scripts/lib/docker-test-hygiene.sh"
+pocketshell_test_hygiene_init
+docker run -d --rm --name "$CONTAINER" \
+  --label pocketshell.test=1 \
+  --label "agent.session=$POCKETSHELL_TEST_SESSION" \
+  --label "pocketshell.test.created=$POCKETSHELL_TEST_CREATED_AT" \
+  -p 127.0.0.1::22 "$IMAGE" >/dev/null
 SSH_PORT="$(docker port "$CONTAINER" 22/tcp | head -1 | sed 's/.*://')"
 [[ -n "$SSH_PORT" ]] || fail "could not read the published SSH port"
 cp "$ROOT_DIR/tests/docker/test_key" "$KEY"

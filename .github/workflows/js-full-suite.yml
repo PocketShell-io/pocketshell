@@ -28,6 +28,14 @@ on:
     - cron: '17 2 * * *'
   workflow_dispatch:
 
+# Hub intake 8a7a09c7 (AC2): every docker test container this workflow creates
+# is labeled `agent.session=ci-<run>-<attempt>` (plus the static
+# `pocketshell.test=1` and a created-at stamp baked by tests/docker/compose),
+# so any leftover is attributable to this exact run and reaped by
+# scripts/docker-test-reaper.sh without guessing from names.
+env:
+  POCKETSHELL_TEST_SESSION: ci-${{ github.run_id }}-${{ github.run_attempt }}
+
 concurrency:
   group: js-full-suite-${{ github.ref }}
   queue: max
@@ -199,6 +207,7 @@ jobs:
           tests/scripts/js-first-rewrite-composer-gate-test.sh
           tests/scripts/js-first-rewrite-hotkeys-gate-test.sh
           tests/scripts/shared-app-runner-cleanup-test.sh
+          scripts/test-docker-test-hygiene.sh
 
       - name: Build Android debug APK
         run: pnpm build:android:debug
@@ -283,7 +292,7 @@ jobs:
           export_agents_fixture_version_for_run 0 android/app/build/outputs/apk/debug/app-debug.apk
           scripts/ci-journey-fixture-retry.sh agents -- docker compose -f tests/docker/docker-compose.yml up -d --build --no-deps agents
           source tests/docker/lib/wait-for-healthy.sh
-          wait_for_container_healthy tests/docker/docker-compose.yml agents /tmp/js-lifecycle-agents-health.log 60
+          wait_for_container_healthy tests/docker/docker-compose.yml agents /tmp/js-lifecycle-agents-health.log 120
           cat /tmp/js-lifecycle-agents-health.log
 
       # Issue #3022: dev:live through the local ssh2 bridge into a real PTY on

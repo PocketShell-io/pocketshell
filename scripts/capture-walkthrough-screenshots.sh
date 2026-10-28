@@ -5,6 +5,9 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
 source "$ROOT_DIR/scripts/lib/avd-lock.sh"
+# Hub intake 8a7a09c7: the teardown stack the compose fleet below registers
+# into (flushed by pocketshell_release_all in the EXIT trap).
+source "$ROOT_DIR/scripts/lib/docker-test-hygiene.sh"
 source "$ROOT_DIR/scripts/lib/scope-run.sh"
 source "$ROOT_DIR/scripts/lib/gradle-profile.sh"
 source "$ROOT_DIR/scripts/lib/apk-identity.sh"
@@ -208,7 +211,7 @@ source "$ROOT_DIR/tests/docker/lib/wait-for-healthy.sh"
 
 wait_for_host_ssh_fixture() {
   local log_file="$RUN_DIR/04-docker-ssh-readiness.log"
-  if ! wait_for_container_healthy "$COMPOSE_FILE" agents "$log_file" 60; then
+  if ! wait_for_container_healthy "$COMPOSE_FILE" agents "$log_file" 120; then
     printf '\n[04-docker-ssh-readiness]\nLog: %s\n' "$log_file"
     tail -n 80 "$log_file" || true
     fail "Docker SSH fixture did not become healthy at $SSH_USER@$SSH_HOST:$SSH_PORT"
@@ -433,6 +436,10 @@ fi
 # shellcheck source=scripts/lib/agents-fixture-version.sh
 source "$ROOT_DIR/scripts/lib/agents-fixture-version.sh"
 export_agents_fixture_version_for_run "$VISUAL_AUDIT_BUILD_APKS" "$APP_APK"
+# Hub intake 8a7a09c7 (AC1): tear this run's compose fleet down on exit; the
+# EXIT trap flushes the stack through pocketshell_release_all.
+pocketshell_test_register_teardown "capture-compose-fleet" \
+  docker compose -f "$COMPOSE_FILE" down -v --remove-orphans
 run_logged "03-docker-agents-recreate" docker compose -f "$COMPOSE_FILE" up -d --build --force-recreate agents
 wait_for_host_ssh_fixture
 # Issue #2481: the unfiltered set includes J05ReconnectAfterDropJourney, which

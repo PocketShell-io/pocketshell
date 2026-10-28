@@ -104,6 +104,9 @@ case "$TLS_PORT" in 2222|3202|3204|3205) fail "--tls-port $TLS_PORT is reserved 
 source "$ROOT_DIR/scripts/lib/disk-preflight.sh"
 source "$ROOT_DIR/scripts/lib/gradle-output-lock.sh"
 source "$ROOT_DIR/scripts/lib/avd-lock.sh"
+# Hub intake 8a7a09c7: resolves + exports the AC2 test-label env the gateway
+# compose file interpolates into every service.
+source "$ROOT_DIR/scripts/lib/docker-test-hygiene.sh"
 source "$ROOT_DIR/scripts/lib/android-input-preflight.sh"
 source "$ROOT_DIR/scripts/lib/agents-fixture-version.sh"
 
@@ -211,10 +214,13 @@ collect_and_stop_fixture() {
   done
   compose down -v --remove-orphans >/dev/null 2>&1 || true
 }
-trap collect_and_stop_fixture EXIT
+# Hub intake 8a7a09c7 (AC1): the lane's own compose project comes down on
+# normal exit, failure and interrupt.
+trap collect_and_stop_fixture EXIT INT TERM
 
 # The host: the agents fixture image (sshd, the pinned CLI and aplexer),
 # version-matched to the APK so the app reaches its sessions.
+pocketshell_test_hygiene_init
 export_agents_fixture_version "$ROOT_DIR/android/app/build/outputs/apk/debug/app-debug.apk"
 docker image inspect pocketshell-test:agents >/dev/null 2>&1 \
   || docker compose -f "$ROOT_DIR/tests/docker/docker-compose.yml" build agents

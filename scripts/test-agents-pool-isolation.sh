@@ -126,6 +126,10 @@ make_worktree() {
   # worktree missing it makes every `source` in the harness print a
   # "No such file" error, so keep the copied helper set complete.
   cp "$ROOT_DIR/scripts/lib/agents-fixture-version.sh" "$root/scripts/lib/agents-fixture-version.sh"
+  # Hub intake 8a7a09c7: agents-pool.sh now also sources this (AC2 label env
+  # + AC1 teardown stack). Same rule as above: keep the copied helper set
+  # complete or every sandboxed `source` prints "No such file".
+  cp "$ROOT_DIR/scripts/lib/docker-test-hygiene.sh" "$root/scripts/lib/docker-test-hygiene.sh"
   cp "$ROOT_DIR/tests/docker/docker-compose.yml" "$root/tests/docker/docker-compose.yml"
 }
 

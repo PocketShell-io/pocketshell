@@ -143,6 +143,15 @@ The release workflow uses the same compose file and removes its targets in an
 `always` cleanup step. Do not use a broad Docker prune while another lane is
 running; it can delete a fixture or image that the lane still owns.
 
+Since Hub intake 8a7a09c7 the harness also cleans up after itself when a run
+dies (teardown traps + `docker run --rm`), labels every test container
+`pocketshell.test=1` + `agent.session=<id>`, and a TTL reaper
+(`scripts/docker-test-reaper.sh`, systemd timer in `scripts/systemd/`, install
+in [testing.md](testing.md) "Docker test-harness hygiene") removes anything
+labeled that still outlives its TTL - default 6h. Audit leftovers with
+`docker ps -a --filter label=pocketshell.test=1`; the reaper never touches
+unlabeled or Coolify containers.
+
 ## Product grep boundary
 
 The product has no session-runtime dependency on the operational tmux tooling.

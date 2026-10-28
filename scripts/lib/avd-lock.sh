@@ -328,6 +328,15 @@ pocketshell_start_without_avd_lock_fd() {
 # release (issue #2007) are invoked defensively only when their helper has been
 # sourced into the shell.
 pocketshell_release_all() {
+  # Hub intake 8a7a09c7: flush the docker-test teardown stack FIRST, while the
+  # port flocks below are still held - tearing a lane's fixture down after
+  # releasing the flock would let a sibling claim the port mid-teardown. This
+  # is one of two flush points (the other is the lib's own EXIT/INT/TERM
+  # dispatcher); the flush itself is idempotent, so a shell that trips both
+  # is fine.
+  if declare -F pocketshell_test_teardown_run >/dev/null 2>&1; then
+    pocketshell_test_teardown_run || true
+  fi
   # Issue #2946: re-enable a HOME launcher the input preflight disabled for
   # this lane, while this process still owns the emulator.
   if declare -F pocketshell_android_restore_launchers >/dev/null 2>&1; then
