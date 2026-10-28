@@ -7,6 +7,10 @@ cd -- "$ROOT_DIR"
 : "${GITHUB_RUN_ID:?GITHUB_RUN_ID is required for packaged CI evidence}"
 : "${GITHUB_RUN_ATTEMPT:?GITHUB_RUN_ATTEMPT is required for packaged CI evidence}"
 
+# Boot completion does not imply guest networking is enabled or routable.
+# Fail before starting journeys if the actual guest-to-fixture path is down.
+python3 scripts/android-network-preflight.py
+
 if scripts/connected-js-smoke.sh --suffix i2855ci --test-only; then
   smoke_status=0
 else

@@ -724,7 +724,7 @@ action_command = "scripts/ci-js-first-packaged-lanes.sh"
 subprocess.run(["bash", "-n", str(packaged_lanes_path)], check=True)
 
 
-def exercise_packaged_lanes(label: str, *, smoke: int = 0, lifecycle: int = 0,
+def exercise_packaged_lanes(label: str, *, preflight: int = 0, smoke: int = 0, lifecycle: int = 0,
                             usage: int = 0, files: int = 0, composer: int = 0, durable: int = 0, settings: int = 0,
                             voice_settings: int = 0, forward_service: int = 0,
                             account_sync: int = 0, account_picker: int = 0, gateway: int = 0, shared_app: int = 0,
@@ -741,6 +741,15 @@ def exercise_packaged_lanes(label: str, *, smoke: int = 0, lifecycle: int = 0,
         fake_wrapper.chmod(0o755)
 
         trace = fixture / "lane-trace.txt"
+        fake_preflight = fake_scripts / "android-network-preflight.py"
+        fake_preflight.write_text(
+            "import os\n"
+            "from pathlib import Path\n"
+            "status = int(os.environ['FIXTURE_PREFLIGHT_STATUS'])\n"
+            "with Path(os.environ['FIXTURE_TRACE']).open('a') as trace:\n"
+            "    trace.write(f'network-preflight\\t{status}\\n')\n"
+            "raise SystemExit(status)\n"
+        )
         runtime_bin = fixture / "runtime bin"
         runtime_bin.mkdir()
         fake_pnpm = runtime_bin / "pnpm"
@@ -862,6 +871,7 @@ def exercise_packaged_lanes(label: str, *, smoke: int = 0, lifecycle: int = 0,
             "BASH_ENV": "",
             "PNPM": str(fake_pnpm),
             "FIXTURE_TRACE": str(trace),
+            "FIXTURE_PREFLIGHT_STATUS": str(preflight),
             "FIXTURE_RUNTIME_CAPTURE": str(runtime_capture),
             "FIXTURE_SMOKE_STATUS": str(smoke),
             "FIXTURE_LIFECYCLE_STATUS": str(lifecycle),
@@ -895,6 +905,18 @@ def exercise_packaged_lanes(label: str, *, smoke: int = 0, lifecycle: int = 0,
             text=True,
             capture_output=True,
         )
+        trace_lines = trace.read_text().splitlines()
+        if not trace_lines or trace_lines.pop(0) != f"network-preflight\t{preflight}":
+            raise AssertionError(f"{label}: network preflight did not execute first: {trace_lines!r}")
+        if preflight:
+            if result.returncode != preflight or trace_lines:
+                raise AssertionError(
+                    f"{label}: failed network preflight must stop every journey without retries: "
+                    f"exit={result.returncode}, trace={trace_lines!r}, stderr={result.stderr!r}"
+                )
+            if (fake_repo / "android").exists() or runtime_capture.exists():
+                raise AssertionError(f"{label}: a journey produced output after network preflight failure")
+            return
         expected_copy = 31 if fail_junit_copy else (1 if omit_junit else 0)
         expected_hotkeys_checker = (
             42 if omit_hotkeys_junit else 43 if hotkeys != 0 else hotkeys_checker
@@ -915,7 +937,6 @@ def exercise_packaged_lanes(label: str, *, smoke: int = 0, lifecycle: int = 0,
                 f"{label}: wrapper did not preserve its lane statuses: exit={result.returncode}, "
                 f"stdout={result.stdout!r}, stderr={result.stderr!r}"
             )
-        trace_lines = trace.read_text().splitlines()
         if [line.split("\t", 1)[0] for line in trace_lines] != [
             "smoke", "lifecycle", "usage-ports", "files", "durable-storage", "composer", "hotkeys",
             "hotkeys-check", "settings", "voice-settings", "account-sync", "account-picker", "gateway", "shared-app", "account-vault", "forward-service", "key-vault", "signed-upgrade",
@@ -991,6 +1012,7 @@ def exercise_packaged_lanes(label: str, *, smoke: int = 0, lifecycle: int = 0,
 
 
 exercise_packaged_lanes("success")
+exercise_packaged_lanes("network preflight failure stops all journeys", preflight=27)
 exercise_packaged_lanes("smoke failure is fail-closed", smoke=17)
 exercise_packaged_lanes("lifecycle failure is fail-closed", lifecycle=19)
 exercise_packaged_lanes("usage/ports failure is fail-closed", usage=21)

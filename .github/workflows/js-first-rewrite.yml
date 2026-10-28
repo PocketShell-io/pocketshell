@@ -152,6 +152,9 @@ jobs:
       - name: Check fail-closed packaged fast-key result guard
         run: scripts/check-js-hotkeys-journey-results.py --self-test
 
+      - name: Check emulator network preflight regression cases
+        run: python3 scripts/test-android-network-preflight.py
+
       - name: Check flake quarantine registry and non-blocking self-test (policy D36)
         run: |
           scripts/check-journey-quarantine-expiry.sh
@@ -509,6 +512,7 @@ jobs:
             android/app/build/outputs/apk/debug/app-debug.apk
             android/app/build/outputs/androidTest-results/connected/debug/TEST-*.xml
             android/app/build/outputs/js-smoke-results/TEST-*.xml
+            android/app/build/outputs/js-network-preflight/**
             android/app/build/outputs/js-smoke-diagnostics/**
             android/app/build/outputs/js-usage-ports/**
             android/app/build/outputs/androidTest-results/connected/debug/diagnostics-*
