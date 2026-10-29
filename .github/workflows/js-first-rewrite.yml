@@ -132,6 +132,9 @@ jobs:
       - name: Check CI watcher required-check defaults
         run: python3 scripts/watch-ci.py --self-test
 
+      - name: Check Actions minutes accounting
+        run: python3 -m unittest discover -s scripts/ci -p 'test_actions_minutes.py' -v
+
       - name: Check fail-closed feature journey qualification guard
         run: |
           scripts/check-js-journey-results.py --self-test
