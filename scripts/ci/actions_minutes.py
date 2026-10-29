@@ -53,16 +53,25 @@ def timestamp(value, job_id):
 
 
 def measure(job):
+    # Skipped jobs never ran. GitHub may give them scheduling timestamps in
+    # reverse order; those are irrelevant to runner execution time.
+    if job.get("conclusion") == "skipped":
+        return None
+    # Explicit allocation metadata plus no executed steps proves that a
+    # cancelled queued job never used a runner. Its timestamps can likewise be
+    # reversed. Missing fields alone must not silently establish this proof.
+    never_assigned = ({"runner_id", "runner_name", "steps"} <= job.keys()
+                      and job["runner_id"] in (None, 0)
+                      and job["runner_name"] in (None, "") and job["steps"] == [])
+    if job.get("conclusion") == "cancelled" and never_assigned:
+        return None
     start = timestamp(job.get("started_at"), job["id"])
     end = timestamp(job.get("completed_at"), job["id"])
     if start is not None and end is not None and end < start:
         raise ValueError(f"job {job['id']}: completed before it started")
-    # GitHub can timestamp a cancelled queued job even though no runner ever
-    # accepted it. Preserve jobs whose historical runner metadata disappeared
-    # but whose executed steps still prove that the job ran.
-    never_assigned = ("runner_id" in job and not job["runner_id"]
-                      and not job.get("runner_name") and not job.get("steps"))
-    if job.get("conclusion") == "skipped" or never_assigned or start is None or end is None:
+    # Keep validating allocated/executed jobs even when old runner metadata
+    # disappeared; their recorded steps prove that execution took place.
+    if never_assigned or start is None or end is None:
         return None
     seconds = (end - start).total_seconds()
     if seconds == 0:

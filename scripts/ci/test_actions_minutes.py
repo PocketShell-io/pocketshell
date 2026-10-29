@@ -84,6 +84,44 @@ class ActionsMinutesTests(unittest.TestCase):
         self.assertEqual(summary["total"]["weighted_minutes"], 1)
         self.assertEqual(summary["total"]["excluded_jobs"], 1)
 
+    def test_live_skipped_job_with_backward_timestamps_is_excluded(self):
+        # Jobs API run 36632322818, job 109624359245: no runner executed.
+        self.groups[0]["jobs"] = [{"id": 109624359245,
+            "name": "File/update red release-validation tracking issue",
+            "conclusion": "skipped", "status": "completed",
+            "started_at": "2026-09-29T21:17:58Z",
+            "completed_at": "2026-09-29T21:17:57Z",
+            "runner_id": None, "runner_name": None,
+            "labels": ["ubuntu-latest"], "steps": []}]
+        summary = self.summary()
+        self.assertEqual(summary["total"]["weighted_minutes"], 0)
+        self.assertEqual(summary["excluded_reasons"], {"skipped": 1})
+
+    def test_unallocated_cancelled_jobs_ignore_positive_and_negative_waiting_time(self):
+        # GitHub's unallocated cancellation timestamps describe scheduling, not
+        # execution. The negative case matches desktop run 37824652789.
+        for seconds in (-1, 3600):
+            for runner_id, runner_name in ((None, None), (0, "")):
+                with self.subTest(seconds=seconds, runner_id=runner_id):
+                    queued = self.job(113476698974, seconds)
+                    queued.update(conclusion="cancelled", status="completed",
+                                  runner_id=runner_id, runner_name=runner_name, steps=[])
+                    self.groups[0]["jobs"] = [queued]
+                    summary = self.summary()
+                    self.assertEqual(summary["total"]["weighted_minutes"], 0)
+                    self.assertEqual(summary["total"]["excluded_jobs"], 1)
+
+    def test_allocated_or_executed_cancelled_jobs_still_reject_backward_timestamps(self):
+        for metadata in ({"runner_id": 123, "runner_name": "GitHub Actions 123", "steps": []},
+                         {"runner_id": None, "runner_name": None, "steps": [{"name": "Run tests"}]},
+                         {"runner_id": None, "steps": []}):
+            with self.subTest(metadata=metadata):
+                job = self.job(1, -1)
+                job.update(conclusion="cancelled", **metadata)
+                self.groups[0]["jobs"] = [job]
+                with self.assertRaisesRegex(ValueError, "completed before it started"):
+                    self.summary()
+
     def test_invalid_or_backward_timestamps_fail(self):
         for value in ("garbage", "2026-10-01T12:00:00", "2026-10-01T11:00:00Z"):
             with self.subTest(value=value):
