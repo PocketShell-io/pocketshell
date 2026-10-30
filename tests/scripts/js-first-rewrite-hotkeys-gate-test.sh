@@ -375,13 +375,26 @@ if ("scroll-snap-type: y mandatory;" not in mobile_hotkeys
         or "Math.rint(scrollTop / 48.0)" not in journey
         or "assertMainCatalogEndpointReachability" not in journey
         or "endpointIntersectsContent" not in journey
-        or "const insideContent=r.left>=c.left&&r.right<=c.right&&r.top>=c.top&&r.bottom<=c.bottom;" not in journey
+        or 'key.put("insideContent", RectContainment.insideWithTolerance(key.getJSONObject("bounds"), contentBounds));' not in journey
         or "insideViewport:r.left>=0&&r.top>=0&&r.right<=innerWidth&&r.bottom<=(v?.height??innerHeight)};});" not in journey
         or "Main rail end clamp must stay on the 56dp key-slot boundary" not in journey
         or "scrollSnapType" not in extractor
         or "Ctrl catalog reachability between 48dp row boundaries rejected" not in extractor
         or "Main endpoint clamp clipping Tab at x=6.38 rejected" not in extractor):
     raise AssertionError("Fast Keys physical swipes must snap to rows and preserve fully visible 48dp targets")
+# #3055: every fast-key insideContent oracle is computed by the shared RectContainment helper, whose
+# tolerance is pinned to sub-pixel rounding (0.5px per edge) and whose JVM unit test keeps a >=2px
+# clipped key red, so the 48dp full-visibility guarantee cannot quietly widen into a loose band.
+rect_containment = journey_path.parents[6].joinpath("sharedTest/java/com/pocketshell/app/smoke/RectContainment.java").read_text()
+rect_containment_test = journey_path.parents[6].joinpath("test/java/com/pocketshell/app/smoke/RectContainmentTest.java").read_text()
+android_unit_gate = journey_path.parents[9].joinpath("scripts/run-android-unit-gate.sh").read_text()
+if ("public static final double SUBPIXEL_TOLERANCE_PX = 0.5;" not in rect_containment
+        or journey.count("RectContainment.insideWithTolerance(") != 3
+        or re.search(r"insideContent\s*[:=]\s*r\.left", journey)
+        or "genuinelyClippedKeyTwoPixelsOutsideTheRailFailsOnEveryEdge" not in rect_containment_test
+        or "assertEquals(0.5, RectContainment.SUBPIXEL_TOLERANCE_PX, 0.0);" not in rect_containment_test
+        or "com.pocketshell.app.smoke.RectContainmentTest" not in android_unit_gate):
+    raise AssertionError("Fast-key 48dp containment must use the shared 0.5px RectContainment helper with its clipped-key red case gated")
 if ("mainRows.map((row) => findAll(row" not in unit_test
         or ".toEqual([10])" not in unit_test
         or "assertMainCatalogSingleRow(scroll, geometry);" not in journey
@@ -548,7 +561,7 @@ for swipe_contract in (
     "private void injectSwipe(float startX, float startY, float endX, float endY)",
     "MotionEvent.ACTION_MOVE",
     "towardEnd ? offsetDelta > 0.5 : offsetDelta < -0.5",
-    "insideContent:r.left>=c.left-0.5",
+    'geometry.put("insideContent", RectContainment.insideWithTolerance(',
     "clearOfButtons",
     "insideScroller",
     "double startX = anchor.getDouble(\"x\")",
