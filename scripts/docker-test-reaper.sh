@@ -111,6 +111,12 @@ while IFS=$'\t' read -r id name created_at created_label session_label; do
     created_epoch="$(date -d "$created_at" +%s 2>/dev/null || true)"
   fi
   if [[ -z "$created_epoch" ]]; then
+    # `docker ps` CreatedAt carries a zone abbreviation GNU date may reject;
+    # `docker inspect` returns RFC3339, which always parses.
+    inspected="$(docker inspect -f '{{.Created}}' "$id" 2>/dev/null || true)"
+    [[ -z "$inspected" ]] || created_epoch="$(date -d "$inspected" +%s 2>/dev/null || true)"
+  fi
+  if [[ -z "$created_epoch" ]]; then
     printf 'docker-test-reaper: cannot age container %s (%s); leaving it alone\n' "$name" "$id" >&2
     continue
   fi
