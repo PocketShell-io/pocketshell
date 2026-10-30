@@ -34,6 +34,10 @@ button { color: inherit; }
 }
 
 .app-shell[data-native-platform="android"] {
+  /* Android already resizes the WebView's containing block for the IME.
+     Dynamic viewport units can retain the pre-IME height during that resize;
+     contain the dock in the actual window even before native state arrives. */
+  height: 100%;
   --android-shell-safe-top: max(24px, var(--safe-area-inset-top, env(safe-area-inset-top, 0px)));
   --android-shell-safe-bottom: max(24px, var(--safe-area-inset-bottom, env(safe-area-inset-bottom, 0px)));
   padding-top: var(--android-shell-safe-top);

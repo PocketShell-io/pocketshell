@@ -1080,9 +1080,20 @@ public final class J23InlineDictationJourney {
         evalString("window.__ps2857ControlledSpeech.emit('result', 'late attach result', "
                 + JSONObject.quote(attachRequest) + "); 'late result emitted'");
         awaitInlineDictationRecovery(attachPartial);
-        JSONObject attachCancelledGeometry = captureGeometry("dictation-attach-cancel-complete");
-        assertDictationMicReachable(attachCancelledGeometry);
-        captureScreenshot("fastkeys-dictation-attach-cancel.png");
+        evalString(AndroidViewportResizeProbe.installScript());
+        try {
+            tapDomCenter(".terminal-viewport");
+            awaitImeVisible(true);
+            awaitJsTrue("document.querySelector('.app-shell')?.dataset.keyboardVisible === 'false'"
+                    + " && (window.visualViewport?.height ?? innerHeight) < screen.height - 150");
+            JSONObject attachCancelledGeometry = captureGeometry("dictation-attach-cancel-complete");
+            Log.i("PS2884Geometry", "RUN " + artifactRunId + " controlled-viewport "
+                    + AndroidViewportResizeProbe.compactGeometry(attachCancelledGeometry));
+            captureScreenshot("fastkeys-dictation-attach-cancel.png");
+            assertDictationMicReachable(attachCancelledGeometry);
+        } finally {
+            evalString(AndroidViewportResizeProbe.restoreScript());
+        }
         assertEquals("late attach results must not write to the new session", writesBeforeAttachCancel,
                 terminalInputAcknowledgements());
         journey.put("dictationAttachCancel", new JSONObject().put("requestId", attachRequest)
