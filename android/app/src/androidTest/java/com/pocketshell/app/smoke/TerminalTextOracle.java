@@ -21,8 +21,20 @@ final class TerminalTextOracle {
         // Use the grid captured with the buffer, not the widest visible text.
         // Pass text and painted widths: remote emoji cell widths can differ
         // from the DOM renderer, so the matcher checks both exact models.
+        //
+        // The API 35 emulator's WebView (Chromium 124) drops the final glyph of
+        // every exactly-full .xterm-rows row from innerText while the buffer
+        // keeps it (run 41188455819: a 43-char marker wrapped 38+5 and every
+        // full row read 37 chars, so no physical-row join could ever match).
+        // Accept the buffer-evidence viewport text first — the app assembles it
+        // from buffer lines with real isWrapped joins — then fall back to the
+        // physical rows, whose cell splits stay authoritative for redrawn
+        // regions that overwrite lines without an isWrapped flag.
         return "(() => {const grid=JSON.parse(window.__ps2857TerminalBufferState || '{}');"
                 + "if (!(grid.cols > 0)) return false;"
+                + "const marker=" + JSONObject.quote(marker) + ";"
+                + "if (typeof grid.visibleText === 'string' && grid.visibleText.includes(marker))"
+                + "{window.__ps2857TerminalMatchPath='buffer-visible';return true;}"
                 + "const rows=[...document.querySelectorAll('.xterm-rows')].find(n=>n.offsetParent!==null);"
                 + "const screen=rows?.closest('.xterm-screen')?.getBoundingClientRect();"
                 + "if (!rows || !screen || !(screen.width>0)) return false;"
@@ -30,8 +42,9 @@ final class TerminalTextOracle {
                 + "const occupied=physical.map(row=>{const range=document.createRange();range.selectNodeContents(row);"
                 + "const rects=Array.from(range.getClientRects()).filter(rect=>rect.width>0);"
                 + "return rects.length?(Math.max(...rects.map(rect=>rect.right))-screen.left)/cellWidth:0;});"
-                + "return (" + matcher() + ")(physical.map(row=>row.innerText).join('\\n'), " + JSONObject.quote(marker)
-                + ", 'includes', grid.cols, occupied);})()";
+                + "const matched=(" + matcher() + ")(physical.map(row=>row.innerText).join('\\n'), marker, 'includes', grid.cols, occupied);"
+                + "window.__ps2857TerminalMatchPath=matched?'physical-rows':'none';"
+                + "return matched;})()";
     }
 
     private static synchronized String matcher() throws IOException {
