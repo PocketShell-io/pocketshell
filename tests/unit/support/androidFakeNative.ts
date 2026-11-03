@@ -56,6 +56,13 @@ export class FakeNative {
   /** Every PTY write, with the channel it was addressed to. */
   readonly channelWrites: Array<[string, string]> = [];
   sessions = [sessionJson('main', '/home/u/git/demo'), sessionJson('tests', '/home/u/git/demo')];
+  engineCatalogExitCode = 0;
+  engineCatalogStdout = JSON.stringify([
+    { name: 'claude', available: true },
+    { name: 'codex', available: false },
+    { name: 'custom-engine', available: true },
+    { name: 'shell', available: true },
+  ]);
   /** While true every dial fails the way an unreachable host does (retryable). */
   refuseDials = false;
   /**
@@ -111,6 +118,9 @@ export class FakeNative {
           const before = this.sessions.length;
           this.sessions = this.sessions.filter((session) => session.id !== selector && session.name !== selector);
           return { ...base, exitCode: this.sessions.length < before ? 0 : 1, stdout: '' };
+        }
+        if (options.command === 'a engines --json') {
+          return { ...base, exitCode: this.engineCatalogExitCode, stdout: this.engineCatalogStdout };
         }
         if (options.command === 'printf %s "$HOME"') return { ...base, exitCode: 0, stdout: '/home/u' };
         if (options.command.includes('usage --json')) {

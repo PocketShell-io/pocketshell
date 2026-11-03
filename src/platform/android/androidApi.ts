@@ -519,7 +519,26 @@ export function createAndroidPlatform(deps: AndroidApiDeps): AndroidPlatform {
     attachments: createAndroidAttachments(hub),
 
     agent: {
-      kinds: async () => null,
+      async kinds(connectionId) {
+        try {
+          const result = await exec(connectionId, 'a engines --json');
+          if (result.exitCode !== 0) return null;
+          const rows: unknown = JSON.parse(result.stdout);
+          if (!Array.isArray(rows)) return null;
+          const names = rows.map((row): string => {
+            if (!row || typeof row !== 'object' || Array.isArray(row)) throw new Error('Malformed engine catalog row');
+            const engine = row as { name?: unknown; available?: unknown };
+            const name = typeof engine.name === 'string' ? engine.name.trim() : '';
+            if (!name || typeof engine.available !== 'boolean') throw new Error('Malformed engine catalog row');
+            return engine.available && name !== 'shell' ? name : '';
+          });
+          return [...new Set(names.filter(Boolean))];
+        } catch {
+          // The UI keeps its static offline picker when an older or
+          // unreachable host cannot provide aplexer's engine catalog.
+          return null;
+        }
+      },
       binaries: async () => null,
       profiles: async () => [],
       envList: async () => [],

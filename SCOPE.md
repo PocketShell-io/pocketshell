@@ -11,7 +11,8 @@ This repo: the Android/mobile client and the product charter shared by the Pocke
 - Live end-to-end SSH terminals; human voice, keyboard and IME input.
 - Host trust, keys and vault; settings and zero-knowledge sync.
 - NAT access through the gateway, device enrollment, files/SFTP and port forwarding.
-- Per-host sessions/workspaces, human-initiated start/kill on the person's own hosts,
+- Per-host sessions/workspaces, human-initiated start/attach/kill and keystroke
+  input on the person's own hosts (including from their own terminal scripts),
   and display-only local `quse` output without quota history, capture or timers.
 - The Android, web, desktop and TUI access clients, host helper and product site.
 
