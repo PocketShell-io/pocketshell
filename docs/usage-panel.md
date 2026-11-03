@@ -82,9 +82,8 @@ exception is Codex reset-credit inventory described below.
 For Codex only, PocketShell reads the additive inventory fields
 `details.reset_credits`, `details.reset_credits_available`, and
 `details.reset_credits_error`. These credits are already available. Their
-timestamps are expiry times, never quota resets, and they do not feed the
-dashboard's soonest-reset value, reset banners/events, notifications, push,
-or any reset action.
+timestamps are expiry times, never quota resets, and they do not represent
+quota history or reset events.
 
 The panel preserves source order and duplicates, and includes only rows whose
 status is exactly `available`. It shows an honest zero-count header. Missing
@@ -108,67 +107,16 @@ For each connected host, PocketShell:
 1. On host bootstrap, detects whether `pocketshell` is installed: `command -v pocketshell` over SSH.
 2. If present: enables the usage panel for that host.
 3. If absent or version-mismatched: the host setup flow offers to install or upgrade the helper.
-4. Runs the usage command on a configurable interval while the app is in the foreground.
+4. Runs the usage command when the user opens the screen or refreshes it.
 5. Parses the normalized NDJSON, renders mobile UI.
 
-## Stale-while-revalidate cache (issue #689)
+## Current display path
 
-The usage screen is **always populated + instant**: it renders the last
-captured reading immediately, labelled with its capture time, then refreshes
-live in the foreground and swaps in fresh data. The user never stares at a
-spinner and never sees only-stale data without knowing it.
-
-### Server-side capture + history
-
-The host captures usage on a schedule (cron / systemd timer — server-side
-scheduling is fine; the foreground-only rule **D21** applies to the Android
-app, not the host CLI):
-
-```bash
-pocketshell usage --capture
-```
-
-`--capture` fetches usage live (via the daemon when one is running, else a
-one-shot subprocess) and writes two artifacts under
-`${XDG_STATE_HOME:-~/.local/state}/pocketshell/usage/`:
-
-- `usage-latest.json` — the cached latest reading
-  (`{"captured_at": "...Z", "records": [ … ]}`), mode `0600`.
-- `usage-history.jsonl` — an append-only history log, one capture per line,
-  **trimmed to the most recent 2000 lines** (~83 days at hourly capture; the
-  file stays well under ~1 MB). No external logrotate dependency. The history
-  enables usage tracking over time and powers the future reset-detection
-  follow-up.
-
-A failed live fetch is **not** cached, so a transient provider hiccup never
-pins a bad reading.
-
-The scheduler units (systemd user `.timer`/`.service` + a cron example) and
-install instructions live in the CLI repo's `scheduler/` directory
-([PocketShell-io/pocketshell-cli](https://github.com/PocketShell-io/pocketshell-cli),
-issue #2643).
-The recommended install is an hourly `systemctl --user` timer.
-
-### App read path
-
-The app reads the cache instantly with:
-
-```bash
-pocketshell usage --cached
-```
-
-which prints `usage-latest.json` (exit 3 with a friendly note when no capture
-has run yet, so the app falls back to a pure live fetch). The app:
-
-1. Renders the cached records at once with a "Last captured at HH:mm · refreshing…" label.
-2. Runs the live `pocketshell usage --json` fetch in the foreground.
-3. On success, swaps to the fresh value and updates the timestamp.
-4. On failure/timeout, keeps the cached value with an honest
-   "Couldn't refresh — showing cached from HH:mm" note (no scary blocking error).
-
-A per-host `usageCommandOverride` disables the cache path (an override is an
-arbitrary script that does not speak `--cached`); those hosts go straight to
-the live fetch.
+The app reads live usage with `pocketshell usage --json` over the connected
+SSH session. It does not call `--capture`, `--cached`, or `--reset-events` and
+does not use a systemd timer, cron job, quota-history file, or reset detector.
+Provider credentials remain on the host; current quota and reset-time fields
+come directly from the live `quse` output.
 
 ## Pluggable usage source
 
@@ -273,5 +221,4 @@ the existing progress-bar UI keeps the same data contract.
 - Historical usage charts (monthly burn graphs) — the current helper does not track time series
 - Cost dollarization — provider APIs don't report dollar cost reliably across plans
 - Per-session attribution (which session burned which tokens) — not exposed by the source tools
-- Push notifications when quota approaches limit — phase 4 polish
 - App-side credential storage of any kind — explicitly never

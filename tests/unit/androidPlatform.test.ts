@@ -434,6 +434,30 @@ describe('Android PocketShellApi platform', () => {
     const bootstrap = await created.api.helper.bootstrap(result.connectionId!);
     expect(bootstrap.pocketshell.installed).toBe(false);
     expect(native.execs.some((command) => command.includes('command -v pocketshell'))).toBe(true);
+    expect(await created.api.agent.kinds(result.connectionId!)).toEqual(['claude', 'custom-engine']);
+    expect(native.execs).toContain('a engines --json');
+  });
+
+  it('uses the offline catalog on malformed or failed engine queries, but preserves a valid empty catalog', async () => {
+    const { native, hosts, created } = platform();
+    hosts.save({ name: 'fixture', hostname: 'fixture', port: 2222, user: 'u', keyHandleId: 'handle-1' });
+    const connected = await created.api.ssh.connect({ host: 'fixture', port: 2222, user: 'u', tofuDecision: 'accept-always' });
+    expect(connected.ok).toBe(true);
+    open.push({ hub: created.hub, id: connected.connectionId! });
+    native.engineCatalogStdout = '[]';
+    expect(await created.api.agent.kinds(connected.connectionId!)).toEqual([]);
+
+    native.engineCatalogStdout = JSON.stringify([{ name: 'claude' }]);
+    expect(await created.api.agent.kinds(connected.connectionId!)).toBeNull();
+
+    native.engineCatalogStdout = JSON.stringify([null]);
+    expect(await created.api.agent.kinds(connected.connectionId!)).toBeNull();
+
+    native.engineCatalogStdout = '{';
+    expect(await created.api.agent.kinds(connected.connectionId!)).toBeNull();
+
+    native.engineCatalogExitCode = 1;
+    expect(await created.api.agent.kinds(connected.connectionId!)).toBeNull();
   });
 
   it('routes shared Stop through the live core controller using the immutable host session id', async () => {
