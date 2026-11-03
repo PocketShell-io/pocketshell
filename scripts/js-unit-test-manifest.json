@@ -353,7 +353,8 @@
         "the shared connection store prompts through ssh.onTrustDecision instead of dialling accept-always",
         "abandons a waiting host-key question when the user disconnects",
         "ignores a caller-supplied standing accept: only the user's answer on the prompt trusts a key",
-        "routes shared Stop through the live core controller using the immutable host session id"
+        "routes shared Stop through the live core controller using the immutable host session id",
+        "uses the offline catalog on malformed or failed engine queries, but preserves a valid empty catalog"
       ]
     },
     "tests/unit/androidHostKeys.test.ts": {
