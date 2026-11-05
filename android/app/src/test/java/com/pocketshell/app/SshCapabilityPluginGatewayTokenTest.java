@@ -113,8 +113,8 @@ public final class SshCapabilityPluginGatewayTokenTest {
         // GoogleSync's bridge is unchanged by the gateway work (no new
         // method, so nothing new reaches JS from the Google session) ...
         assertEquals(Set.of("status", "signIn", "signOut", "request"), pluginMethods(GoogleSyncPlugin.class));
-        // ... the pairing bridge has no token method ...
-        assertEquals(Set.of("list", "pair", "remove"), pluginMethods(GatewayPairingPlugin.class));
+        // ... the pairing/directory bridge exposes public metadata, never tokens ...
+        assertEquals(Set.of("list", "pair", "remove", "devices", "serverUrl"), pluginMethods(GatewayPairingPlugin.class));
         // ... and the SSH plugin's bridge surface is pinned, so a future
         // method that could hand back a token cannot appear unnoticed.
         assertEquals(Set.of("transportCapabilities", "connect", "cancelOperation", "getConnectionState",
