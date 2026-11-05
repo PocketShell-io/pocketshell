@@ -72,55 +72,43 @@ application** client `1035162854462-kkqius5o2ni136ed6l58iig5pdpeh4u6` (the
 pocketshell-web client), which the deployed sync stack already accepts
 (`GoogleWebClientId`). No backend change is needed.
 
-The native account chooser additionally requires an OAuth client of type
-Android in the same Cloud project (1035162854462) for every package + signing
-certificate. Some Play Services versions report missing registration as
-cancellation rather than unavailability. The app therefore offers an explicit
-"Use browser" choice alongside "Account on this phone". Cancelling either
-choice never automatically opens a browser. To register the native chooser
-for the 0.6.0 preview, create in Google Cloud
-Console → APIs & Services → Credentials → Create OAuth client ID → Android:
+Native sign-in also requires an OAuth client of type Android in the same
+Google Cloud project (`pocketshell-508120`, project number 1035162854462),
+registered for the installed package and signing-certificate SHA-1. The
+registered private APK identity is:
 
 | Field | Value |
 | --- | --- |
-| Package name | `com.pocketshell.app.preview` |
-| SHA-1 certificate fingerprint | `63:48:A0:14:94:E0:06:D5:05:0E:C6:FC:61:7D:BC:6E:6E:16:E1:25` |
+| Name | PocketShell Android private APK |
+| Package | `com.pocketshell.app` |
+| SHA-1 | `63:48:A0:14:94:E0:06:D5:05:0E:C6:FC:61:7D:BC:6E:6E:16:E1:25` |
+| Android client | `1035162854462-hfgrvtlgs915lt9merdmug4db39qocqr.apps.googleusercontent.com` |
 
-That SHA-1 is the committed `debug.keystore` (alias `androiddebugkey`), which
-signs every debug and preview build; verified against the published
-`pocketshell-0.6.0-preview-cebe73f.apk` with `apksigner verify --print-certs`.
-The Android client has no secret and nothing needs to change in the app.
-The OAuth consent screen must list the test user if the project is in
-Testing mode, and the sync stack's `AllowedEmails` must include the account.
+The Android client establishes the package/signing identity. It does not
+replace `GoogleSyncConfig.SERVER_CLIENT_ID`: the requested ID token's audience
+remains the approved Web application client that the backend accepts.
 
-"Use browser" directly starts the desktop app's loopback-PKCE flow
-(`LoopbackPkceSignIn`). The device-account choice still uses Credential
-Manager and falls back when it returns `SIGN_IN_UNAVAILABLE`. The system browser
-opens Google's consent page for the desktop client, and the one-time code is
-received on a private loopback listener. After consent, tap "Return to
-PocketShell" on the completion page. That link uses the installed package's
-`${applicationId}.signin://complete` scheme and carries no OAuth code or token;
-state validation and the code remain native. Android blocks unsolicited
-background activity launches, so the app waits for its lifecycle to resume
-before exchanging the code through the sync API's token relay
-(`POST /auth/google/token`), which
-adds the client secret server-side. The resulting ID token enters the same
-encrypted storage as a Credential Manager token; a refresh token lets the
-one-hour ID token renew silently. Registering the Android client remains the
-proper fix — it restores the native chooser and silent renewal through Play
-services, and the fallback then simply stops triggering.
+`android/app/build.gradle` signs debug APKs with this repository's committed
+`debug.keystore` (alias `androiddebugkey`). Keep that signing identity stable;
+a machine-generated `~/.android/debug.keystore` has a different fingerprint.
+Verify the actual APK with `apksigner verify --print-certs`, not a keystore
+filename or the displayed application version. Preview/test package suffixes
+need their own Android OAuth registration with the same certificate. Keep
+registrations for other supported package/certificate pairs intact when adding
+one. Production signing requires its own registered certificate.
 
-Other packages need their own Android client entry (same project, same
-form): `com.pocketshell.app` for an unsuffixed debug install and, before a
-release ships sync, `com.pocketshell.app` with the release keystore's SHA-1.
+The app's Sign in with Google button opens Android Credential Manager's
+account picker directly. There is no provider-choice dialog, browser fallback,
+loopback listener, OAuth redirect scheme or desktop-client token relay in the
+Android sign-in path. A successful native credential removes only the retired
+browser provider's encrypted refresh-token preferences; the ID-token store,
+account vault, remembered vault keys, SSH keys and host pairings are preserved.
 
-The 0.5.x client cannot be reused: 0.5.x never had a registered Android
-client. Its `SyncConfig.GOOGLE_ANDROID_CLIENT_ID` was the placeholder
-`unconfigured-android-client-id`, and its documented SHA-1
-(`A0:4C:74:…`) came from a per-machine `~/.android/debug.keystore`, not the
-committed keystore that signs current builds. 0.5.x also used a Custom Tab +
-PKCE redirect. The rewrite uses Credential Manager or a private loopback
-callback; its completion-only manifest scheme is not an OAuth redirect.
+Google's consent configuration must permit the account, and the sync stack's
+`AllowedEmails` must include it. Some Play Services versions mask an incorrect
+package/certificate registration as cancellation, so diagnose that registration
+when selection immediately returns unsigned-in; do not replace native sign-in
+with another authentication protocol.
 
 ## Testing
 

@@ -6,8 +6,9 @@ import java.util.function.Supplier;
 /**
  * Which Google sign-in and which network the sync plugin uses.
  *
- * <p>Production is Credential Manager with an automatic loopback-PKCE fallback
- * ({@link CompositeGoogleSignIn}), against the real sync API. Packaged
+ * <p>Production uses Android Credential Manager against the real sync API.
+ * The installed package and signing certificate must be registered with Google.
+ * Packaged
  * journeys run without a Google account or network, so they install a fake
  * sign-in provider and an in-process fake sync backend before the activity
  * starts. Everything between those two edges — encrypted token storage, the
@@ -45,22 +46,7 @@ public final class GoogleSyncEnvironment {
     static GoogleSyncSession.SignInProvider signIn(Supplier<Activity> activity) {
         SignInFactory factory = testSignIn;
         if (factory != null) return factory.create(activity);
-        CredentialManagerSignIn credentialManager =
-                new CredentialManagerSignIn(activity, GoogleSyncConfig.SERVER_CLIENT_ID);
-        LoopbackPkceSignIn loopback = new LoopbackPkceSignIn(activity, GoogleSyncConfig.DESKTOP_CLIENT_ID,
-                GoogleSyncConfig.SYNC_API_URL, transport(), new PkceRefreshTokenStore(() -> {
-                    // The refresh store is provider-private state; the
-                    // application context outlives any one activity.
-                    Activity host = activity.get();
-                    return host != null ? host.getApplicationContext() : null;
-                }));
-        return withMethodChoice(activity, new CompositeGoogleSignIn(credentialManager, loopback), loopback);
-    }
-
-    /** Native method choice, also exercised by packaged journeys with fake provider edges. */
-    public static GoogleSyncSession.SignInProvider withMethodChoice(Supplier<Activity> activity,
-            GoogleSyncSession.SignInProvider automatic, GoogleSyncSession.SignInProvider browser) {
-        return new SelectedGoogleSignIn(automatic, browser, new GoogleSignInMethodDialog(activity));
+        return new CredentialManagerSignIn(activity, GoogleSyncConfig.SERVER_CLIENT_ID);
     }
 
     static GoogleSyncSession.Transport transport() {

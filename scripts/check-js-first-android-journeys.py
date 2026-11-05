@@ -167,8 +167,6 @@ LANES = (
             {
                 "googleSignInSyncsDesktopHostsKeepsCrossClientFieldsAndSignOutClearsToken",
                 "unavailableGoogleSignInExplainsWhichPackageNeedsRegistering",
-                "explicitBrowserChoiceBypassesDeviceCancellationOnPackagedApp",
-                "browserCompletionRecognizesResumedActivityWhileDialogOwnsFocus",
             }
         ),
     ),
