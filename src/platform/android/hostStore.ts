@@ -10,7 +10,7 @@
  *    Android key vault (#2926). Key bytes never enter the WebView: a host
  *    only names its handle, and the native plugin resolves it at dial time.
  */
-import type { HostEntry, SshHostTarget } from '@pocketshell/core';
+import { normalizeGatewayTarget, type GatewayTransportTarget, type HostEntry, type SshHostTarget } from '@pocketshell/core';
 import { makeLegacySshHostTarget } from '@/migration/legacySshTarget';
 import type { ImportedLegacyHost } from '@/migration/installedDataMigration';
 
@@ -23,6 +23,7 @@ export interface SavedHost {
   user: string;
   /** The Android key vault handle this host authenticates with (#2926). */
   keyHandleId: string;
+  gateway?: GatewayTransportTarget;
 }
 
 export interface StringStorage {
@@ -60,6 +61,7 @@ function toEntry(host: Omit<SavedHost, 'keyHandleId'>): HostEntry {
     localForwards: [],
     remoteForwards: [],
     fromConfig: false,
+    ...(host.gateway ? { gateway: { ...host.gateway } } : {}),
   };
 }
 
@@ -70,7 +72,8 @@ function isSavedHost(value: unknown): value is SavedHost {
     && typeof host.hostname === 'string' && host.hostname.length > 0
     && typeof host.user === 'string'
     && typeof host.port === 'number' && Number.isInteger(host.port) && host.port > 0 && host.port < 65536
-    && (host.keyHandleId === undefined || typeof host.keyHandleId === 'string');
+    && (host.keyHandleId === undefined || typeof host.keyHandleId === 'string')
+    && (!('gateway' in host) || normalizeGatewayTarget(host.gateway) !== null);
 }
 
 export function validateSavedHost(host: SavedHost): string | null {
@@ -79,6 +82,7 @@ export function validateSavedHost(host: SavedHost): string | null {
   if (!host.user.trim()) return 'Enter the SSH user.';
   if (!Number.isInteger(host.port) || host.port < 1 || host.port > 65535) return 'Port must be 1–65535.';
   if (!host.keyHandleId) return 'Choose an SSH key from the key vault.';
+  if ('gateway' in host && normalizeGatewayTarget(host.gateway) === null) return 'Choose a valid PocketShell gateway device.';
   return null;
 }
 
@@ -108,6 +112,7 @@ export class AndroidHostStore {
       port: host.port,
       user: host.user.trim(),
       keyHandleId: host.keyHandleId,
+      ...(host.gateway ? { gateway: { ...normalizeGatewayTarget(host.gateway)! } } : {}),
     };
     // A host of the same name is replaced where it stands, never duplicated.
     const saved = this.readSaved();
@@ -120,6 +125,15 @@ export class AndroidHostStore {
   /** Every saved host (metadata and key handle; never key bytes). */
   savedHosts(): SavedHost[] {
     return this.readSaved();
+  }
+
+  /** The same saved row every dial uses, including stale-alias/user fallback. */
+  savedHostFor(request: { host: string; port?: number; user?: string; hostAlias?: string }): SavedHost | undefined {
+    const saved = this.readSaved();
+    const atAddress = (host: SavedHost) => host.hostname === request.host && host.port === (request.port ?? 22);
+    return (request.hostAlias ? saved.find((host) => host.name === request.hostAlias) : undefined)
+      ?? (request.user ? saved.find((host) => atAddress(host) && host.user === request.user) : undefined)
+      ?? saved.find(atAddress);
   }
 
   /** Saved hosts that authenticate with `handleId`. */
@@ -152,14 +166,9 @@ export class AndroidHostStore {
    */
   async resolve(request: { host: string; port?: number; user: string; hostAlias?: string }): Promise<SshHostTarget> {
     const port = request.port ?? 22;
-    const saved = this.readSaved();
-    const atAddress = (host: SavedHost) => host.hostname === request.host && host.port === port;
     // By alias, then the host at this address for this user, then any host at
     // this address: two hosts can share an address under different users.
-    const savedMatch =
-      (request.hostAlias ? saved.find((host) => host.name === request.hostAlias) : undefined) ??
-      (request.user ? saved.find((host) => atAddress(host) && host.user === request.user) : undefined) ??
-      saved.find(atAddress);
+    const savedMatch = this.savedHostFor(request);
     if (savedMatch) {
       if (!savedMatch.keyHandleId) throw new MissingHostCredential(savedMatch);
       return {

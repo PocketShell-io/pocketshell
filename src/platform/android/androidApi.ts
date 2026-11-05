@@ -154,6 +154,7 @@ export interface AndroidApiDeps {
   gatewayTransport?: () => Promise<boolean>;
   /** The native gateway pairings (#3086); required for a gateway dial. */
   gatewayPairings?: GatewayPairings;
+  gateway?: PocketShellApi['gateway'];
   /**
    * The account key vault (key-vault W4). An account host bound to a vault
    * key is dialled with it from memory; a locked vault asks to unlock, never
@@ -291,6 +292,12 @@ export function createAndroidPlatform(deps: AndroidApiDeps): AndroidPlatform {
    * the phone). Either way it then resolves like any other phone host.
    */
   async function resolveTarget(payload: Parameters<PocketShellApi['ssh']['connect']>[0]) {
+    // A saved gateway route remains authoritative even if an older caller
+    // sends only the host alias. Losing its marker must never become direct SSH.
+    if (!hasGatewayMarker(payload)) {
+      const saved = deps.hosts.savedHostFor(payload);
+      if (saved?.gateway) payload = { ...payload, user: payload.user || saved.user, gateway: saved.gateway };
+    }
     // The native report, read at dial time; any failure reads as "no gateway".
     const transports: AndroidTransports = {
       gateway: deps.gatewayPairings !== undefined && (await deps.gatewayTransport?.().catch(() => false)) === true,
@@ -350,6 +357,7 @@ export function createAndroidPlatform(deps: AndroidApiDeps): AndroidPlatform {
   }
 
   const api: PocketShellApi = {
+    ...(deps.gateway ? { gateway: deps.gateway } : {}),
     ssh: {
       async listConfigHosts() {
         return deps.hosts.list();

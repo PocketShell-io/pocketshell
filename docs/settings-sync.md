@@ -72,10 +72,13 @@ application** client `1035162854462-kkqius5o2ni136ed6l58iig5pdpeh4u6` (the
 pocketshell-web client), which the deployed sync stack already accepts
 (`GoogleWebClientId`). No backend change is needed.
 
-Google additionally requires an OAuth client of type **Android** in the same
-Cloud project (1035162854462) for every package + signing certificate that
-signs in. Until it exists, the Account screen reports "Google sign-in is not
-available for <package>". To enable the 0.6.0 preview, create in Google Cloud
+The native account chooser additionally requires an OAuth client of type
+Android in the same Cloud project (1035162854462) for every package + signing
+certificate. Some Play Services versions report missing registration as
+cancellation rather than unavailability. The app therefore offers an explicit
+"Use browser" choice alongside "Account on this phone". Cancelling either
+choice never automatically opens a browser. To register the native chooser
+for the 0.6.0 preview, create in Google Cloud
 Console → APIs & Services → Credentials → Create OAuth client ID → Android:
 
 | Field | Value |
@@ -90,12 +93,17 @@ The Android client has no secret and nothing needs to change in the app.
 The OAuth consent screen must list the test user if the project is in
 Testing mode, and the sync stack's `AllowedEmails` must include the account.
 
-Until the Android client exists for a package, sign-in does not dead-end: the
-Account screen's "Sign in with Google" first tries Credential Manager and, on
-its not-registered refusal (`SIGN_IN_UNAVAILABLE`), falls back automatically to
-the desktop app's loopback-PKCE flow (`LoopbackPkceSignIn`): the system browser
+"Use browser" directly starts the desktop app's loopback-PKCE flow
+(`LoopbackPkceSignIn`). The device-account choice still uses Credential
+Manager and falls back when it returns `SIGN_IN_UNAVAILABLE`. The system browser
 opens Google's consent page for the desktop client, and the one-time code is
-exchanged through the sync API's token relay (`POST /auth/google/token`), which
+received on a private loopback listener. After consent, tap "Return to
+PocketShell" on the completion page. That link uses the installed package's
+`${applicationId}.signin://complete` scheme and carries no OAuth code or token;
+state validation and the code remain native. Android blocks unsolicited
+background activity launches, so the app waits for its lifecycle to resume
+before exchanging the code through the sync API's token relay
+(`POST /auth/google/token`), which
 adds the client secret server-side. The resulting ID token enters the same
 encrypted storage as a Credential Manager token; a refresh token lets the
 one-hour ID token renew silently. Registering the Android client remains the
@@ -111,8 +119,8 @@ client. Its `SyncConfig.GOOGLE_ANDROID_CLIENT_ID` was the placeholder
 `unconfigured-android-client-id`, and its documented SHA-1
 (`A0:4C:74:…`) came from a per-machine `~/.android/debug.keystore`, not the
 committed keystore that signs current builds. 0.5.x also used a Custom Tab +
-PKCE redirect; the rewrite uses Credential Manager, which needs no redirect
-scheme in the manifest.
+PKCE redirect. The rewrite uses Credential Manager or a private loopback
+callback; its completion-only manifest scheme is not an OAuth redirect.
 
 ## Testing
 

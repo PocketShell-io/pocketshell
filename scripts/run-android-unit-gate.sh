@@ -12,11 +12,13 @@ cd -- "$ROOT_DIR"
 
 REQUIRED_CLASSES=(
   com.pocketshell.app.CompositeGoogleSignInTest
+  com.pocketshell.app.SelectedGoogleSignInTest
   com.pocketshell.app.CredentialHandleVaultTest
   com.pocketshell.app.DurableKeyValueStoreTest
   com.pocketshell.app.EncryptedSyncTokenStoreTest
   com.pocketshell.app.EphemeralCredentialsTest
   com.pocketshell.app.GatewayOriginAllowlistTest
+  com.pocketshell.app.GatewayDirectoryClientTest
   com.pocketshell.app.GatewayPairingPluginContractTest
   com.pocketshell.app.GatewayPairingStoreTest
   com.pocketshell.app.GatewayTargetPolicyTest

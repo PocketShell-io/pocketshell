@@ -36,6 +36,16 @@ import org.junit.Test;
  * or a test double's failure.
  */
 public final class LoopbackPkceSignInTest {
+    @Test public void completionLinkIsPackageSpecificAndCarriesNoOAuthSecret() {
+        String page = LoopbackPkceSignIn.successPageForPackage("com.pocketshell.app.preview");
+        assertTrue(page.contains("href=\"com.pocketshell.app.preview.signin://complete\""));
+        assertFalse(page.contains("code="));
+        assertFalse(page.contains("state="));
+        try {
+            LoopbackPkceSignIn.successPageForPackage("bad\"onclick=\"value");
+            fail("invalid package must not become HTML");
+        } catch (IllegalArgumentException expected) { }
+    }
     private static final String CLIENT_ID = GoogleSyncConfig.DESKTOP_CLIENT_ID;
     private static final String API = "https://sync.example.test";
     private static final long NOW_SECONDS = 1_800_000_000L;
@@ -213,11 +223,12 @@ public final class LoopbackPkceSignInTest {
     @Test public void uninterestingPathsGetA404AndTheListenerKeepsWaiting() throws Exception {
         LoopbackPkceSignIn.LoopbackListener listener = new LoopbackPkceSignIn.LoopbackListener();
         int port = listener.start();
-        Future<String> favicon = browser.submit(() -> dial(port, "/favicon.ico"));
-        Future<String> page = browser.submit(() -> dial(port, "/?code=4%2Fthree&state=mine"));
+        Future<String> page = browser.submit(() -> {
+            assertTrue("the favicon poke got a 404, not the flow's answer",
+                    dial(port, "/favicon.ico").contains("404"));
+            return dial(port, "/?code=4%2Fthree&state=mine");
+        });
         assertEquals("the real callback settles the flow", "4/three", listener.awaitCode("mine", 10_000));
-        assertTrue("the favicon poke got a 404, not the flow's answer",
-                favicon.get(5, TimeUnit.SECONDS).contains("404"));
         assertTrue(page.get(5, TimeUnit.SECONDS).contains("return to PocketShell"));
     }
 
@@ -242,7 +253,8 @@ public final class LoopbackPkceSignInTest {
                 + "\",\"refresh_token\":\"RT-INTERACTIVE\",\"expires_in\":3600}"));
         List<String> openedUrls = new ArrayList<>();
         LoopbackPkceSignIn signIn = new LoopbackPkceSignIn(() -> null, CLIENT_ID, API, transport, store,
-                seededRandom("e2e-1"), (activity, url) -> {
+                seededRandom("e2e-1"), new LoopbackPkceSignIn.UrlOpener() {
+                @Override public void open(android.app.Activity activity, String url) {
                     openedUrls.add(url);
                     browser.submit(() -> {
                         try {
@@ -254,13 +266,18 @@ public final class LoopbackPkceSignInTest {
                         }
                         return null;
                     });
+                }
+                @Override public void returnToApp(android.app.Activity activity) {
+                    assertEquals("the app returns before any token exchange", 0, transport.requests.size());
+                    openedUrls.add("returned-to-app");
+                }
                 }, () -> NOW_MILLIS);
 
         String token = signIn.browserSignIn(null);
 
         assertEquals(idToken, token);
         assertEquals("RT-INTERACTIVE", store.value);
-        assertEquals(1, openedUrls.size());
+        assertEquals(List.of(openedUrls.get(0), "returned-to-app"), openedUrls);
         Map<String, String> params = queryOf(new URI(openedUrls.get(0)).getRawQuery());
         assertEquals(CLIENT_ID, params.get("client_id"));
         assertEquals("S256", params.get("code_challenge_method"));

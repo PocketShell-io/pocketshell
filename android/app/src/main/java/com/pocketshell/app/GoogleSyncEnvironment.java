@@ -54,7 +54,13 @@ public final class GoogleSyncEnvironment {
                     Activity host = activity.get();
                     return host != null ? host.getApplicationContext() : null;
                 }));
-        return new CompositeGoogleSignIn(credentialManager, loopback);
+        return withMethodChoice(activity, new CompositeGoogleSignIn(credentialManager, loopback), loopback);
+    }
+
+    /** Native method choice, also exercised by packaged journeys with fake provider edges. */
+    public static GoogleSyncSession.SignInProvider withMethodChoice(Supplier<Activity> activity,
+            GoogleSyncSession.SignInProvider automatic, GoogleSyncSession.SignInProvider browser) {
+        return new SelectedGoogleSignIn(automatic, browser, new GoogleSignInMethodDialog(activity));
     }
 
     static GoogleSyncSession.Transport transport() {

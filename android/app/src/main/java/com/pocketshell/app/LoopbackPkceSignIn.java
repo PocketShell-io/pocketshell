@@ -1,8 +1,12 @@
 package com.pocketshell.app;
 
 import android.app.Activity;
+import android.app.Application;
 import android.content.Intent;
 import android.net.Uri;
+import android.os.Bundle;
+import androidx.lifecycle.Lifecycle;
+import androidx.lifecycle.LifecycleOwner;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
@@ -22,6 +26,8 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.function.LongSupplier;
 import java.util.function.Supplier;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import org.json.JSONException;
 import org.json.JSONObject;
 
@@ -62,6 +68,9 @@ final class LoopbackPkceSignIn implements CompositeGoogleSignIn.Renewing {
     /** Opens the authorization URL outside the app; a seam so JVM tests play the browser. */
     interface UrlOpener {
         void open(Activity activity, String url) throws SyncAuthException;
+
+        /** Restore the app after the validated callback, before exchanging the code. */
+        default void returnToApp(Activity activity) throws SyncAuthException { }
     }
 
     /** Where the refresh token is kept; production is {@link PkceRefreshTokenStore}. */
@@ -140,7 +149,14 @@ final class LoopbackPkceSignIn implements CompositeGoogleSignIn.Renewing {
     LoopbackPkceSignIn(Supplier<Activity> activity, String clientId, String apiBaseUrl,
             GoogleSyncSession.Transport transport, RefreshStore refreshStore) {
         this(activity, clientId, apiBaseUrl, transport, refreshStore, new SecureRandom(),
-                LoopbackPkceSignIn::openInBrowser, System::currentTimeMillis);
+                new UrlOpener() {
+                    @Override public void open(Activity host, String url) throws SyncAuthException {
+                        openInBrowser(host, url);
+                    }
+                    @Override public void returnToApp(Activity host) throws SyncAuthException {
+                        resumeApp(host);
+                    }
+                }, System::currentTimeMillis);
     }
 
     LoopbackPkceSignIn(Supplier<Activity> activity, String clientId, String apiBaseUrl,
@@ -218,12 +234,14 @@ final class LoopbackPkceSignIn implements CompositeGoogleSignIn.Renewing {
     String browserSignIn(Activity host) throws SyncAuthException {
         PkcePair pkce = createPkcePair(random);
         String state = randomState(random);
-        LoopbackListener listener = new LoopbackListener();
+        LoopbackListener listener = host == null ? new LoopbackListener()
+                : new LoopbackListener(successPageForPackage(host.getPackageName()));
         String redirectUri = "http://" + REDIRECT_HOST + ":" + listener.start();
         String authorizationUrl = buildAuthorizationUrl(clientId, redirectUri, pkce.challenge, state);
         try {
             urlOpener.open(host, authorizationUrl);
             String code = listener.awaitCode(state, LOGIN_TIMEOUT_MILLIS);
+            urlOpener.returnToApp(host);
             TokenGrant grant = exchangeRelay(authorizationCodeRequest(code, pkce.verifier, redirectUri));
             rememberRefreshToken(grant.refreshToken);
             return grant.idToken;
@@ -292,6 +310,17 @@ final class LoopbackPkceSignIn implements CompositeGoogleSignIn.Renewing {
         byte[] bytes = new byte[STATE_BYTES];
         random.nextBytes(bytes);
         return Base64.getUrlEncoder().withoutPadding().encodeToString(bytes);
+    }
+
+    static String successPageForPackage(String packageName) {
+        if (packageName == null || !packageName.matches("[A-Za-z][A-Za-z0-9_.]+")) {
+            throw new IllegalArgumentException("Invalid Android package name");
+        }
+        // Only a completion signal travels through this link. The code and PKCE
+        // verifier stay in native memory, and state was verified on loopback.
+        return "<html><head><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"></head>"
+                + "<body><h2>Google sign-in received</h2><p>Return to PocketShell to finish signing in.</p>"
+                + "<p><a href=\"" + packageName + ".signin://complete\">Return to PocketShell</a></p></body></html>";
     }
 
     private static String s256(String verifier) {
@@ -444,10 +473,15 @@ final class LoopbackPkceSignIn implements CompositeGoogleSignIn.Renewing {
      * or {@link #close()}.
      */
     static final class LoopbackListener {
+        private final String successPage;
         private ServerSocket serverSocket;
         private boolean settled;
         private String code;
         private SyncAuthException failure;
+
+        LoopbackListener() { this(SUCCESS_PAGE); }
+
+        LoopbackListener(String successPage) { this.successPage = successPage; }
 
         /** Bind and return the picked port. */
         synchronized int start() throws SyncAuthException {
@@ -541,7 +575,7 @@ final class LoopbackPkceSignIn implements CompositeGoogleSignIn.Renewing {
                     failure = new SyncAuthException(SyncAuthException.FAILED, message);
                     return;
                 }
-                respond(socket, "200 OK", SUCCESS_PAGE);
+                respond(socket, "200 OK", successPage);
                 settled = true;
                 code = callback.code;
             } catch (IOException brokenConnection) {
@@ -610,10 +644,46 @@ final class LoopbackPkceSignIn implements CompositeGoogleSignIn.Renewing {
         try {
             // startActivity is a binder call into the system; it does not need
             // the UI thread, and the sign-in runs on the plugin's worker.
-            activity.startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(url)));
+            activity.startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(url))
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
         } catch (RuntimeException error) {
             throw new SyncAuthException(SyncAuthException.FAILED,
                     "No browser is available to open Google sign-in.");
+        }
+    }
+
+    /** The browser owns its own task; the app owns completion and network exchange. */
+    private static void resumeApp(Activity activity) throws SyncAuthException {
+        CountDownLatch resumed = new CountDownLatch(1);
+        Application application = activity.getApplication();
+        Application.ActivityLifecycleCallbacks callbacks = new Application.ActivityLifecycleCallbacks() {
+            @Override public void onActivityResumed(Activity candidate) {
+                if (candidate == activity) resumed.countDown();
+            }
+            @Override public void onActivityCreated(Activity candidate, Bundle state) { }
+            @Override public void onActivityStarted(Activity candidate) { }
+            @Override public void onActivityPaused(Activity candidate) { }
+            @Override public void onActivityStopped(Activity candidate) { }
+            @Override public void onActivitySaveInstanceState(Activity candidate, Bundle state) { }
+            @Override public void onActivityDestroyed(Activity candidate) { }
+        };
+        activity.runOnUiThread(() -> {
+            application.registerActivityLifecycleCallbacks(callbacks);
+            if (activity instanceof LifecycleOwner
+                    && ((LifecycleOwner) activity).getLifecycle().getCurrentState().isAtLeast(Lifecycle.State.RESUMED)) {
+                resumed.countDown();
+            }
+        });
+        try {
+            if (!resumed.await(LOGIN_TIMEOUT_MILLIS, TimeUnit.MILLISECONDS)) {
+                throw new SyncAuthException(SyncAuthException.FAILED,
+                        "Return to PocketShell to finish Google sign-in, then try again.");
+            }
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            throw new SyncAuthException(SyncAuthException.CANCELLED, "Google sign-in was interrupted.");
+        } finally {
+            application.unregisterActivityLifecycleCallbacks(callbacks);
         }
     }
 }

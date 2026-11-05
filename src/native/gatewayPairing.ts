@@ -30,6 +30,12 @@ function isRow(value: unknown): value is GatewayPairingRow {
     && typeof row.keyHandleId === 'string' && row.keyHandleId !== '';
 }
 
+export function parseGatewayPairingRow(value: unknown): GatewayPairingRow {
+  if (!isRow(value)) throw new Error('The saved gateway pairings could not be read.');
+  return { serverUrl: value.serverUrl, deviceId: value.deviceId, fingerprintSha256: value.fingerprintSha256,
+    pinKind: value.pinKind, keyHandleId: value.keyHandleId };
+}
+
 let listSequence = 0;
 
 /**
@@ -47,16 +53,14 @@ export async function listGatewayPairings(plugin: NativeGatewayPairingPlugin): P
   if (answered !== requestId || !Array.isArray(pairings) || !pairings.every(isRow)) {
     throw new Error('The saved gateway pairings could not be read.');
   }
-  return pairings.map((row) => ({
-    serverUrl: row.serverUrl,
-    deviceId: row.deviceId,
-    fingerprintSha256: row.fingerprintSha256,
-    pinKind: row.pinKind,
-    keyHandleId: row.keyHandleId,
-  }));
+  return pairings.map(parseGatewayPairingRow);
 }
 
-const nativeGatewayPairing = registerPlugin<NativeGatewayPairingPlugin>('GatewayPairing');
+export const nativeGatewayPairing = registerPlugin<NativeGatewayPairingPlugin & {
+  serverUrl(options: { requestId: string }): Promise<unknown>;
+  devices(options: { requestId: string; expectedAccountEmail: string }): Promise<unknown>;
+  pair(options: { requestId: string; expectedAccountEmail: string; serverUrl: string; deviceId: string; hostKey: string; keyHandleId: string }): Promise<unknown>;
+}>('GatewayPairing');
 
 /** The installed native plugin's pairings for the signed-in account. */
 export const gatewayPairings = { list: () => listGatewayPairings(nativeGatewayPairing) };

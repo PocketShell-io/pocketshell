@@ -38,9 +38,10 @@ REQUIRED_METHODS = frozenset(
         "refusesPinMismatchUnverifiedTokenUnknownAndOfflineDevicesBeforeAnyLogin",
         "dialsTheEnrolledHostThroughTheGatewayListsAttachesTypesResizesAndReconnects",
         "dialsTheGatewayHostWithTheAccountVaultKeyAfterOneUnlockAndNoKeyPicker",
+        "discoversPairsAndConnectsDeviceThroughTheNormalPickerAndRunsTerminalCommand",
     }
 )
-SELF_TEST_CASES = 11
+SELF_TEST_CASES = 14
 
 
 class GateFailure(ValueError):
@@ -150,6 +151,22 @@ def validate_host(host_dir: Path) -> dict:
     if vault_foreign:
         raise GateFailure(f"the gateway vault dial logged in with keys that are not the vault's: {vault_foreign}")
 
+    # The normal discovery/add/save/connect UI has its own independently
+    # authorized phone key and host-side login, not another happy-path proxy.
+    picker_keys = {r["fingerprint"] for r in _phase(entries, "authorize", "picker-authorize")}
+    if len(picker_keys) != 1 or picker_keys & (authorized | vault_keys):
+        raise GateFailure("the normal picker journey did not authorize its own distinct phone key")
+    picker_logins = _phase(entries, "sshd-since", "picker-connect")
+    if not any(accepted(reply) == picker_keys for reply in picker_logins):
+        raise GateFailure("sshd never accepted the normal picker's selected phone key")
+    if set().union(*(accepted(reply) for reply in picker_logins)) - picker_keys:
+        raise GateFailure("the normal picker dial authenticated with a different key")
+    picker_files = _phase(entries, "host-file", "picker-io")
+    if not any(str(reply.get("name", "")).startswith("gwlane-picker-io-")
+               and re.fullmatch(r"GWLANE_PICKER_42_\S+", str(reply.get("content", "")).strip())
+               for reply in picker_files):
+        raise GateFailure("the Docker host never recorded the normal picker's terminal command")
+
     files = {
         reply["name"]: reply["content"].strip()
         for e in entries
@@ -215,7 +232,7 @@ def _write_host(directory: Path, **overrides) -> None:
     (directory / "host.log").write_text(
         "Received disconnect from 127.0.0.1 port 45784:9: Could not verify `ssh-ed25519` host key with fingerprint "
         "`13:f9` for `gw-dev.gateway` on port 22 [preauth]\n")
-    fp1, fp2, fpv = "SHA256:" + "a" * 43, "SHA256:" + "b" * 43, "SHA256:" + "v" * 43
+    fp1, fp2, fpv, fpp = ("SHA256:" + c * 43 for c in ("a", "b", "v", "p"))
 
     def entry(op, phase=None, **reply):
         request = {"op": op}
@@ -242,7 +259,14 @@ def _write_host(directory: Path, **overrides) -> None:
         entry("authorize", "vault-authorize", fingerprint=fpv),
         entry("sshd-since", "vault-connect", connections=1, userauth=["Accepted"],
               accepted=[{"fingerprint": overrides.get("vault_fp", fpv)}]),
+        entry("authorize", "picker-authorize", fingerprint=fpp),
+        entry("sshd-since", "picker-connect", connections=1, userauth=["Accepted"],
+              accepted=[{"fingerprint": overrides.get("picker_fp", fpp)}]),
+        {"request": {"op": "host-file", "name": "gwlane-picker-io-r.txt", "phase": "picker-io"},
+         "reply": {"ok": True, "name": "gwlane-picker-io-r.txt", "content": overrides.get("picker_content", "GWLANE_PICKER_42_r\n")}},
     ]
+    if overrides.get("missing_picker_file"):
+        entries = [e for e in entries if e["request"].get("phase") != "picker-io"]
     (directory / "controller-journal.jsonl").write_text("".join(json.dumps(e) + "\n" for e in entries))
 
 
@@ -271,7 +295,7 @@ def self_test() -> int:
         h.mkdir()
         _write_xml(r, sorted(REQUIRED_METHODS))
         _write_host(h)
-        assert validate_results(r) == 3
+        assert validate_results(r) == 4
         validate_host(h)
         cases += 1
     expect_fail("missing method", results={"methods": sorted(REQUIRED_METHODS)[:1]})
@@ -284,6 +308,9 @@ def self_test() -> int:
     expect_fail("foreign key on reconnect", host={"reconnect_fp": "SHA256:" + "c" * 43})
     expect_fail("gateway logged too few sessions", host={"sessions": 2})
     expect_fail("vault dial logged in with the phone key", host={"vault_fp": "SHA256:" + "b" * 43})
+    expect_fail("picker dial logged in with another key", host={"picker_fp": "SHA256:" + "b" * 43})
+    expect_fail("picker terminal oracle missing", host={"missing_picker_file": True})
+    expect_fail("picker terminal output wrong", host={"picker_content": "wrong output\n"})
     if cases != SELF_TEST_CASES:
         raise AssertionError(f"ran {cases} self-test cases, expected {SELF_TEST_CASES}")
     print(f"PASS: gateway result checker self-test ({cases} cases)")

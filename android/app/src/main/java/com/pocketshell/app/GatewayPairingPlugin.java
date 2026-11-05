@@ -16,9 +16,9 @@ import java.util.concurrent.Executors;
 import org.json.JSONArray;
 
 /**
- * The narrow native API for gateway pairing storage (#3086) — the seam the
- * shared UI's pairing flow will call (slice 4). It stores and lists pairings;
- * it never derives one.
+ * The narrow native gateway directory and pairing API (#3086) used by the
+ * shared UI. Device discovery returns public metadata only. Pairing storage
+ * stores and lists explicit pairings; it never derives one from discovery.
  *
  * <p>The pin must arrive from an explicit user action over an out-of-band
  * channel: the line {@code pocketshell gateway show --host-key} prints on the
@@ -47,6 +47,7 @@ public final class GatewayPairingPlugin extends Plugin {
 
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
     private GatewaySyncSession session;
+    private GatewayDirectoryClient directory;
 
     /** The process-wide pairing store; the SSH plugin dials from the same one. */
     static synchronized GatewayPairingStore sharedStore(Context context) throws IOException {
@@ -60,11 +61,43 @@ public final class GatewayPairingPlugin extends Plugin {
     @Override
     public void load() {
         session = new GatewaySyncSession(getContext(), this::getActivity);
+        directory = new GatewayDirectoryClient(session, new GatewayRoutingTokens(System::currentTimeMillis),
+                new HttpSyncTransport(), GatewayOriginAllowlist.forBuild(), GatewayDirectoryClient.serverUrlForBuild());
     }
 
     @Override
     protected void handleOnDestroy() {
         worker.shutdown();
+    }
+
+    /** This build's fixed gateway origin. JavaScript cannot choose where a token goes. */
+    @PluginMethod
+    public void serverUrl(PluginCall call) {
+        try {
+            call.resolve(new JSObject().put("requestId", call.getString("requestId", ""))
+                    .put("serverUrl", directory.serverUrl()));
+        } catch (GatewayDirectoryClient.DirectoryException error) {
+            call.reject(error.getMessage(), error.code);
+        }
+    }
+
+    /** Public account-bound device rows, fetched with a native-only scoped credential. */
+    @PluginMethod
+    public void devices(PluginCall call) {
+        String requestId = call.getString("requestId", "");
+        String expectedEmail = call.getString("expectedAccountEmail");
+        worker.execute(() -> {
+            try {
+                call.resolve(new JSObject().put("requestId", requestId)
+                        .put("devices", directory.devices(expectedEmail)));
+            } catch (GatewayDirectoryClient.DirectoryException error) {
+                call.reject(error.getMessage(), error.code);
+            } catch (GatewayTokenBroker.GatewayBrokerException error) {
+                call.reject(error.getMessage(), error.code);
+            } catch (SyncAuthException error) {
+                reject(call, error);
+            }
+        });
     }
 
     /** The current account's pairings: public data only, no account subject. */

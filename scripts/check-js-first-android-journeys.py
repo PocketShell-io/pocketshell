@@ -167,6 +167,8 @@ LANES = (
             {
                 "googleSignInSyncsDesktopHostsKeepsCrossClientFieldsAndSignOutClearsToken",
                 "unavailableGoogleSignInExplainsWhichPackageNeedsRegistering",
+                "explicitBrowserChoiceBypassesDeviceCancellationOnPackagedApp",
+                "browserCompletionRecognizesResumedActivityWhileDialogOwnsFocus",
             }
         ),
     ),
@@ -192,6 +194,7 @@ LANES = (
                 "refusesPinMismatchUnverifiedTokenUnknownAndOfflineDevicesBeforeAnyLogin",
                 "dialsTheEnrolledHostThroughTheGatewayListsAttachesTypesResizesAndReconnects",
                 "dialsTheGatewayHostWithTheAccountVaultKeyAfterOneUnlockAndNoKeyPicker",
+                "discoversPairsAndConnectsDeviceThroughTheNormalPickerAndRunsTerminalCommand",
             }
         ),
     ),

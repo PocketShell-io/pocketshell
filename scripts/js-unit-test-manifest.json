@@ -869,7 +869,9 @@
         "never falls back to plain SSH: a gateway refusal reaches the user and no direct dial follows, even for a phone host at the same address",
         "an account host carrying a gateway marker is dialled through the gateway, never adopted as a plain SSH phone host",
         "reconnect stays on the gateway: the controller re-dials native connect with the same gateway target and pairing key",
-        "reads public pairing rows and fails closed on any other reply"
+        "reads public pairing rows and fails closed on any other reply",
+        "keeps a saved gateway route when a caller sends only its alias",
+        "refuses an alias-only saved gateway route when native gateway support is absent"
       ]
     },
     "tests/unit/androidVaultConnect.test.ts": {
@@ -975,6 +977,19 @@
         "cold starts an explicitly enabled host and deduplicates a concurrent picker dial through one core owner",
         "does not dial hosts without explicit enablement or after the user turns automatic forwarding off",
         "uses normal core host-key trust on automatic startup and never silently accepts a first-contact key"
+      ]
+    },
+    "tests/unit/androidGatewayDirectory.test.ts": {
+      "suite": "Android gateway picker integration",
+      "tests": [
+        "lists native account devices and keeps their advertised key advisory",
+        "refuses another gateway before requesting account devices",
+        "drops a list if the account changes during its native request",
+        "rejects a reply belonging to another native request",
+        "pairs the typed pin and chosen phone key then preserves the route across restart",
+        "does not save a host if native pairing refuses it",
+        "does not replace an existing host with a gateway device of the same name",
+        "never turns a malformed stored gateway marker into an ordinary host"
       ]
     }
   }

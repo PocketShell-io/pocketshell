@@ -382,6 +382,77 @@ public final class GatewayDockerJourneyTest {
 
     // ---- the journey's steps -------------------------------------------------
 
+    /**
+     * The installed app's gateway capability, not a seeded account host or
+     * a direct pairing call: discover the real device, fill the shared form,
+     * save it, and connect through the picker's ordinary dial path.
+     */
+    @Test
+    public void discoversPairsAndConnectsDeviceThroughTheNormalPickerAndRunsTerminalCommand() throws Exception {
+        // No account host can provide the device row or the transport marker.
+        backend.seed(encrypt(new JSONObject().put("hosts", new JSONArray()).toString()));
+        scenario = ActivityScenario.launch(SharedShellLaunch.intent());
+        awaitJsTrue("!!document.querySelector('.picker .header-actions')", 60_000);
+        String stale = "picker-" + SystemClock.uptimeMillis();
+        evalRaw("window.__pocketshellStaleDocument=" + JSONObject.quote(stale) + ";"
+                + "localStorage.removeItem('" + SHARED_SETTINGS_KEY + "');"
+                + "localStorage.setItem('" + HOSTS_KEY + "','[]');location.reload();'reload'");
+        awaitJsTrue("window.__pocketshellStaleDocument!==" + JSONObject.quote(stale)
+                + " && document.readyState==='complete' && !!document.querySelector('.picker .header-actions')", 60_000);
+        installDialRecorder();
+        click(".picker .header-actions .account-action");
+        awaitJsTrue("!!document.querySelector('[data-testid=android-account] .account-login .account-primary:not([disabled])')");
+        click("[data-testid=android-account] .account-login .account-primary");
+        awaitJsTrue("document.querySelector('[data-testid=android-account] .account-identity')?.textContent.includes("
+                + JSONObject.quote(hello.getString("email")) + ")===true");
+        click("[data-testid=android-account-back]");
+
+        String handle = generatePhoneKey(true, "picker-authorize");
+        // Removing androidPlatform.api.gateway must fail here: no fake
+        // store row, account host, pairing helper or replacement API is used.
+        awaitJsTrue("!!document.querySelector('[data-testid=gateway-devices-reload]')");
+        click("[data-testid=gateway-devices-reload]");
+        String device = "[data-testid=gateway-device][data-device-id=\"" + hello.getString("deviceId") + "\"]";
+        awaitJsTrue("document.querySelector(" + JSONObject.quote(device) + ")?.dataset.status==='online'", 60_000);
+        assertEquals("nothing is saved before the user adds the discovered device", "[]", evalString("localStorage.getItem('" + HOSTS_KEY + "')"));
+        screenshot("picker-discovered-device");
+        click(device + " [data-testid=gateway-device-add]");
+        awaitJsTrue("document.querySelector('[data-testid=gateway-add-device]')?.dataset.keysLoaded==='true'");
+        assertEquals("the real device id is prefilled", hello.getString("deviceId"), evalString("document.querySelector('[data-testid=gateway-add-device-id]').value"));
+        assertEquals("the advisory host key is never accepted as a pin", "", evalString("document.querySelector('[data-testid=gateway-add-pin]').value"));
+        setValue("[data-testid=gateway-add-name]", "picker-device");
+        setValue("[data-testid=gateway-add-user]", hello.getString("user"));
+        setValue("[data-testid=gateway-add-pin]", hello.getString("hostKeyLine"));
+        setValue("[data-testid=gateway-add-key]", handle);
+        awaitJsTrue("document.querySelector('[data-testid=gateway-add-save]')?.disabled===false");
+        click("[data-testid=gateway-add-save]");
+        awaitJsTrue("document.querySelector('[data-testid=gateway-add-saved]')?.textContent.includes('picker-device')===true");
+        JSONObject saved = new JSONArray(evalString("localStorage.getItem('" + HOSTS_KEY + "')")).getJSONObject(0);
+        assertEquals("the saved route comes from the form", hello.getString("deviceId"), saved.getJSONObject("gateway").getString("deviceId"));
+        assertEquals(hello.getString("serverUrl"), saved.getJSONObject("gateway").getString("serverUrl"));
+        assertEquals("the selected existing phone key was saved", handle, saved.getString("keyHandleId"));
+        int mark = controller(new JSONObject().put("op", "mark")).getInt("mark");
+        click("[data-testid=gateway-add-connect]");
+        awaitJsTrue("!!document.querySelector('button[title=\"Back to hosts\"]') || " + PICKER_ERROR + "!==''", 120_000);
+        assertEquals("the normal UI connects the saved gateway device", "", evalString(PICKER_ERROR));
+        JSONObject login = sshdSince(mark, "picker-connect");
+        assertTrue("the host accepted the key chosen in the form", acceptedFingerprints(login).contains(phoneFingerprint));
+        String folder = hello.getString("sessionFolder");
+        awaitJsTrue("[...document.querySelectorAll('.dir-header')].some(n=>n.textContent.includes(" + JSONObject.quote(folder) + "))");
+        evalString("(()=>{[...document.querySelectorAll('.dir-header')].find(n=>n.textContent.includes(" + JSONObject.quote(folder) + ")).click();return 'clicked';})()");
+        awaitJsTrue(VISIBLE_TERMINAL + ".includes('$')");
+        String marker = "GWLANE_PICKER_42_" + run;
+        String file = "gwlane-picker-io-" + run + ".txt";
+        typeCommand("echo GWLANE_PICKER_$((6*7))_" + run + " | tee ~/" + file);
+        awaitJsTrue(VISIBLE_TERMINAL + ".includes(" + JSONObject.quote(marker) + ")");
+        assertEquals("the Docker host independently read the phone command's exact output", marker, hostFile(file, "picker-io").trim());
+        assertEveryDialWentThroughTheGateway(nativeDials());
+        assertNoRoutingTokenEscaped();
+        screenshot("picker-terminal-io");
+        Log.i(TAG, "GATEWAY_PICKER " + new JSONObject().put("device", hello.getString("deviceId"))
+                .put("phoneFingerprint", phoneFingerprint).put("hostFile", file));
+    }
+
     private String phoneFingerprint;
 
     /** The shared app, signed in with the fake Google account and unlocked, listing the account's gateway hosts. */
@@ -419,6 +490,10 @@ public final class GatewayDockerJourneyTest {
     }
 
     private String generatePhoneKey(boolean authorizeOnHost) throws Exception {
+        return generatePhoneKey(authorizeOnHost, "authorize");
+    }
+
+    private String generatePhoneKey(boolean authorizeOnHost, String phase) throws Exception {
         evalString("(() => {window.__gwKey=null; const vault=window.Capacitor.Plugins.SshKeyVault;"
                 + "(async()=>{try{const meta=await vault.generateKey({label:'Gateway lane phone key',algorithm:'Ed25519'});"
                 + "const pub=await vault.publicKey({handleId:meta.handleId});"
@@ -430,7 +505,7 @@ public final class GatewayDockerJourneyTest {
         String publicLine = key.getString("publicKey");
         assertFalse("only the public line leaves the vault", publicLine.contains("PRIVATE"));
         if (!authorizeOnHost) return key.getString("handleId");
-        JSONObject authorized = controller(new JSONObject().put("op", "authorize").put("publicKey", publicLine).put("phase", "authorize"));
+        JSONObject authorized = controller(new JSONObject().put("op", "authorize").put("publicKey", publicLine).put("phase", phase));
         assertEquals("the host stores exactly the phone's key", key.getString("fingerprint"), authorized.getString("fingerprint"));
         phoneFingerprint = key.getString("fingerprint");
         return key.getString("handleId");

@@ -34,6 +34,8 @@ REQUIRED_METHODS = frozenset(
     {
         "googleSignInSyncsDesktopHostsKeepsCrossClientFieldsAndSignOutClearsToken",
         "unavailableGoogleSignInExplainsWhichPackageNeedsRegistering",
+        "explicitBrowserChoiceBypassesDeviceCancellationOnPackagedApp",
+        "browserCompletionRecognizesResumedActivityWhileDialogOwnsFocus",
     }
 )
 REQUIRED_SCREENSHOTS = frozenset(
@@ -47,6 +49,7 @@ REQUIRED_SCREENSHOTS = frozenset(
         "account-untick-one-shot.png",
         "account-after-sign-out.png",
         "account-sign-in-unavailable.png",
+        "account-browser-sign-in.png",
     }
 )
 # The fake ID token's signature (AccountSyncJourneyTest.TOKEN_SIGNATURE).

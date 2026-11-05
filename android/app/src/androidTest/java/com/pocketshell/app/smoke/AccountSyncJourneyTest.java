@@ -4,8 +4,13 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
+import static androidx.test.espresso.Espresso.onView;
+import static androidx.test.espresso.action.ViewActions.click;
+import static androidx.test.espresso.matcher.ViewMatchers.withText;
+import static androidx.test.espresso.matcher.RootMatchers.isDialog;
 
 import android.app.Activity;
+import android.app.AlertDialog;
 import android.content.ContentValues;
 import android.content.Context;
 import android.graphics.Bitmap;
@@ -49,6 +54,9 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
@@ -306,6 +314,63 @@ public final class AccountSyncJourneyTest {
 
     // ---- journey steps ------------------------------------------------------
 
+    @Test
+    public void explicitBrowserChoiceBypassesDeviceCancellationOnPackagedApp() throws Exception {
+        FakeGoogle brokenDevice = new FakeGoogle();
+        brokenDevice.failure = new SyncAuthException(SyncAuthException.CANCELLED,
+                "Google sign-in was cancelled.");
+        GoogleSyncEnvironment.installForTesting(activity ->
+                GoogleSyncEnvironment.withMethodChoice(activity, brokenDevice, google), backend);
+        // Provider choice does not depend on any host fixture or a page reload.
+        scenario = ActivityScenario.launch(MainActivity.class);
+        awaitJsTrue("document.querySelector('[data-testid=build-status]')?.dataset.state === 'verified'", 45_000);
+        openAccountScreen();
+        awaitJsTrue("!!document.querySelector('[data-testid=account-sign-in]:not([disabled])')");
+        tapDomCenter("[data-testid=account-sign-in]");
+        onView(withText("Use browser")).inRoot(isDialog()).perform(click());
+        awaitJsTrue("document.querySelector('[data-testid=account-sync-status]')?.dataset.signedIn === 'true'");
+        assertEquals("broken device provider was bypassed", 0, brokenDevice.interactive.get());
+        assertEquals("browser provider was explicitly selected", 1, google.interactive.get());
+        captureScreenshot("account-browser-sign-in.png", "[data-testid=account-sync-email]");
+        assertNoTokenInLogcat();
+    }
+
+    @Test
+    public void browserCompletionRecognizesResumedActivityWhileDialogOwnsFocus() throws Exception {
+        scenario = ActivityScenario.launch(MainActivity.class);
+        awaitJsTrue("document.querySelector('[data-testid=build-status]')?.dataset.state === 'verified'", 45_000);
+        AtomicReference<Activity> host = new AtomicReference<>();
+        AtomicReference<AlertDialog> dialog = new AtomicReference<>();
+        scenario.onActivity(activity -> {
+            host.set(activity);
+            AlertDialog overlay = new AlertDialog.Builder(activity).setTitle("Completion focus fixture")
+                    .setMessage("The activity remains resumed while this dialog owns focus.").create();
+            dialog.set(overlay);
+            overlay.show();
+        });
+        long deadline = SystemClock.uptimeMillis() + 5_000;
+        while (host.get().hasWindowFocus() && SystemClock.uptimeMillis() < deadline) Thread.sleep(20);
+        assertFalse("the native dialog must own window focus", host.get().hasWindowFocus());
+        AtomicReference<androidx.lifecycle.Lifecycle.State> state = new AtomicReference<>();
+        scenario.onActivity(activity -> state.set(((androidx.lifecycle.LifecycleOwner) activity).getLifecycle().getCurrentState()));
+        assertEquals("the app is already resumed, without another onResume event", androidx.lifecycle.Lifecycle.State.RESUMED, state.get());
+        ExecutorService worker = Executors.newSingleThreadExecutor();
+        try {
+            Future<?> completed = worker.submit(() -> {
+                try {
+                    Class<?> provider = Class.forName("com.pocketshell.app.LoopbackPkceSignIn");
+                    java.lang.reflect.Method resume = provider.getDeclaredMethod("resumeApp", Activity.class);
+                    resume.setAccessible(true);
+                    resume.invoke(null, host.get());
+                } catch (Exception error) { throw new RuntimeException(error); }
+            });
+            completed.get(2, TimeUnit.SECONDS);
+        } finally {
+            scenario.onActivity(activity -> dialog.get().dismiss());
+            worker.shutdownNow();
+        }
+    }
+
     private void launchWithLocalHosts(JSONArray hosts) throws Exception {
         scenario = ActivityScenario.launch(MainActivity.class);
         awaitJsTrue("document.querySelector('[data-testid=build-status]')?.dataset.state === 'verified'", 45_000);
@@ -318,14 +383,23 @@ public final class AccountSyncJourneyTest {
         String staleDocument = "reload-" + SystemClock.uptimeMillis();
         evalRaw("window.__pocketshellStaleDocument = " + JSONObject.quote(staleDocument) + ";"
                 + "localStorage.removeItem('" + ACCOUNT_HOSTS_KEY + "'); localStorage.removeItem('" + SHARED_SETTINGS_KEY + "');"
-                + "localStorage.setItem('" + HOSTS_KEY + "', " + JSONObject.quote(hosts.toString()) + ");"
-                + "location.reload(); 'reload'");
-        Log.i(TAG, "document right after reload() is still the old one: "
-                + evalRaw("window.__pocketshellStaleDocument === " + JSONObject.quote(staleDocument)));
-        awaitJsTrue("window.__pocketshellStaleDocument !== " + JSONObject.quote(staleDocument)
+                + "localStorage.setItem('" + HOSTS_KEY + "', " + JSONObject.quote(hosts.toString()) + "); 'seeded'");
+        // Wait for the storage write's callback before navigating. A reload
+        // can cancel evaluateJavascript callbacks from the outgoing document;
+        // do not turn that expected cancellation into a failed readiness check.
+        scenario.onActivity(activity -> findWebView(activity.getWindow().getDecorView()).reload());
+        String ready = "window.__pocketshellStaleDocument !== " + JSONObject.quote(staleDocument)
                 + " && document.readyState === 'complete'"
                 + " && document.querySelector('[data-testid=build-status]')?.dataset.state === 'verified'"
-                + " && localStorage.getItem('" + ACCOUNT_HOSTS_KEY + "') === null", 45_000);
+                + " && localStorage.getItem('" + ACCOUNT_HOSTS_KEY + "') === null";
+        long deadline = SystemClock.uptimeMillis() + 45_000;
+        String last = null;
+        while (SystemClock.uptimeMillis() < deadline) {
+            last = evalRawBounded(ready, Math.min(1_000, deadline - SystemClock.uptimeMillis()));
+            if ("true".equals(last)) return;
+            Thread.sleep(100);
+        }
+        throw new AssertionError("The reloaded document never became verified (last: " + last + ")");
     }
 
     private void openSettings() throws Exception {
@@ -697,6 +771,13 @@ public final class AccountSyncJourneyTest {
     }
 
     private String evalRaw(String expression) throws Exception {
+        String result = evalRawBounded(expression, JS_TIMEOUT_SECONDS * 1_000);
+        assertNotNull("timed out evaluating WebView JavaScript", result);
+        return result;
+    }
+
+    /** Null means this evaluation lost its callback, e.g. during navigation. */
+    private String evalRawBounded(String expression, long timeoutMillis) throws Exception {
         CountDownLatch latch = new CountDownLatch(1);
         AtomicReference<String> result = new AtomicReference<>();
         scenario.onActivity(activity -> {
@@ -707,8 +788,7 @@ public final class AccountSyncJourneyTest {
                 latch.countDown();
             });
         });
-        assertTrue("timed out evaluating WebView JavaScript", latch.await(JS_TIMEOUT_SECONDS, TimeUnit.SECONDS));
-        return result.get();
+        return latch.await(Math.max(1, timeoutMillis), TimeUnit.MILLISECONDS) ? result.get() : null;
     }
 
     private String shell(String command) throws Exception {
