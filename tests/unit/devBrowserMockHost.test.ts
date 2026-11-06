@@ -112,6 +112,24 @@ describe('browser dev mock host', () => {
     while (!last.eof) last = await read(last.sequence);
     expect(last.eof).toBe(true);
 
+    // Core attaches by immutable id. A renamed row and a colliding display
+    // label must not redirect that selector to another session.
+    const selected = plugin.host.sessions.find((row) => row.name === 'pocketshell:shell')!;
+    const collision = plugin.host.sessions[0]!;
+    selected.name = 'pocketshell:renamed-shell';
+    selected.tag = 'renamed-shell';
+    collision.name = selected.id;
+    expect(plugin.host.findSession(selected.id)).toBe(selected);
+    expect(plugin.host.findSession(selected.id.slice(0, 8))).toBeUndefined();
+    const byId = await call('openPty', { ...ref, requestId: 'uuid', command: `exec pocketshell sessions attach -- '${selected.id}'`, cols: 80, rows: 24 }) as { channelId: string };
+    const renamed = await call('readPty', { ...ref, channelId: byId.channelId, requestId: 'uuid-read', sequence: 0, waitMs: 50 }) as { dataBase64: string };
+    expect(decode(renamed.dataBase64)).toContain('pocketshell:renamed-shell');
+    const missingId = 'ffffffff-ffff-4fff-8fff-ffffffffffff';
+    collision.name = missingId;
+    expect(plugin.host.findSession(missingId)).toBeUndefined();
+    await expect(call('openPty', { ...ref, requestId: 'missing-uuid', command: `exec pocketshell sessions attach -- '${missingId}'`, cols: 80, rows: 24 })).rejects.toMatchObject({ code: 'CHANNEL_OPEN_FAILED' });
+    await call('closePty', { ...ref, requestId: 'uuid-close', channelId: byId.channelId });
+
     const lost: unknown[] = [];
     bridge.nativeCallback('SshCapability', 'addListener', { eventName: 'connectionState' }, (data) => lost.push(data));
     expect(plugin.dropConnections()).toBe(1);
