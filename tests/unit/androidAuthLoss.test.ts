@@ -6,7 +6,12 @@ import { createKeyVaultController } from '@ui/app/keyVault';
 import { provideApi } from '@ui/app/ipc';
 import { useSyncStore } from '@ui/app/stores/sync';
 import { bindAndroidAuthLoss } from '@/platform/android/authLoss';
-import { createGoogleSyncNative } from '@/native/googleSync';
+const pluginState = vi.hoisted(() => ({ signedIn: true }));
+vi.mock('@capacitor/core', () => ({ registerPlugin: () => ({
+  status: async () => ({ signedIn: pluginState.signedIn, email: pluginState.signedIn ? 'orin@example.test' : null, packageName: 'fixture' }),
+  accountId: async () => ({ accountId: 'google:fixture' }),
+}) }));
+import { createGoogleSyncNative, googleSync, verifiedGoogleAccountId } from '@/native/googleSync';
 
 function deferred<T>() { let resolve!: (v: T) => void; const promise = new Promise<T>(r => { resolve = r; }); return { promise, resolve }; }
 
@@ -145,6 +150,79 @@ describe('Android native auth loss shared-store custody', () => {
         expect(locked).toHaveBeenCalledTimes(1); // Stale status never emits a fresh auth-loss event.
       } finally { dispose(); }
     }
+  });
+
+  it('propagates gateway-owned signed-out status from the exported account helper into real shared-store cleanup', async () => {
+    pluginState.signedIn = true;
+    provideApi({ sync: { status: async () => { const s = await googleSync.status(); return { loggedIn: s.signedIn, email: s.email, keychainAvailable: true }; }, accountHosts: async () => null } } as never);
+    setActivePinia(createPinia());
+    const sync = useSyncStore(); await sync.refreshStatus();
+    sync.passphrase = 'old transient phrase'; sync.accountHosts = [{ name: 'old-account-host' }] as never;
+    const lock = vi.fn(), cancelUnlock = vi.fn(), lockAndroidVault = vi.fn(async () => undefined);
+    const release = bindAndroidAuthLoss(googleSync, { sync, vault: { lock, cancelUnlock }, lockAndroidVault });
+    try {
+      pluginState.signedIn = false; // Native credential record invalidated by another plugin's broker request.
+      expect(await verifiedGoogleAccountId()).toBeNull(); // Normal Refresh servers account helper.
+      expect(sync.status).toMatchObject({ loggedIn: false, email: null });
+      expect(sync.passphrase).toBe(''); expect(sync.accountHosts).toBeNull();
+      expect(lock).toHaveBeenCalledTimes(1); expect(cancelUnlock).toHaveBeenCalledTimes(1);
+      expect(lockAndroidVault).toHaveBeenCalledTimes(1);
+      expect((await googleSync.status()).signedIn).toBe(false);
+      expect(lock).toHaveBeenCalledTimes(1);
+    } finally { release(); }
+  });
+
+  it('keeps an initial guest status passive without starting OAuth or reporting a lost account', async () => {
+    const signIn = vi.fn();
+    const native = createGoogleSyncNative({ status: async () => ({ signedIn: false, email: null, packageName: 'fixture' }), signIn } as never);
+    const cleanup = vi.fn(); native.onAuthLost!(cleanup);
+    expect((await native.status()).signedIn).toBe(false);
+    expect((await native.status()).signedIn).toBe(false);
+    expect(cleanup).not.toHaveBeenCalled(); expect(signIn).not.toHaveBeenCalled();
+  });
+
+  it('preserves an accepted account when status fails through network or provider cancellation', async () => {
+    let failure: unknown = null;
+    const native = createGoogleSyncNative({ status: async () => {
+      if (failure) throw failure;
+      return { signedIn: true, email: 'orin@example.test', packageName: 'fixture' };
+    } } as never);
+    provideApi({ sync: { status: async () => { const s = await native.status(); return { loggedIn: s.signedIn, email: s.email, keychainAvailable: true }; }, accountHosts: async () => null } } as never);
+    setActivePinia(createPinia()); const sync = useSyncStore(); await sync.refreshStatus(); sync.passphrase = 'kept';
+    const lock = vi.fn(), cancelUnlock = vi.fn(), lockAndroidVault = vi.fn();
+    const dispose = bindAndroidAuthLoss(native, { sync, vault: { lock, cancelUnlock }, lockAndroidVault });
+    try {
+      for (const code of ['SYNC_NETWORK_FAILED', 'SIGN_IN_CANCELLED']) {
+        failure = { code }; await expect(sync.refreshStatus()).rejects.toBe(failure);
+        expect(sync.status).toMatchObject({ loggedIn: true, email: 'orin@example.test' });
+        expect(sync.passphrase).toBe('kept');
+      }
+      expect(lock).not.toHaveBeenCalled(); expect(cancelUnlock).not.toHaveBeenCalled(); expect(lockAndroidVault).not.toHaveBeenCalled();
+    } finally { dispose(); }
+  });
+
+  it('fences observed status-loss cleanup before a later different normal login can publish fresh shared state', async () => {
+    let current = { signedIn: true, email: 'old@example.test' as string | null, packageName: 'fixture' };
+    const entered = deferred<void>(), release = deferred<void>();
+    const native = createGoogleSyncNative({ status: async () => current,
+      signIn: async () => (current = { signedIn: true, email: 'new@example.test', packageName: 'fixture' }),
+    } as never);
+    provideApi({ sync: { status: async () => { const s = await native.status(); return { loggedIn: s.signedIn, email: s.email, keychainAvailable: true }; }, login: async () => (await native.signIn()).email, accountHosts: async () => null } } as never);
+    setActivePinia(createPinia()); const sync = useSyncStore(); await sync.refreshStatus(); sync.passphrase = 'old transient phrase';
+    const lock = vi.fn();
+    const dispose = bindAndroidAuthLoss(native, { sync, vault: { cancelUnlock: vi.fn(), lock }, lockAndroidVault: async () => { entered.resolve(); await release.promise; } });
+    try {
+      current = { signedIn: false, email: null, packageName: 'fixture' };
+      const old = native.status();
+      const stale = expect(old).rejects.toThrow('sign-in changed');
+      await entered.promise;
+      expect(sync.status?.loggedIn).toBe(false); expect(sync.passphrase).toBe('');
+      const login = sync.login();
+      release.resolve(); await login; await stale;
+      sync.passphrase = 'new transient phrase';
+      expect(sync.status).toMatchObject({ loggedIn: true, email: 'new@example.test' });
+      expect(sync.passphrase).toBe('new transient phrase'); expect(lock).toHaveBeenCalledTimes(1);
+    } finally { release.resolve(); dispose(); }
   });
 
   it('binds auth loss in the actual shared bootstrap to transient-only Android cleanup', () => {

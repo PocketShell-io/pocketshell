@@ -541,6 +541,8 @@ public final class GatewayDockerJourneyTest {
     public void recoversNativeAuthLossWithoutSignOutAndPreservesVaultTrustBeforeRealTerminal() throws Exception {
         selectVariant("active");
         String fingerprint = authorizeVault("authloss-authorize");
+        // Fresh broker tokens are valid, but cannot cover another dial's full20s+5s reuse budget.
+        backend.routingLifetimeSeconds = 20;
         launchSignedInLocked();
         click("[data-testid=vault-unlock-remember]");
         awaitJsTrue("document.querySelector('[data-testid=vault-unlock-remember]')?.checked === true");
@@ -601,6 +603,8 @@ public final class GatewayDockerJourneyTest {
                 authLossProtectedBytes().getString("pocketshell_vault_device_v1"));
         int beforeDropDials = nativeDials().length();
         int recoveryMark = controller(new JSONObject().put("op", "mark")).getInt("mark");
+        google.silentRenewFailure = true;
+        backend.rejectNext("/gateway/token");
         assertTrue("existing fixture stream-drop completed", controller(new JSONObject().put("op", "drop")
                 .put("phase", "authloss-recovery")).getBoolean("dropped"));
         // Observe the one existing recovery owner. Never fake a disconnected app state.
@@ -608,6 +612,19 @@ public final class GatewayDockerJourneyTest {
                 + " && ['lost','connected','live'].includes(window.__pocketshellConnectionJournal?.at(-1)?.phase)", 120_000);
         int preTapDials = nativeDials().length();
         String recoveryPhase = evalString("window.__pocketshellConnectionJournal.at(-1).phase");
+        assertEquals("the real SSH-owned GatewaySyncSession consumed the broker challenge", 1, backend.gatewayAuthChallenges);
+        assertEquals("gateway-owned native renewal failed, independently of GoogleSyncPlugin", 3, google.silentFailures);
+        refreshServers();
+        awaitAuthLossGoogleAction();
+        assertEquals("gateway loss preserves every encrypted cloud slot", ciphertext, backend.vaultSlots.toString());
+        assertEquals("gateway loss preserves protected custody bytes", protectedBytes.toString(), authLossProtectedBytes().toString());
+        click("[data-testid=server-google-login]");
+        awaitJsTrue("!!document.querySelector('[data-testid=vault-unlock-gate]')", 60_000);
+        assertEquals("normal Google reauthentication must repair existing gateway session consumers", 4, google.interactiveCalls);
+        submitAuthLossVaultPhrase();
+        awaitJsTrue("!!document.querySelector('[data-testid=trusted-server-connect]:not([disabled])')", 120_000);
+        assertInstalledTrustedRevision(1);
+        assertEquals("existing gateway identity now reads the unchanged binding and floors", binding.toString(), authLossPublicTrust().toString());
         tapHost(DEVICE_HOST);
         awaitJsTrue(VISIBLE_TERMINAL + ".includes('$')", 120_000);
         assertTrue("post-loss recovery established a NEW SSH authentication with the same vault key",
@@ -627,6 +644,7 @@ public final class GatewayDockerJourneyTest {
         assertNoRoutingTokenEscaped();
         Log.i(TAG, "AUTH_LOSS_CUSTODY " + new JSONObject().put("losses", backend.authChallenges)
                 .put("silentFailures", google.silentFailures).put("interactive", google.interactiveCalls)
+                .put("gatewayChallenges", backend.gatewayAuthChallenges)
                 .put("signOuts", google.clearCalls).put("cloudWrites", backend.writes)
                 .put("encryptedSlotsUnchanged", true).put("protectedBytesSurviveLoss", true)
                 .put("rememberBytesUnchanged", true).put("scopeStable", true).put("floor", 1)
@@ -1102,6 +1120,8 @@ public final class GatewayDockerJourneyTest {
         volatile String initializationBody;
         private String nextUnauthorizedPath;
         volatile int authChallenges;
+        volatile int gatewayAuthChallenges;
+        volatile long routingLifetimeSeconds = 240;
         synchronized void rejectNext(String path) { nextUnauthorizedPath = path; }
         final List<String> reads = Collections.synchronizedList(new ArrayList<>());
 
@@ -1122,9 +1142,10 @@ public final class GatewayDockerJourneyTest {
         public synchronized GoogleSyncSession.Response send(String method, String url, Map<String, String> headers, String body) {
             String path = url.replaceFirst("^https://[^/]+", "");
             if ("GET".equals(method)) reads.add(path);
-            if ("GET".equals(method) && path.equals(nextUnauthorizedPath)) {
+            if (("GET".equals(method) || ("POST".equals(method) && "/gateway/token".equals(path))) && path.equals(nextUnauthorizedPath)) {
                 nextUnauthorizedPath = null;
                 authChallenges++;
+                if ("/gateway/token".equals(path)) gatewayAuthChallenges++;
                 return new GoogleSyncSession.Response(401, "{\"message\":\"Unauthorized\"}");
             }
             if (!("Bearer " + google.token).equals(headers.get("Authorization"))) {
@@ -1179,7 +1200,7 @@ public final class GatewayDockerJourneyTest {
                 if ("POST".equals(method) && "/gateway/token".equals(path)) {
                     if (body != null && !body.isEmpty()) return new GoogleSyncSession.Response(400, "{\"error\":\"bad_request\"}");
                     long now = System.currentTimeMillis() / 1000L;
-                    long lifetime = 240;
+                    long lifetime = routingLifetimeSeconds;
                     String token = sign(new JSONObject().put("iss", hello.getString("issuer")).put("aud", "pocketshell-gateway")
                             .put("scope", "pocketshell.gateway").put("sub", hello.getString("sub"))
                             .put("email", hello.getString("email")).put("email_verified", true)

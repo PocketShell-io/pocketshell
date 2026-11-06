@@ -1032,6 +1032,10 @@
         "does not cancel or lock a signed-in consumer for ordinary network or provider cancellation",
         "rejects pre-loss status completion without resurrecting the actual shared signed-in display",
         "keeps a later different login when obsolete signed-in or signed-out status completes out of order",
+        "propagates gateway-owned signed-out status from the exported account helper into real shared-store cleanup",
+        "keeps an initial guest status passive without starting OAuth or reporting a lost account",
+        "preserves an accepted account when status fails through network or provider cancellation",
+        "fences observed status-loss cleanup before a later different normal login can publish fresh shared state",
         "binds auth loss in the actual shared bootstrap to transient-only Android cleanup"
       ]
     }

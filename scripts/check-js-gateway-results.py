@@ -44,7 +44,7 @@ REQUIRED_METHODS = frozenset(
         "onboardingCreatesMissingVaultAtomicallyInAppAndReopensItWithoutWeb",
     }
 )
-SELF_TEST_CASES = 28
+SELF_TEST_CASES = 29
 
 
 class GateFailure(ValueError):
@@ -252,7 +252,7 @@ def validate_authloss_runtime(artifacts: Path) -> None:
     if len(receipts) != 1:
         raise GateFailure("exactly one native auth-loss custody receipt is required")
     row = receipts[0]
-    expected = {"losses":2,"silentFailures":2,"interactive":3,"signOuts":0,"cloudWrites":0,"floor":1,
+    expected = {"losses":3,"silentFailures":3,"interactive":4,"gatewayChallenges":1,"signOuts":0,"cloudWrites":0,"floor":1,
                 "encryptedSlotsUnchanged":True,"protectedBytesSurviveLoss":True,"rememberBytesUnchanged":True,"scopeStable":True}
     if any(type(row.get(key)) is not type(value) or row.get(key) != value for key, value in expected.items()):
         raise GateFailure("native auth-loss custody or real Google recovery contract failed")
@@ -358,10 +358,11 @@ def _write_host(directory: Path, **overrides) -> None:
          "reply":{"ok":True,"name":"gwlane-authloss-io-r.txt","content":overrides.get("authloss_content", "GWAUTH42_r\n"),
                   "exists":True,"type":"regular","readExitCode":0,"sizeBytes":11}},
     ])
-    receipt = {"losses":2,"silentFailures":2,"interactive":3,"signOuts":0,"cloudWrites":0,"floor":1,
+    receipt = {"losses":3,"silentFailures":3,"interactive":4,"gatewayChallenges":1,"signOuts":0,"cloudWrites":0,"floor":1,
                "encryptedSlotsUnchanged":True,"protectedBytesSurviveLoss":not overrides.get("authloss_custody_bad",False),
                "rememberBytesUnchanged":True,"scopeStable":True,"beforeDropDials":1,"preTapDials":overrides.get("authloss_pre_tap_dials",2),"finalDials":3,
                "recoveryPhaseBeforeTap":"lost"}
+    receipt["gatewayChallenges"] = overrides.get("authloss_gateway_challenges", 1)
     (directory.parent / "logcat.txt").write_text("AUTH_LOSS_CUSTODY " + json.dumps(receipt) + "\n")
     entries.extend([
         entry("authorize","onboarding-authorize",fingerprint=fpv),
@@ -444,6 +445,7 @@ def self_test() -> int:
     expect_fail("auth-loss changed protected custody", host={"authloss_custody_bad":True})
     expect_fail("auth-loss unlock screenshot missing", host={"authloss_shot_missing":True})
     expect_fail("auth-loss receipt missing", host={"authloss_receipt_missing":True})
+    expect_fail("gateway-owned loss not proven", host={"authloss_gateway_challenges":0})
     expect_fail("new onboarding method omitted",results={"methods":[m for m in sorted(REQUIRED_METHODS) if m!="onboardingCreatesMissingVaultAtomicallyInAppAndReopensItWithoutWeb"]})
     expect_fail("onboarding unlock duplicated",host={"onboarding_unlock_gates":2})
     expect_fail("onboarding vault created twice",host={"onboarding_initializations":2})

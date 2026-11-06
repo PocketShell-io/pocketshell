@@ -87,19 +87,26 @@ export function createGoogleSyncNative(plugin: NativeGoogleSyncPlugin): GoogleSy
   let generation = 0;
   let loss: Promise<void> | null = null;
   let authLost = false;
+  let observedSignedIn = false;
+  function changed(): Error { return new Error('Google sign-in changed while the request was running. Try again.'); }
+  function reportAuthLoss(): Promise<void> {
+    if (authLost) return loss ?? Promise.resolve();
+    // Fence old successes and mark the transition before consumer cleanup can re-enter status().
+    generation++;
+    authLost = true;
+    observedSignedIn = false;
+    loss = Promise.allSettled([...listeners].map(async listener => listener())).then(() => undefined);
+    return loss;
+  }
   async function guarded<T>(operation: () => Promise<T>): Promise<T> {
     const started = generation;
     try {
       const result = await operation();
-      if (started !== generation) throw new Error('Google sign-in changed while the request was running. Try again.');
+      if (started !== generation) throw changed();
       return result;
     } catch (error) {
       if (started === generation && !authLost && isGoogleAuthLoss(error)) {
-        // Invalidate old in-flight successes before any consumer awaits cleanup.
-        generation++;
-        authLost = true;
-        loss = Promise.allSettled([...listeners].map(async listener => listener())).then(() => undefined);
-        await loss;
+        await reportAuthLoss();
       } else if (isGoogleAuthLoss(error) && loss) {
         await loss;
       }
@@ -107,17 +114,33 @@ export function createGoogleSyncNative(plugin: NativeGoogleSyncPlugin): GoogleSy
     }
   }
   return {
-    status: () => guarded(async () => parseGoogleSyncStatus(await plugin.status())),
+    status: async () => {
+      const started = generation;
+      const result = await guarded(async () => parseGoogleSyncStatus(await plugin.status()));
+      if (started !== generation) throw changed();
+      if (observedSignedIn && !result.signedIn) {
+        // Another native plugin may have invalidated the shared credential record.
+        // Preserve status(false), while using exactly the same transient-only cleanup as NOT_SIGNED_IN.
+        const cleanupGeneration = authLost ? generation : generation + 1;
+        await reportAuthLoss();
+        if (cleanupGeneration !== generation) throw changed();
+      } else if (result.signedIn) observedSignedIn = true;
+      return result;
+    },
     signIn: async () => {
       // An explicit new login owns its generation; late old requests cannot sign it out.
-      generation++;
+      const started = ++generation;
+      observedSignedIn = false;
       await loss;
+      if (started !== generation) throw changed();
       const result = parseGoogleSyncStatus(await plugin.signIn());
+      if (started !== generation) throw changed();
+      observedSignedIn = result.signedIn;
       authLost = false;
       loss = null;
       return result;
     },
-    signOut: async () => { generation++; loss = null; return parseGoogleSyncStatus(await plugin.signOut()); },
+    signOut: async () => { generation++; observedSignedIn = false; loss = null; return parseGoogleSyncStatus(await plugin.signOut()); },
     accountId: () => guarded(() => plugin.accountId()),
     request: (request) => guarded(async () => parseGoogleSyncResponse(await plugin.request({ ...request }))),
     onAuthLost: (listener) => { listeners.add(listener); return () => listeners.delete(listener); },
