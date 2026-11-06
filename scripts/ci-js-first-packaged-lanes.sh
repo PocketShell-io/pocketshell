@@ -7,10 +7,35 @@ cd -- "$ROOT_DIR"
 : "${GITHUB_RUN_ID:?GITHUB_RUN_ID is required for packaged CI evidence}"
 : "${GITHUB_RUN_ATTEMPT:?GITHUB_RUN_ATTEMPT is required for packaged CI evidence}"
 
+source scripts/lib/packaged-group.sh
+smoke_status=0
+lifecycle_status=0
+usage_status=0
+files_status=0
+durable_status=0
+composer_status=0
+composer_junit_copy_status=0
+composer_junit_status=0
+hotkeys_status=0
+hotkeys_junit_status=0
+settings_status=0
+voice_settings_status=0
+account_sync_status=0
+account_picker_status=0
+gateway_status=0
+shared_app_status=0
+account_vault_status=0
+forward_service_status=0
+key_vault_status=0
+signed_upgrade_status=0
+copy_status=0
+
+
 # Boot completion does not imply guest networking is enabled or routable.
 # Fail before starting journeys if the actual guest-to-fixture path is down.
 python3 scripts/android-network-preflight.py
 
+if lane_selected smoke; then
 if scripts/connected-js-smoke.sh --suffix i2855ci --test-only; then
   smoke_status=0
 else
@@ -33,6 +58,9 @@ if (( copy_status == 0 )); then
   fi
 fi
 
+fi
+
+if lane_selected lifecycle; then
 if scripts/connected-js-lifecycle.sh \
   --suffix i2855ci \
   --port 2222 \
@@ -44,6 +72,9 @@ else
   lifecycle_status=$?
 fi
 
+fi
+
+if lane_selected usage; then
 if scripts/connected-js-usage-ports.sh \
   --suffix i2855ci \
   --port 2222 \
@@ -55,6 +86,9 @@ else
   usage_status=$?
 fi
 
+fi
+
+if lane_selected files; then
 if scripts/connected-js-files-docker.sh \
   --suffix i2858ci \
   --port 2222 \
@@ -70,6 +104,9 @@ fi
 # acknowledged them. It builds its own i2993ci suffix into the shared
 # app-debug.apk output, so it runs before the composer and key-vault builds and
 # never inside the key-vault -> signed-upgrade window.
+fi
+
+if lane_selected durable; then
 if scripts/connected-js-durable-storage.sh \
   --suffix i2993ci \
   --run-id "js2993-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"; then
@@ -78,6 +115,9 @@ else
   durable_status=$?
 fi
 
+fi
+
+if lane_selected composer; then
 if scripts/connected-js-composer-docker.sh \
   --suffix i2891ci \
   --port 2245 \
@@ -120,6 +160,9 @@ else
   done
 fi
 
+fi
+
+if lane_selected hotkeys; then
 if scripts/connected-js-hotkeys-docker.sh \
   --suffix i2884ci \
   --port 2243 \
@@ -143,6 +186,9 @@ elif ! scripts/check-js-hotkeys-journey-results.py --results-dir "${hotkeys_runs
 fi
 shopt -u nullglob
 
+fi
+
+if lane_selected settings; then
 if scripts/connected-js-settings.sh \
   --suffix i2855ci \
   --port 2222 \
@@ -154,6 +200,9 @@ else
   settings_status=$?
 fi
 
+fi
+
+if lane_selected voice_settings; then
 if (
   export POCKETSHELL_ARTIFACTS_DIR="$ROOT_DIR/android/app/build/outputs/js-voice-settings"
   scripts/connected-js-voice-settings.sh \
@@ -168,6 +217,9 @@ fi
 
 # Google sign-in and settings sync (#3020): fake Google and fake sync API
 # in-process, no Docker fixture.
+fi
+
+if lane_selected account_sync; then
 if scripts/connected-js-account-sync.sh \
   --suffix i2855ci \
   --run-id "js3020-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
@@ -180,6 +232,9 @@ fi
 # The shared app's host picker with a Google account (#3063): header account
 # button, unlock, account hosts on home, phone-key prompt. Same fakes as the
 # account-sync lane, no Docker fixture.
+fi
+
+if lane_selected account_picker; then
 if scripts/connected-js-account-picker.sh \
   --suffix i2855ci \
   --run-id "js3063-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
@@ -194,6 +249,9 @@ fi
 # in the lane's own Docker project, dialled over wss:// with the run's test CA.
 # The workflow prepared the gateway binaries and the suffixed test-CA APK
 # before the emulator started.
+fi
+
+if lane_selected gateway; then
 if scripts/connected-js-gateway-docker.sh \
   --suffix i3086gwlane \
   --run-id "gw3086-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
@@ -205,6 +263,9 @@ fi
 
 # The shared PocketShell app (#2936): list, attach, re-attach and type, on
 # its own isolated agents lane (the workflow starts 2243 for it).
+fi
+
+if lane_selected shared_app; then
 if scripts/connected-js-shared-app.sh \
   --suffix i2855ci \
   --port 2243 \
@@ -217,6 +278,9 @@ fi
 # The account key vault (key-vault W4): a web-saved vault key dialled from
 # memory after one passphrase, no key picker; remember on this device. Reuses
 # the validated shared-app pool identity; its actual dials use a separate real gateway.
+fi
+
+if lane_selected account_vault; then
 if scripts/connected-js-account-vault-docker.sh \
   --suffix ikvgwlane \
   --port 2243 \
@@ -228,6 +292,9 @@ else
   account_vault_status=$?
 fi
 
+fi
+
+if lane_selected forward_service; then
 if scripts/connected-js-forward-service.sh \
   --suffix i3097forward \
   --port 2243 \
@@ -237,6 +304,9 @@ else
   forward_service_status=$?
 fi
 
+fi
+
+if lane_selected key_vault; then
 if scripts/connected-js-key-vault-docker.sh \
   --suffix i2926ci \
   --port 2244 \
@@ -252,6 +322,9 @@ fi
 # and installs the unsuffixed com.pocketshell.app over a pinned signed v0.5.6
 # install, which the suffixed lanes above never touch. It reuses the key-vault
 # lane's isolated fixture after that lane has restored authorized_keys.
+fi
+
+if lane_selected signed_upgrade; then
 if scripts/connected-js-key-vault-signed-upgrade.sh \
   --port 2244 \
   --container pocketshell-test-agents-2244 \
@@ -259,6 +332,8 @@ if scripts/connected-js-key-vault-signed-upgrade.sh \
   signed_upgrade_status=0
 else
   signed_upgrade_status=$?
+fi
+
 fi
 
 printf 'Packaged API 35 lane statuses: smoke=%s lifecycle=%s usage-ports=%s files=%s composer=%s composer-junit-copy=%s composer-junit=%s hotkeys=%s hotkeys-junit=%s durable-storage=%s settings=%s voice-settings=%s forward-service=%s account-sync=%s account-picker=%s gateway=%s shared-app=%s account-vault=%s key-vault=%s signed-upgrade=%s smoke-junit-copy=%s\n' \

@@ -140,6 +140,14 @@ public final class SharedAccountPickerJourneyTest {
     public void sharedTrustedPickerNeverAdoptsUntrustedAccountRowsAfterSignInOrSettingsSync() throws Exception {
         assertTrue("packaged account journey runs on API 35+", Build.VERSION.SDK_INT >= 35);
         backend.seed(encrypt(desktopAccount().toString()), 3);
+        // A host-list envelope is not a key vault. Serve a genuine core-created
+        // vault for this existing-vault scenario, under the same verified account.
+        String fixturePath = InstrumentationRegistry.getArguments().getString("vaultFixture");
+        assertNotNull("the runner stages a real encrypted vault", fixturePath);
+        assertTrue("runner-staged vault path", fixturePath.matches("/data/local/tmp/pocketshell-picker-vault-[A-Za-z0-9_-]+\\.json"));
+        backend.vaultSlots = new JSONObject(shell("cat " + fixturePath)).getJSONObject("slots");
+        backend.vaultSlots.remove("main"); // Preserve the desktop host-list envelope seeded above.
+        assertTrue("a real vault header is required", backend.vaultSlots.has("vault"));
         launchSharedWithLocalHosts(new JSONArray()
                 .put(savedHost("phone-box", "192.168.1.9", 2200, "me"))
                 .put(savedHost("hetzner", "hetzner.phone.lan", 22, "alexey")));
@@ -538,6 +546,7 @@ public final class SharedAccountPickerJourneyTest {
         final List<Put> puts = Collections.synchronizedList(new ArrayList<>());
         private String data;
         private int version;
+        JSONObject vaultSlots = new JSONObject();
 
         synchronized void seed(String envelope, int atVersion) {
             data = envelope;
@@ -554,6 +563,14 @@ public final class SharedAccountPickerJourneyTest {
                     "{\"sub\":\"journey-sub-3020\",\"email\":\"" + EMAIL + "\"}");
             if ("GET".equals(method) && "/settings".equals(path)) return new GoogleSyncSession.Response(200,
                     "{\"slots\":[{\"slot\":\"main\",\"version\":" + version + ",\"size\":" + (data == null ? 0 : data.length()) + ",\"updatedAt\":\"2026-11-05T00:00:00.000Z\"}]}");
+            if ("GET".equals(method) && path.startsWith("/settings/") && vaultSlots.has(path.substring(10))) {
+                try {
+                    String slot = path.substring(10);
+                    JSONObject stored = vaultSlots.getJSONObject(slot);
+                    return new GoogleSyncSession.Response(200, new JSONObject().put("slot", slot)
+                            .put("version", stored.getInt("version")).put("data", stored.getString("data")).toString());
+                } catch (org.json.JSONException invalid) { throw new IllegalStateException(invalid); }
+            }
             if (!"/settings/main".equals(path)) return new GoogleSyncSession.Response(404, "{\"message\":\"no route\"}");
             try {
                 if ("GET".equals(method)) {
@@ -666,6 +683,10 @@ public final class SharedAccountPickerJourneyTest {
 
     private void captureVaultScreenshot(String name) throws Exception {
         try {
+            awaitJsTrue("!!document.querySelector('[data-testid=vault-unlock-passphrase]')"
+                    + " && !!document.querySelector('[data-testid=vault-unlock-submit]')"
+                    + " && !!document.querySelector('[data-testid=vault-unlock-cancel]')"
+                    + " && !document.querySelector('[data-testid=vault-setup-cancel]')");
             awaitImeSettled(true);
             assertVaultScreenshotNegativeControls();
             captureScreenshot(name, "[data-testid=vault-unlock-gate]");
@@ -982,7 +1003,12 @@ public final class SharedAccountPickerJourneyTest {
                 evidence.put("nativeWidth", view.getWidth()).put("nativeHeight", view.getHeight())
                         .put("nativeShown", shown).put("nativeVisibleRect", new JSONArray().put(visible.left).put(visible.top).put(visible.right).put(visible.bottom))
                         .put("imeVisible", insets != null && insets.isVisible(WindowInsets.Type.ime()))
-                        .put("imeBottom", insets == null ? 0 : insets.getInsets(WindowInsets.Type.ime()).bottom);
+                        .put("imeBottom", insets == null ? 0 : insets.getInsets(WindowInsets.Type.ime()).bottom)
+                        .put("activityFocus", activity.hasWindowFocus()).put("webViewWindowFocus", view.hasWindowFocus())
+                        .put("webViewInputFocus", view.hasFocus()).put("rootFocus", view.getRootView().hasWindowFocus())
+                        .put("imeAnimations", imeAnimations.size()).put("imeAnimationEnds", imeAnimationEnds)
+                        .put("layoutPending", view.isLayoutRequested())
+                        .put("systemBars", insets == null ? "missing" : insets.getInsets(WindowInsets.Type.systemBars()).toString());
             } catch (org.json.JSONException invalid) { throw new IllegalStateException(invalid); }
         });
         Log.i(TAG, "PICKER_VIEWPORT_FAILURE " + evidence);

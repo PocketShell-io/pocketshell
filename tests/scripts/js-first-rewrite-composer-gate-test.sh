@@ -553,7 +553,7 @@ def workflow_run_script(source: str, step_name: str) -> str:
 # serial ownership) are only regression coverage if the rewrite branch's
 # blocking job actually executes them. Legacy tests.yml reachability does not
 # count, so pin each as an executable, fail-closed line of this job's step.
-LOCK_HARNESS_JOB = "web-and-android"
+LOCK_HARNESS_JOB = "source-and-android"
 LOCK_HARNESS_STEP = "Check JS-first connected-test dispatch and lock contracts"
 LOCK_HARNESSES = (
     "scripts/test-gradle-output-lock.sh",
@@ -647,6 +647,10 @@ with tempfile.TemporaryDirectory(prefix="js rewrite live lane reports ") as temp
     fake_repo = Path(temporary)
     fake_scripts = fake_repo / "scripts"
     fake_scripts.mkdir()
+    for relative in ("lib/packaged-group.sh", "ci/packaged_groups.py"):
+        target = fake_scripts / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text((repository_root / "scripts" / relative).read_text())
     result_trace = fake_repo / "result-check-trace.txt"
     for checker, lane in (
         ("check-js-smoke-results.py", "smoke"),
@@ -752,6 +756,10 @@ def exercise_packaged_lanes(label: str, *, preflight: int = 0, smoke: int = 0, l
         fake_repo = fixture / "fake repo"
         fake_scripts = fake_repo / "scripts"
         fake_scripts.mkdir(parents=True)
+        for relative in ("lib/packaged-group.sh", "ci/packaged_groups.py"):
+            target = fake_scripts / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text((repository_root / "scripts" / relative).read_text())
         fake_wrapper = fake_scripts / packaged_lanes_path.name
         fake_wrapper.write_text(packaged_lanes)
         fake_wrapper.chmod(0o755)
