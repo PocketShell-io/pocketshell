@@ -392,6 +392,7 @@ public final class GatewayDockerJourneyTest {
         awaitJsTrue("!!document.querySelector('[data-testid=trusted-server-connect]:not([disabled])')", 120_000);
         assertEquals("cloud descriptor discovery saves no phone host row", "[]", evalString("localStorage.getItem('" + HOSTS_KEY + "')"));
         installDialRecorder();
+        installTrustedPtyDiagnostics();
         screenshot("trusted-vault-servers");
         int mark = controller(new JSONObject().put("op", "mark")).getInt("mark");
         click("[data-testid=trusted-server-connect]");
@@ -409,14 +410,84 @@ public final class GatewayDockerJourneyTest {
         setWebViewWidthFraction(0.55f);
         try {
             awaitJsTrue("document.querySelector('.xterm-screen')?.getBoundingClientRect().width < 350");
-            typeCommand("echo GWTRUST42_" + run + " | tee ./" + file);
+            logTrustedPtyDiagnostics("before-typing");
+            typeCommand("echo GWTRUST$((6*7))_" + run + " | tee ./" + file);
             awaitJsTrue(VISIBLE_TERMINAL + ".includes('GWTRUST42')");
-            assertEquals("GWTRUST42_" + run, hostFile(file, "trusted-io").trim());
+            String content = awaitTrustedHostFile(file, "GWTRUST42_" + run);
+            assertEquals("GWTRUST42_" + run, content);
+            logTrustedPtyDiagnostics("completed");
             screenshot("trusted-vault-terminal");
+        } catch (AssertionError | Exception failure) {
+            captureTrustedFailure(file);
+            throw failure;
         } finally { setWebViewWidthFraction(1f); }
         assertEveryDialWentThroughTheGateway(nativeDials());
         assertEquals("no cloud writes from the phone", 0, backend.writes);
         assertNoRoutingTokenEscaped();
+    }
+
+    /** Metadata-only PTY witness; forwards original native arguments/results unchanged. */
+    private void installTrustedPtyDiagnostics() throws Exception {
+        assertEquals("installed", evalString("(() => {"
+                + "window.__gwPty=[];window.__gwPtyDropped=0;"
+                + "const push=e=>{if(window.__gwPty.length<512)window.__gwPty.push(e);else window.__gwPtyDropped++;};"
+                + "const bytes=s=>{try{return atob(s??'').length;}catch{return -1;}};"
+                + "const nativePromise=window.Capacitor.nativePromise.bind(window.Capacitor);"
+                + "window.Capacitor.nativePromise=(plugin,method,options)=>{"
+                + "if(plugin!=='SshCapability'||!['openPty','writePty','readPty','closePty'].includes(method))return nativePromise(plugin,method,options);"
+                + "const ref=o=>({connectionId:o?.connectionId??null,generationId:o?.generationId??null,channelId:o?.channelId??null,sequence:o?.sequence??null});"
+                + "push({at:Date.now(),kind:'call',method,...ref(options),byteCount:method==='writePty'?bytes(options?.dataBase64):0,attachCommand:method==='openPty'&&String(options?.command??'').includes('pocketshell sessions attach')});"
+                + "return nativePromise(plugin,method,options).then(result=>{push({at:Date.now(),kind:'result',method,...ref(result),byteCount:method==='readPty'?bytes(result?.dataBase64):0,eof:result?.eof===true});return result;},error=>{push({at:Date.now(),kind:'rejected',method,...ref(options)});throw error;});"
+                + "};return 'installed';})()"));
+    }
+
+    private void logTrustedPtyDiagnostics(String stage) throws Exception {
+        JSONObject evidence = new JSONObject(evalString("JSON.stringify((() => {"
+                + "const t=[...document.querySelectorAll('.terminal-pane textarea')].find(n=>n.offsetParent!==null)??[...document.querySelectorAll('.xterm-helper-textarea')].find(n=>n.offsetParent!==null);"
+                + "const r=t?.getBoundingClientRect();"
+                + "return {innerWidth,innerHeight,terminalTextareaPresent:!!t,terminalFocused:!!t&&document.activeElement===t,textareaValueLength:t?.value?.length??0,selectionStart:t?.selectionStart??null,selectionEnd:t?.selectionEnd??null,textareaRect:r?{x:r.x,y:r.y,width:r.width,height:r.height}:null,pty:window.__gwPty??[],ptyDropped:window.__gwPtyDropped??0,journal:(window.__pocketshellConnectionJournal??[]).slice(-8).map(e=>({phase:e.phase,selectedId:e.selectedId,transportId:e.transportId,generationId:e.generationId}))};"
+                + "})())"));
+        JSONArray events = evidence.getJSONArray("pty");
+        evidence.remove("pty");
+        Log.i(TAG, "GATEWAY_TRUSTED_PTY " + evidence.put("stage", stage).put("ptyEvents", events.length()));
+        for (int i = 0; i < events.length(); i++)
+            Log.i(TAG, "GATEWAY_TRUSTED_PTY_EVENT " + events.getJSONObject(i).put("stage", stage));
+    }
+
+    private void captureTrustedFailure(String name) {
+        try { screenshot("trusted-vault-terminal"); }
+        catch (Throwable unavailable) { Log.w(TAG, "trusted native frame unavailable: " + unavailable.getClass().getSimpleName()); }
+        try { logTrustedPtyDiagnostics("failed-before-width-restore"); }
+        catch (Throwable unavailable) { Log.w(TAG, "trusted PTY evidence unavailable: " + unavailable.getClass().getSimpleName()); }
+        try {
+            JSONObject metadata = controller(new JSONObject().put("op", "host-file").put("name", name).put("phase", "trusted-io"));
+            metadata.remove("content");
+            Log.i(TAG, "GATEWAY_TRUSTED_FILE_FAILURE " + metadata);
+        } catch (Throwable unavailable) { Log.w(TAG, "trusted host evidence unavailable: " + unavailable.getClass().getSimpleName()); }
+    }
+
+    /** One typed command; independently observe actual completion without retyping. */
+    private String awaitTrustedHostFile(String name, String expected) throws Exception {
+        long deadline = SystemClock.uptimeMillis() + 20_000;
+        JSONObject reply = null;
+        String content = "";
+        do {
+            reply = controller(new JSONObject().put("op", "host-file").put("name", name).put("phase", "trusted-io"));
+            content = reply.getString("content").trim();
+            JSONObject metadata = new JSONObject(reply.toString());
+            metadata.remove("content");
+            Log.i(TAG, "GATEWAY_TRUSTED_FILE " + metadata);
+            assertEquals("independent host exec succeeds: " + reply, 0, reply.getInt("hostExecExitCode"));
+            if (expected.equals(content) && reply.optBoolean("exists") && "regular".equals(reply.optString("type")) && reply.getInt("readExitCode") == 0) break;
+            Thread.sleep(100);
+        } while (SystemClock.uptimeMillis() < deadline);
+        assertNotNull("independent file status was read", reply);
+        assertTrue("the command created the independent host file: " + reply, reply.getBoolean("exists"));
+        assertEquals("the command wrote a regular file", "regular", reply.getString("type"));
+        assertTrue("the independent file has bytes", reply.getLong("sizeBytes") > 0);
+        assertEquals("independent host read succeeds: " + reply, 0, reply.getInt("readExitCode"));
+        assertEquals("independent host read has no error", "", reply.getString("readStderr"));
+        return content;
     }
 
     private void awaitTrustedReadAfter(int previous) throws Exception {

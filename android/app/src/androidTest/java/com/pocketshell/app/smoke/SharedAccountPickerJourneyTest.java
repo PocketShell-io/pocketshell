@@ -629,9 +629,15 @@ public final class SharedAccountPickerJourneyTest {
     }
 
     private void captureScreenshot(String name, String markerSelector) throws Exception {
-        awaitJsTrue("(() => {const node = document.querySelector(" + JSONObject.quote(markerSelector) + ");"
-                + " if (!node) return false; node.scrollIntoView({block:'nearest',behavior:'instant'});"
-                + " const r = node.getBoundingClientRect(); return r.height > 0 && r.top >= 0 && r.bottom <= innerHeight;})()");
+        try {
+            awaitJsTrue("(() => {const node = document.querySelector(" + JSONObject.quote(markerSelector) + ");"
+                    + " if (!node) return false; node.scrollIntoView({block:'nearest',behavior:'instant'});"
+                    + " const r = node.getBoundingClientRect(); return r.height > 0 && r.top >= 0 && r.bottom <= innerHeight;})()");
+        } catch (AssertionError | Exception failure) {
+            try { captureViewportFailure(name); }
+            catch (Throwable diagnosticFailure) { Log.w(TAG, "viewport failure capture unavailable: " + diagnosticFailure.getClass().getSimpleName()); }
+            throw failure;
+        }
         ScreenshotGuard.Frame capture = null;
         for (int attempt = 0; attempt < 5; attempt += 1) {
             capture = renderedScreenshot(name);
@@ -642,6 +648,33 @@ public final class SharedAccountPickerJourneyTest {
         assertNotNull("screenshot " + name + " stayed byte-identical to the previous capture", capture);
         lastScreenshot = capture;
         writeScreenshot(name, capture.bytes);
+    }
+
+    /** Evidence only: preserve the original failing viewport assertion and native frame. */
+    private void captureViewportFailure(String name) throws Exception {
+        // Capture native pixels first, even if the later JS diagnostic bridge fails.
+        writeScreenshot(name, renderedScreenshot(name).bytes);
+        JSONObject evidence = new JSONObject(evalString("JSON.stringify((() => {"
+                + "const rect=n=>n?{x:n.getBoundingClientRect().x,y:n.getBoundingClientRect().y,width:n.getBoundingClientRect().width,height:n.getBoundingClientRect().height,top:n.getBoundingClientRect().top,bottom:n.getBoundingClientRect().bottom}:null;"
+                + "const hit=n=>{if(!n)return false;const r=n.getBoundingClientRect();return n.contains(document.elementFromPoint(r.x+r.width/2,r.y+r.height/2));};"
+                + "const input=document.querySelector('[data-testid=vault-unlock-passphrase]'),submit=document.querySelector('[data-testid=vault-unlock-submit]'),cancel=document.querySelector('[data-testid=vault-unlock-cancel]'),v=visualViewport;"
+                + "return {innerWidth,innerHeight,visualViewport:v?{width:v.width,height:v.height,offsetTop:v.offsetTop,offsetLeft:v.offsetLeft,scale:v.scale}:null,scrim:rect(document.querySelector('[data-testid=vault-unlock-gate]')),dialog:rect(document.querySelector('[data-testid=vault-unlock-gate] [role=dialog]')),input:rect(input),submit:rect(submit),cancel:rect(cancel),inputFocused:document.activeElement===input,inputHit:hit(input),submitHit:hit(submit),cancelHit:hit(cancel)};"
+                + "})())"));
+        scenario.onActivity(activity -> {
+            WebView view = findWebView(activity.getWindow().getDecorView());
+            Rect visible = new Rect();
+            boolean shown = view.getGlobalVisibleRect(visible);
+            WindowInsets insets = view.getRootWindowInsets();
+            try {
+                evidence.put("nativeWidth", view.getWidth()).put("nativeHeight", view.getHeight())
+                        .put("nativeShown", shown).put("nativeVisibleRect", new JSONArray().put(visible.left).put(visible.top).put(visible.right).put(visible.bottom))
+                        .put("imeVisible", insets != null && insets.isVisible(WindowInsets.Type.ime()))
+                        .put("imeBottom", insets == null ? 0 : insets.getInsets(WindowInsets.Type.ime()).bottom);
+            } catch (org.json.JSONException invalid) { throw new IllegalStateException(invalid); }
+        });
+        Log.i(TAG, "PICKER_VIEWPORT_FAILURE " + evidence);
+        // Same case-specific native artifact is pulled by the normal runner.
+        // The original viewport failure is still rethrown by captureScreenshot.
     }
 
     private ScreenshotGuard.Frame renderedScreenshot(String name) throws Exception {

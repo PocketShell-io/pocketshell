@@ -44,6 +44,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import socket
 import socketserver
 import ssl
@@ -99,6 +100,22 @@ def summarize_sshd(lines: list[str]) -> dict:
     }
 
 
+def host_file_program(name: str) -> str:
+    """Read-only host program: separate real read-process status from metadata."""
+    return """import json,stat,subprocess,sys
+from pathlib import Path
+p=Path(NAME)
+meta={"exists":False,"type":"missing","sizeBytes":None,"statError":""}
+try:
+ st=p.lstat()
+ meta.update(exists=True,sizeBytes=st.st_size,type="regular" if stat.S_ISREG(st.st_mode) else "directory" if stat.S_ISDIR(st.st_mode) else "symlink" if stat.S_ISLNK(st.st_mode) else "other")
+except FileNotFoundError: pass
+except OSError as error: meta["statError"]=str(error)[-400:]
+r=subprocess.run([sys.executable,"-c","import sys;from pathlib import Path;sys.stdout.write(Path(sys.argv[1]).read_text())",str(p)],capture_output=True,text=True,timeout=10)
+print(json.dumps(dict(meta,content=r.stdout,readExitCode=r.returncode,readStderr=r.stderr[-400:])))
+""".replace("NAME", repr(name), 1)
+
+
 class Fixture:
     def __init__(self, args: argparse.Namespace):
         self.args = args
@@ -115,15 +132,28 @@ class Fixture:
             raise RuntimeError(f"docker compose {' '.join(command)} exited {result.returncode}: {result.stderr.strip()[-400:]}")
         return result.stdout
 
-    def host_exec(self, script: str, stdin: str | None = None) -> str:
+    def _host_result(self, script: str, stdin: str | None = None) -> subprocess.CompletedProcess:
         command = ["exec", "-T", "host", "su", "testuser", "-s", "/bin/sh", "-c", "HOME=/home/testuser; cd; " + script]
         result = subprocess.run(
             ["docker", "compose", "-f", self.args.compose_file, "-p", self.args.project, *command],
             check=False, capture_output=True, text=True, timeout=60, input=stdin,
         )
+        return result
+
+    def host_exec(self, script: str, stdin: str | None = None) -> str:
+        result = self._host_result(script, stdin)
         if result.returncode != 0:
             raise RuntimeError(f"host command exited {result.returncode}: {result.stderr.strip()[-400:]}")
         return result.stdout
+
+    def host_file(self, name: str) -> dict:
+        if HOST_FILE.fullmatch(name) is None:
+            raise ValueError("host-file reads ~/gwlane-*.txt only")
+        result = self._host_result("python3 -c " + shlex.quote(host_file_program(name)))
+        status = {"name": name, "hostExecExitCode": result.returncode, "hostExecStderr": result.stderr[-400:]}
+        if result.returncode != 0:
+            return {"ok": False, "content": "", **status}
+        return {**json.loads(result.stdout), **status}
 
     def sshd_lines(self) -> list[str]:
         return self.compose("logs", "--no-color", "--no-log-prefix", "host").splitlines()
@@ -184,9 +214,7 @@ class Fixture:
             return {"dropped": True}
         if op == "host-file":
             name = str(request.get("name", ""))
-            if HOST_FILE.match(name) is None:
-                raise ValueError("host-file reads ~/gwlane-*.txt only")
-            return {"name": name, "content": self.host_exec(f"cat {name} 2>/dev/null || true")}
+            return self.host_file(name)
         if op == "home-sessions":
             payload = json.loads(self.host_exec("pocketshell sessions list --json"))
             if payload.get("schema") != 3 or payload.get("errors") != [] or not isinstance(payload.get("sessions"), list):
@@ -262,6 +290,37 @@ def self_test() -> int:
     assert accepted["accepted"] == [{"user": "testuser", "fingerprint": "SHA256:181Z5KJWXLKQbUssp7QcJ6WgVTR6pXkk0cD96lz7pF4"}]
     for name, ok in (("gwlane-io-abc.txt", True), ("../etc/passwd", False), ("gwlane-x.txt;id", False), (".ssh/authorized_keys", False)):
         assert (HOST_FILE.match(name) is not None) == ok, name
+    # Exercise the exact host program on a real filesystem, plus host-command
+    # failure and forbidden-name controls without creating a Docker project.
+    import tempfile
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        fixture = Fixture.__new__(Fixture)
+        def local_host(script, stdin=None):
+            return subprocess.run([sys.executable, "-c", shlex.split(script)[2]], cwd=root,
+                                  capture_output=True, text=True, timeout=20)
+        fixture._host_result = local_host
+        missing = fixture.host_file("gwlane-missing.txt")
+        assert missing["exists"] is False and missing["type"] == "missing"
+        assert missing["hostExecExitCode"] == 0 and missing["readExitCode"] != 0 and missing["readStderr"]
+        (root / "gwlane-empty.txt").write_text("")
+        empty = fixture.host_file("gwlane-empty.txt")
+        assert empty["exists"] is True and empty["type"] == "regular" and empty["sizeBytes"] == 0
+        assert empty["content"] == "" and empty["readExitCode"] == 0 and empty["readStderr"] == ""
+        (root / "gwlane-content.txt").write_bytes(b"GWTRUST42_fixture\n")
+        content = fixture.host_file("gwlane-content.txt")
+        assert content["content"] == "GWTRUST42_fixture\n" and content["sizeBytes"] == 18 and content["readExitCode"] == 0
+        (root / "gwlane-directory.txt").mkdir()
+        unreadable = fixture.host_file("gwlane-directory.txt")
+        assert unreadable["type"] == "directory" and unreadable["readExitCode"] != 0 and unreadable["readStderr"]
+        fixture._host_result = lambda *args: subprocess.CompletedProcess([], 255, "", "host exec failed")
+        failed = fixture.host_file("gwlane-content.txt")
+        assert failed["ok"] is False and failed["hostExecExitCode"] == 255 and failed["hostExecStderr"] == "host exec failed"
+        for bad in ("../etc/passwd", ".ssh/authorized_keys", "gwlane-x.txt;id", "gwlane-x.txt\n"):
+            try: fixture.host_file(bad)
+            except ValueError: pass
+            else: raise AssertionError("forbidden host-file name accepted")
+    print("PASS: gateway host-file missing/empty/content/read-error/host-error/allowlist controls")
     print("PASS: gateway lane fixture self-test")
     return 0
 
