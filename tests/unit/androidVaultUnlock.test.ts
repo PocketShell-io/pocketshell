@@ -157,6 +157,26 @@ describe('Android key vault unlock, remember, account IO and core adapter (key-v
     expect(native.released).toContainEqual(null);
   });
 
+  it('user Lock joins store-triggered native cleanup and fences resumed vault reads until it finishes',async()=>{
+    const {subject,core,native}=make();await subject.refresh();core.open();
+    let finish!:()=>void;
+    const release=vi.fn(()=>new Promise<{released:number}>(resolve=>{finish=()=>resolve({released:1});}));
+    native.releaseVaultKeys=release;
+    const recall=vi.spyOn(native,'recall');
+    core.lock();const locked=subject.lock();const refreshed=subject.refresh();
+    expect(release).toHaveBeenCalledTimes(1);expect(recall).not.toHaveBeenCalled();
+    finish();await locked;await refreshed;
+    expect(recall).toHaveBeenCalledTimes(1);expect(subject.state.status).toBe('locked');
+  });
+
+  it('an explicit native cleanup failure rejects Lock without forgetting remembered state',async()=>{
+    const {subject,core,native}=make();await subject.refresh();core.open();
+    native.remembered.set('me@example.com','SEALED');
+    native.releaseVaultKeys=vi.fn(async()=>{throw new Error('native cleanup unavailable');});
+    await expect(subject.lock()).rejects.toThrow('native cleanup unavailable');
+    expect(subject.state.status).toBe('locked');expect(native.remembered.get('me@example.com')).toBe('SEALED');expect(native.forgotAll).toBe(0);
+  });
+
   it('sign-out locks, wipes held keys and forgets every remembered record', async () => {
     const { subject, core, native } = make();
     await subject.refresh();

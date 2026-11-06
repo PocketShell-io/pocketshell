@@ -441,6 +441,8 @@
       "suite": "Android shared app shell",
       "tests": [
         "routes by the shared map plus exactly the Android host form and account screen",
+        "uses native navigation clearance without double-padding a resized IME viewport and disposes its listener",
+        "late native inset reads after disposal cannot mutate the shared viewport",
         "writes the system-bar and landscape side insets into the shared inset contract",
         "hands the shared root a phone mono stack, not the desktop Consolas default"
       ]
@@ -924,6 +926,8 @@
         "a remembered record from an older epoch or another vault is deleted and the passphrase is asked for",
         "a remembered record that fails for another reason (offline, rate limited) is kept for the next launch",
         "whoever unlocks the store (the shared sheet) is followed; a lock wipes every held native key",
+        "user Lock joins store-triggered native cleanup and fences resumed vault reads until it finishes",
+        "an explicit native cleanup failure rejects Lock without forgetting remembered state",
         "sign-out locks, wipes held keys and forgets every remembered record",
         "a signed-out phone or an account without a vault is \"no-vault\": the phone key flow applies",
         "remember on this device: the shared sheet saves the record sealed natively per account, never the passphrase",
@@ -1037,6 +1041,32 @@
         "preserves an accepted account when status fails through network or provider cancellation",
         "fences observed status-loss cleanup before a later different normal login can publish fresh shared state",
         "binds auth loss in the actual shared bootstrap to transient-only Android cleanup"
+      ]
+    },
+    "tests/unit/androidVaultLockRaces.test.ts": {
+      "suite": "Android vault Lock fences real Core and sealed Remember across asynchronous boundaries",
+      "tests": [
+        "a refresh delayed at scope cannot import remembered keys during or after Lock",
+        "a refresh delayed at probe cannot import remembered keys during or after Lock",
+        "a refresh delayed at recall cannot import remembered keys during or after Lock",
+        "an import already running in real Core cannot reinstall its DEK after Lock or replace a newer login",
+        "a stale remembered-import result arriving after Lock cannot forget the sealed record",
+        "an old probe error cannot overwrite a later authenticated account state",
+        "an old signed-out scope result cannot lock or relabel a newer authenticated session",
+        "a second Lock invalidates reads already waiting for the first native cleanup",
+        "a delayed credential refresh cannot open a password sheet after Lock",
+        "an old pending unlock answer cannot use keys from a newer authenticated session",
+        "a key decrypted before Lock cannot leave an older credential request",
+        "a password decrypted before Lock cannot leave an older credential request",
+        "an account lookup begun before Lock cannot start a native key hold afterwards",
+        "an old decryption error after Lock cannot replace the newer account outcome",
+        "Lock waits for an in-flight native hold and final cleanup even if scoped cleanup fails",
+        "cleanup failure keeps refresh and credentials closed until a successful Lock retry",
+        "real Google account lookup NOT_SIGNED_IN with cleanup failure false settles without a native lease or callback deadlock",
+        "real Google account lookup NOT_SIGNED_IN with cleanup failure true settles without a native lease or callback deadlock",
+        "real Google account lookup SIGN_IN_CANCELLED with cleanup failure false settles without a native lease or callback deadlock",
+        "real Google auth loss while native hold is pending completes cleanup with final wipe failure false",
+        "real Google auth loss while native hold is pending completes cleanup with final wipe failure true"
       ]
     }
   }

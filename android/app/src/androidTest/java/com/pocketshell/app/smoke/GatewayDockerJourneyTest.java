@@ -460,6 +460,7 @@ public final class GatewayDockerJourneyTest {
         assertEquals("one existing-vault prompt, including the failed phrase",1,onboardingGates().getInt("unlock"));
         assertEquals("existing vault is never offered setup",0,onboardingGates().getInt("create"));
         installDialRecorder();
+        installVaultCustodyWitness();
         int mark=controller(new JSONObject().put("op","mark")).getInt("mark");
         tapHost(DEVICE_HOST);
         awaitJsTrue(VISIBLE_TERMINAL+".includes('$')",120_000);
@@ -471,12 +472,18 @@ public final class GatewayDockerJourneyTest {
         screenshot("onboarding-existing-terminal");
         OnboardingViewportCapture.capture(scenario,evalString("JSON.stringify((()=>{const r=[...document.querySelectorAll('.xterm-screen')].find(n=>n.offsetParent!==null).getBoundingClientRect();return {left:r.left,top:r.top,right:r.right,bottom:r.bottom,innerWidth:innerWidth};})())"),run,"onboarding-existing-terminal-viewport");
         Log.i(TAG,"ONBOARDING_VISIBLE_TERMINAL "+evalString(VISIBLE_TERMINAL));
+        click("button[title=\"Back to hosts\"]");
+        awaitJsTrue("!!document.querySelector('[data-testid=trusted-server-connect]:not([disabled])')");
+        lockVaultThroughSettings();
+        assertTrue("the real user Lock released a held native vault credential",Integer.parseInt(evalString("String(window.__gwVaultWitness.released)"))>0);
+        InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK);
+        awaitJsTrue("!document.querySelector('.overlay-panel[aria-label=Settings]')");
         assertEquals("existing-vault onboarding has no cloud writes",0,backend.writes);
         assertEquals("Google first, retried once after a real account-service failure",2,google.interactiveCalls);
         assertEveryDialWentThroughTheGateway(nativeDials());
         Log.i(TAG,"ONBOARDING_EXISTING "+new JSONObject().put("unlockGates",onboardingGates().getInt("unlock"))
                 .put("createGates",onboardingGates().getInt("create")).put("interactive",google.interactiveCalls)
-                .put("wrongPhraseRefused",true).put("accountFailureNoGate",true).put("cloudWrites",backend.writes).put("hostFile",host.getString("name")));
+                .put("wrongPhraseRefused",true).put("accountFailureNoGate",true).put("nativeLockConfirmed",true).put("cloudWrites",backend.writes).put("hostFile",host.getString("name")));
     }
 
     @Test
@@ -490,6 +497,7 @@ public final class GatewayDockerJourneyTest {
         awaitJsTrue("!!document.querySelector('[data-testid=vault-setup]')",60_000);
         assertFalse("missing vault uses setup, never the old unlock form",exists("[data-testid=vault-unlock-form]"));
         screenshot("onboarding-create-first-vault");
+        scrollVisible("[data-testid=vault-setup-cancel]");
         click("[data-testid=vault-setup-cancel]");
         awaitJsTrue("!document.querySelector('[data-testid=vault-unlock-gate]')");
         assertEquals("cancel before submission has no initialization effect",0,backend.initializations);
@@ -502,12 +510,16 @@ public final class GatewayDockerJourneyTest {
         assertTrue("mismatched confirmation cannot create a vault",Boolean.parseBoolean(evalRaw("document.querySelector('[data-testid=vault-setup-create]').disabled")));
         setValue("[data-testid=vault-setup-again]",phrase);
         backend.unavailableInitialize=true;
+        scrollVisible("[data-testid=vault-setup-create]");
         click("[data-testid=vault-setup-create]");
         awaitJsTrue("!!document.querySelector('[data-testid=vault-setup] [role=alert]')",120_000);
         assertEquals("unavailable initialization leaves no partial vault",0,backend.vaultSlots.length());
         assertEquals("unavailable initialization leaves no verifier",null,backend.initializedAuth);
         screenshot("onboarding-create-unavailable");
+        logSetupGeometry();
+        OnboardingViewportCapture.capture(scenario,evalString("JSON.stringify((()=>{const r=document.querySelector('.vault-setup-dialog').getBoundingClientRect();return {left:r.left,top:r.top,right:r.right,bottom:r.bottom,innerWidth:innerWidth};})())"),run,"onboarding-setup-viewport");
         backend.unavailableInitialize=false;
+        scrollVisible("[data-testid=vault-setup-create]");
         click("[data-testid=vault-setup-create]");
         awaitJsTrue("!document.querySelector('[data-testid=vault-unlock-gate]') && [...document.querySelectorAll('.trusted-servers button')].some(n=>n.textContent.trim()==='Refresh servers')",120_000);
         assertEquals("one atomic creation, no slot PUT",1,backend.initializations);
@@ -549,6 +561,7 @@ public final class GatewayDockerJourneyTest {
         submitAuthLossVaultPhrase();
         awaitJsTrue("!!document.querySelector('[data-testid=trusted-server-connect]:not([disabled])')", 120_000);
         installDialRecorder();
+        installVaultCustodyWitness();
         int mark = controller(new JSONObject().put("op", "mark")).getInt("mark");
         tapHost(DEVICE_HOST);
         awaitJsTrue(VISIBLE_TERMINAL + ".includes('$')", 120_000);
@@ -576,10 +589,18 @@ public final class GatewayDockerJourneyTest {
         assertEquals("loss must not delete or rewrite protected custody", protectedBytes.toString(), authLossProtectedBytes().toString());
         screenshot("authloss-login-required");
 
-        // Reauthentication must expose a locked-vault sheet, not reuse the old transient DEK.
+        // The selected Remember policy legitimately unlocks silently after verified Google reauthentication.
+        int recallsBefore=rememberedRecalls();
         click("[data-testid=server-google-login]");
-        awaitJsTrue("!!document.querySelector('[data-testid=vault-unlock-gate]')", 60_000);
+        awaitJsTrue("!!document.querySelector('[data-testid=trusted-server-connect]:not([disabled])')",120_000);
+        assertFalse("remembered reauthentication does not add a passphrase sheet",exists("[data-testid=vault-unlock-gate]"));
+        assertTrue("the actual native recall returned the remembered record",rememberedRecalls()>recallsBefore);
+        int rememberedReauths=1;
         assertEquals("normal interactive login reuses the same provider identity", 2, google.interactiveCalls);
+        lockVaultThroughSettings();
+        assertEquals("explicit user Lock preserves the sealed remember bytes",protectedBytes.getString("pocketshell_vault_device_v1"),authLossProtectedBytes().getString("pocketshell_vault_device_v1"));
+        click("[data-testid=vault-unlock]");
+        awaitJsTrue("!!document.querySelector('[data-testid=vault-unlock-gate]')",60_000);
         google.silentRenewFailure = true;
         backend.rejectNext("/vault/status");
         submitAuthLossVaultPhrase();
@@ -589,13 +610,15 @@ public final class GatewayDockerJourneyTest {
         assertEquals("pending unlock loss preserves all ciphertext", ciphertext, backend.vaultSlots.toString());
         assertEquals("pending unlock loss preserves protected custody bytes", protectedBytes.toString(), authLossProtectedBytes().toString());
         screenshot("authloss-unlock-cancelled");
+        InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK);
+        awaitJsTrue("!document.querySelector('.overlay-panel[aria-label=Settings]')");
 
+        recallsBefore=rememberedRecalls();
         click("[data-testid=server-google-login]");
-        awaitJsTrue("!!document.querySelector('[data-testid=vault-unlock-gate]')", 60_000);
+        awaitJsTrue("!!document.querySelector('[data-testid=trusted-server-connect]:not([disabled])')",120_000);
+        assertTrue("native remembered unlock after pending-form auth loss",rememberedRecalls()>recallsBefore);
+        rememberedReauths++;
         assertEquals("three normal same-account Google logins, no manual sign-out", 3, google.interactiveCalls);
-        // Default type-every-time does not replace the existing remembered record.
-        submitAuthLossVaultPhrase();
-        awaitJsTrue("!!document.querySelector('[data-testid=trusted-server-connect]:not([disabled])')", 120_000);
         assertInstalledTrustedRevision(1);
         assertEquals("same authenticated vault, scope, pin, key and floor after reauthentication", binding.toString(), authLossPublicTrust().toString());
         assertEquals("same encrypted vault and descriptor bytes after recovery", ciphertext, backend.vaultSlots.toString());
@@ -618,11 +641,12 @@ public final class GatewayDockerJourneyTest {
         awaitAuthLossGoogleAction();
         assertEquals("gateway loss preserves every encrypted cloud slot", ciphertext, backend.vaultSlots.toString());
         assertEquals("gateway loss preserves protected custody bytes", protectedBytes.toString(), authLossProtectedBytes().toString());
+        recallsBefore=rememberedRecalls();
         click("[data-testid=server-google-login]");
-        awaitJsTrue("!!document.querySelector('[data-testid=vault-unlock-gate]')", 60_000);
+        awaitJsTrue("!!document.querySelector('[data-testid=trusted-server-connect]:not([disabled])')",120_000);
+        assertTrue("native remembered unlock after gateway-owned auth loss",rememberedRecalls()>recallsBefore);
+        rememberedReauths++;
         assertEquals("normal Google reauthentication must repair existing gateway session consumers", 4, google.interactiveCalls);
-        submitAuthLossVaultPhrase();
-        awaitJsTrue("!!document.querySelector('[data-testid=trusted-server-connect]:not([disabled])')", 120_000);
         assertInstalledTrustedRevision(1);
         assertEquals("existing gateway identity now reads the unchanged binding and floors", binding.toString(), authLossPublicTrust().toString());
         tapHost(DEVICE_HOST);
@@ -645,6 +669,7 @@ public final class GatewayDockerJourneyTest {
         Log.i(TAG, "AUTH_LOSS_CUSTODY " + new JSONObject().put("losses", backend.authChallenges)
                 .put("silentFailures", google.silentFailures).put("interactive", google.interactiveCalls)
                 .put("gatewayChallenges", backend.gatewayAuthChallenges)
+                .put("rememberedReauths",rememberedReauths).put("manualLockConfirmed",true)
                 .put("signOuts", google.clearCalls).put("cloudWrites", backend.writes)
                 .put("encryptedSlotsUnchanged", true).put("protectedBytesSurviveLoss", true)
                 .put("rememberBytesUnchanged", true).put("scopeStable", true).put("floor", 1)
@@ -656,6 +681,30 @@ public final class GatewayDockerJourneyTest {
         setValue("[data-testid=vault-unlock-passphrase]", "pocketshell-vault-test-passphrase gateway");
         click("[data-testid=vault-unlock-submit]");
     }
+
+    private void lockVaultThroughSettings() throws Exception {
+        click("button[title=Settings]");
+        awaitJsTrue("!!document.querySelector('#settings-tab-advanced')");
+        click("#settings-tab-advanced");
+        awaitJsTrue("!!document.querySelector('[data-testid=vault-lock]')");
+        evalString("(()=>{document.querySelector('[data-testid=vault-lock]').scrollIntoView({block:'center'});return 'visible';})()");
+        click("[data-testid=vault-lock]");
+        awaitJsTrue("document.querySelector('[data-testid=vault-settings] [role=status]')?.textContent.includes('Vault locked.')");
+    }
+
+    private void scrollVisible(String selector) throws Exception {
+        evalString("(()=>{const e=document.querySelector("+JSONObject.quote(selector)+");if(!e)throw new Error('missing control');e.scrollIntoView({block:'nearest'});return 'visible';})()");
+    }
+
+    private void installVaultCustodyWitness() throws Exception {
+        evalRaw("(()=>{window.__gwVaultWitness={recalls:0,released:0};const call=window.Capacitor.nativePromise.bind(window.Capacitor);"
+                +"window.Capacitor.nativePromise=function(plugin,method,options){const result=call(plugin,method,options);return result.then(reply=>{"
+                +"if(plugin==='VaultDeviceKey' && method==='recall' && typeof reply?.record==='string')window.__gwVaultWitness.recalls++;"
+                +"if(plugin==='SshKeyVault' && method==='releaseVaultKeys')window.__gwVaultWitness.released+=Number(reply?.released??0);"
+                +"return reply;});};return 'observing';})()");
+    }
+
+    private int rememberedRecalls() throws Exception {return Integer.parseInt(evalString("String(window.__gwVaultWitness.recalls)"));}
 
     private void awaitAuthLossGoogleAction() throws Exception {
         awaitJsTrue("!!document.querySelector('[data-testid=server-google-login]')"
@@ -724,6 +773,18 @@ public final class GatewayDockerJourneyTest {
     }
 
     private JSONObject onboardingGates() throws Exception {return new JSONObject(evalString("JSON.stringify(window.__gwOnboardingGates)"));}
+
+    private void logSetupGeometry() throws Exception {
+        Log.i(TAG,"ONBOARDING_SETUP_DOM "+evalString("JSON.stringify((()=>{const rect=e=>{if(!e)return null;const r=e.getBoundingClientRect();return {left:r.left,top:r.top,right:r.right,bottom:r.bottom};};const style=getComputedStyle(document.documentElement);const selectors=['.vault-scrim','.vault-setup-dialog','[data-testid=vault-setup]','[data-testid=vault-setup-new]','[data-testid=vault-setup-again]','[data-testid=vault-setup-create]','[data-testid=vault-setup-cancel]'];return {innerWidth,innerHeight,dpr:devicePixelRatio,visualViewport:visualViewport?{width:visualViewport.width,height:visualViewport.height,offsetTop:visualViewport.offsetTop,offsetLeft:visualViewport.offsetLeft,scale:visualViewport.scale}:null,insets:{top:style.getPropertyValue('--ps-inset-top'),bottom:style.getPropertyValue('--ps-inset-bottom')},bounds:Object.fromEntries(selectors.map(s=>[s,rect(document.querySelector(s))]))};})())"));
+        scenario.onActivity(activity->{
+            android.graphics.Rect visible=new android.graphics.Rect();WebView view=activity.getBridge().getWebView();view.getWindowVisibleDisplayFrame(visible);
+            androidx.core.view.WindowInsetsCompat insets=androidx.core.view.ViewCompat.getRootWindowInsets(view);
+            int[] origin=new int[2];view.getLocationOnScreen(origin);
+            Log.i(TAG,"ONBOARDING_SETUP_NATIVE origin="+origin[0]+","+origin[1]+" view="+view.getWidth()+"x"+view.getHeight()+" frame="+visible
+                +" bars="+(insets==null?"null":insets.getInsets(androidx.core.view.WindowInsetsCompat.Type.systemBars()))
+                +" ime="+(insets==null?"null":insets.getInsets(androidx.core.view.WindowInsetsCompat.Type.ime())));
+        });
+    }
 
     private void refreshServers() throws Exception {
         evalString("(() => {const b=[...document.querySelectorAll('.trusted-servers button')].find(n=>n.textContent.trim()==='Refresh servers');"

@@ -99,6 +99,7 @@ const trustedHosts = createAndroidTrustedHosts({ store: vaultStore, accountId: v
 export const keyVaultPlatform: KeyVaultPlatform = {
   accountId: verifiedGoogleAccountId,
   canCreate: true,
+  onLock: () => androidVault.lock(),
   cancelAccountPreparation: () => {vaultPreparation++;},
   async prepareAccount() {
     const started = ++vaultPreparation;

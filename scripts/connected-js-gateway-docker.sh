@@ -356,6 +356,10 @@ for shot in pin-mismatch device-offline terminal-io vault-unlocked-gateway-hosts
 done
 pocketshell_run_without_avd_lock_fd "$ADB" -s "$ANDROID_SERIAL" pull "/sdcard/Pictures/PocketShell/Onboarding/$RUN_ID/onboarding-existing-terminal-viewport.png" "$ARTIFACTS_DIR/screenshots/onboarding-existing-terminal-viewport.png" >/dev/null 2>&1 || true
 pocketshell_run_without_avd_lock_fd "$ADB" -s "$ANDROID_SERIAL" shell rm -f "/sdcard/Pictures/PocketShell/Onboarding/$RUN_ID/onboarding-existing-terminal-viewport.png" >/dev/null 2>&1 || true
+for surface in onboarding-existing-terminal-viewport-native-full onboarding-setup-viewport onboarding-setup-viewport-native-full; do
+  pocketshell_run_without_avd_lock_fd "$ADB" -s "$ANDROID_SERIAL" pull "/sdcard/Pictures/PocketShell/Onboarding/$RUN_ID/$surface.png" "$ARTIFACTS_DIR/screenshots/$surface.png" >/dev/null 2>&1 || true
+  pocketshell_run_without_avd_lock_fd "$ADB" -s "$ANDROID_SERIAL" shell rm -f "/sdcard/Pictures/PocketShell/Onboarding/$RUN_ID/$surface.png" >/dev/null 2>&1 || true
+done
 collect_and_stop_fixture
 
 pocketshell_run_without_avd_lock_fd "$ADB" -s "$ANDROID_SERIAL" shell rm -f "$DEVICE_VAULT_FIXTURE" >/dev/null 2>&1 || true

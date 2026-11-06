@@ -11,6 +11,9 @@ import android.os.Environment;
 import android.os.SystemClock;
 import android.provider.MediaStore;
 import android.webkit.WebView;
+import android.util.Log;
+import androidx.core.view.ViewCompat;
+import androidx.core.view.WindowInsetsCompat;
 import androidx.test.core.app.ActivityScenario;
 import androidx.test.platform.app.InstrumentationRegistry;
 import com.pocketshell.app.MainActivity;
@@ -33,32 +36,54 @@ final class OnboardingViewportCapture {
         }));
         assertTrue("terminal frame must paint",painted.await(15,TimeUnit.SECONDS));
         AtomicReference<Rect> viewport=new AtomicReference<>();
+        AtomicReference<JSONObject> measured=new AtomicReference<>();
+        AtomicReference<Boolean> contained=new AtomicReference<>(false);
+        AtomicReference<Boolean> focused=new AtomicReference<>(false);
         scenario.onActivity(activity -> {
             try {
                 WebView view=activity.getBridge().getWebView();
-                assertTrue("the real window owns focus",activity.hasWindowFocus() && view.hasWindowFocus());
+                focused.set(activity.hasWindowFocus() && view.hasWindowFocus());
                 int[] origin=new int[2];view.getLocationOnScreen(origin);
                 double scale=view.getWidth()/css.getDouble("innerWidth");
                 Rect crop=new Rect(origin[0]+(int)Math.floor(css.getDouble("left")*scale),origin[1]+(int)Math.floor(css.getDouble("top")*scale),
                         origin[0]+(int)Math.ceil(css.getDouble("right")*scale),origin[1]+(int)Math.ceil(css.getDouble("bottom")*scale));
                 Rect visible=new Rect();assertTrue(view.getGlobalVisibleRect(visible));
                 Rect frame=new Rect();view.getWindowVisibleDisplayFrame(frame);
-                assertTrue("terminal must be visible above the actual keyboard/system bars",visible.contains(crop) && frame.contains(crop));
+                contained.set(visible.contains(crop) && frame.contains(crop));
+                JSONObject state=new JSONObject().put("name",name).put("css",css).put("scale",scale)
+                    .put("viewWidth",view.getWidth()).put("viewHeight",view.getHeight()).put("originX",origin[0]).put("originY",origin[1])
+                    .put("crop",crop.toShortString()).put("visible",visible.toShortString()).put("frame",frame.toShortString())
+                    .put("contains",contained.get()).put("focused",focused.get()).put("density",view.getResources().getDisplayMetrics().density);
+                WindowInsetsCompat insets=ViewCompat.getRootWindowInsets(view);
+                if(insets!=null) state.put("systemBars",insets.getInsets(WindowInsetsCompat.Type.systemBars()).toString())
+                    .put("cutout",insets.getInsets(WindowInsetsCompat.Type.displayCutout()).toString())
+                    .put("imeVisible",insets.isVisible(WindowInsetsCompat.Type.ime())).put("ime",insets.getInsets(WindowInsetsCompat.Type.ime()).toString());
+                measured.set(state);Log.i("PocketshellGatewayLane","ONBOARDING_NATIVE_GEOMETRY "+state);
+                view.evaluateJavascript("JSON.stringify((()=>{const rect=e=>{if(!e)return null;const r=e.getBoundingClientRect();return {left:r.left,top:r.top,right:r.right,bottom:r.bottom,width:r.width,height:r.height};};const screen=[...document.querySelectorAll('.xterm-screen')].find(e=>e.offsetParent!==null);const style=getComputedStyle(document.documentElement);return {innerWidth,innerHeight,dpr:devicePixelRatio,scrollX,scrollY,visualViewport:visualViewport?{width:visualViewport.width,height:visualViewport.height,offsetTop:visualViewport.offsetTop,offsetLeft:visualViewport.offsetLeft,scale:visualViewport.scale}:null,screen:rect(screen),xterm:rect(screen?.closest('.xterm')),terminalViewport:rect(screen?.closest('.xterm')?.querySelector('.xterm-viewport')),insets:{top:style.getPropertyValue('--ps-inset-top'),bottom:style.getPropertyValue('--ps-inset-bottom')},vault:rect(document.querySelector('[data-testid=vault-setup]'))};})())",
+                    value->Log.i("PocketshellGatewayLane","ONBOARDING_DOM_GEOMETRY "+value));
                 viewport.set(crop);
             } catch(org.json.JSONException e) {throw new IllegalStateException(e);}
         });
         Bitmap screen=InstrumentationRegistry.getInstrumentation().getUiAutomation().takeScreenshot();
         assertNotNull(screen);Rect rect=viewport.get();assertNotNull(rect);
-        assertTrue(new Rect(0,0,screen.getWidth(),screen.getHeight()).contains(rect));
-        Bitmap terminal=Bitmap.createBitmap(screen,rect.left,rect.top,rect.width(),rect.height());
+        try {
+            export(screen,run,name+"-native-full");
+            assertTrue("the real window owns focus: "+measured.get(),focused.get());
+            assertTrue("captured surface must be visible above the actual keyboard/system bars: "+measured.get(),contained.get());
+            assertTrue(new Rect(0,0,screen.getWidth(),screen.getHeight()).contains(rect));
+            Bitmap terminal=Bitmap.createBitmap(screen,rect.left,rect.top,rect.width(),rect.height());
+            try {export(terminal,run,name);} finally {terminal.recycle();}
+        } finally {screen.recycle();}
+    }
+
+    private static void export(Bitmap bitmap,String run,String name) throws Exception {
         var context=InstrumentationRegistry.getInstrumentation().getTargetContext();
         ContentValues value=new ContentValues();
         value.put(MediaStore.Images.Media.DISPLAY_NAME,name+".png");value.put(MediaStore.Images.Media.MIME_TYPE,"image/png");
         value.put(MediaStore.Images.Media.RELATIVE_PATH,Environment.DIRECTORY_PICTURES+"/PocketShell/Onboarding/"+run);
         value.put(MediaStore.Images.Media.IS_PENDING,1);
         Uri uri=context.getContentResolver().insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI,value);assertNotNull(uri);
-        try(OutputStream output=context.getContentResolver().openOutputStream(uri)) {assertNotNull(output);assertTrue(terminal.compress(Bitmap.CompressFormat.PNG,100,output));}
-        finally {terminal.recycle();screen.recycle();}
+        try(OutputStream output=context.getContentResolver().openOutputStream(uri)) {assertNotNull(output);assertTrue(bitmap.compress(Bitmap.CompressFormat.PNG,100,output));}
         value.clear();value.put(MediaStore.Images.Media.IS_PENDING,0);
         assertEquals(1,context.getContentResolver().update(uri,value,null,null));
     }

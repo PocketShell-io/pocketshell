@@ -478,8 +478,12 @@ describe('Android dials account and gateway hosts with the account key vault (ke
     vaultNative.holdVaultKey = (options) => new Promise((resolve) => { finish = () => resolve(original(options)); });
     const dial = created.api.ssh.connect(direct);
     await new Promise((resolve) => setTimeout(resolve, 0));
-    await vault.lock();
+    let locked = false;
+    const locking = vault.lock().then(() => { locked = true; });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(locked).toBe(false);
     finish();
+    await locking;
     const result = await dial;
     expect(result.ok).toBe(false);
     expect(vaultNative.released).toContainEqual(['ephemeral-1']);

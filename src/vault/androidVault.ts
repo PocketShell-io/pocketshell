@@ -99,13 +99,50 @@ export function createAndroidVault(deps: AndroidVaultDeps) {
   });
   /** keyId → native ephemeral handle, while unlocked. */
   const handles = new Map<string, Promise<string>>();
+  const pendingHolds = new Set<Promise<string>>();
   /** Bumped on every lock, so a hold that finishes after a lock is released, not kept. */
   let generation = 0;
+  let releasing: Promise<void> | null = null;
+  let cleanupError: unknown = null;
 
-  async function releaseHandles(): Promise<void> {
+  function invalidate(): void {
     generation += 1;
     handles.clear();
-    await deps.native.releaseVaultKeys().catch(() => undefined);
+  }
+
+  function current(at: number): boolean {
+    return at === generation && !releasing && !cleanupError;
+  }
+
+  function requireCurrent(at: number): void {
+    if (!current(at)) throw new Error('Your key vault locked. Unlock it and connect again.');
+  }
+
+  async function ready(at: number): Promise<boolean> {
+    if (releasing) await releasing;
+    if (cleanupError) throw cleanupError;
+    return at === generation;
+  }
+
+  function releaseHandles(): Promise<void> {
+    if (releasing) return releasing;
+    // A native hold already in flight can finish after a global wipe. Join it
+    // first; its stale-generation path releases its own handle, then this final
+    // wipe makes successful Lock cover every lease, including cleanup errors.
+    const wipe = () => {
+      try { return deps.native.releaseVaultKeys(); }
+      catch (error) { return Promise.reject(error); }
+    };
+    const deletion = pendingHolds.size ? Promise.allSettled([...pendingHolds]).then(wipe) : wipe();
+    const pending = deletion.then(() => { cleanupError = null; });
+    releasing = pending;
+    void pending.then(() => {
+      if (releasing === pending) releasing = null;
+    }, error => {
+      cleanupError = error instanceof Error ? error : new Error(String(error));
+      if (releasing === pending) releasing = null;
+    });
+    return pending;
   }
 
   // Follow the store whoever changes it: the shared sheet unlocking, a
@@ -116,8 +153,9 @@ export function createAndroidVault(deps: AndroidVaultDeps) {
       state.status = 'unlocked';
       void Promise.resolve(deps.onUnlocked?.(open.syncPassphrase())).catch(() => undefined);
     } else if (!open && state.status === 'unlocked') {
+      invalidate();
       state.status = 'locked';
-      void releaseHandles();
+      void releaseHandles().catch(() => undefined);
     }
   });
 
@@ -125,36 +163,59 @@ export function createAndroidVault(deps: AndroidVaultDeps) {
    * Re-read where the account stands: signed out, no vault, or a vault that is
    * locked, unless this device remembered its key (then unlocked silently).
    */
-  async function refresh(): Promise<VaultStatus> {
+  async function refreshOperation(operation: { generation: number }): Promise<VaultStatus> {
+    const at = operation.generation;
+    if (!await ready(at) || !current(at)) return state.status;
     const scope = await deps.scope().catch(() => null);
+    if (!current(at)) return state.status;
     if (!scope) {
-      await lock();
+      const locked = lock();
+      const signedOutAt = generation;
+      await locked;
+      if (!current(signedOutAt)) return state.status;
+      // This refresh itself locked a missing account; its caller may continue
+      // to the guest path only if no other lock/account change intervened.
+      operation.generation = signedOutAt;
       state.status = 'signed-out';
       return state.status;
     }
     if (deps.core.current()) return (state.status = 'unlocked');
-    if (!(await deps.core.present())) return (state.status = 'absent');
+    let present: boolean;
+    try { present = await deps.core.present(); }
+    catch (error) { if (!current(at)) return state.status; throw error; }
+    if (!current(at)) return state.status;
+    if (!present) return (state.status = 'absent');
     state.status = 'locked';
     const { record } = await deps.native.recall({ scope }).catch(() => ({ record: null as string | null }));
+    if (!current(at)) return state.status;
     state.remembered = record !== null;
     if (record !== null) {
       const result = await deps.core.unlockRemembered(record).catch((error: unknown) => ({
         kind: 'error' as const,
         message: error instanceof Error ? error.message : String(error),
       }));
+      if (!current(at)) return state.status;
       if (result.kind === 'stale' || result.kind === 'absent') {
         // An older epoch (reset), another vault, or a passphrase changed
         // elsewhere: the record is useless now. Any other failure (offline,
         // rate limited) keeps it for the next launch and asks this time.
         await deps.native.forget({ scope }).catch(() => undefined);
+        if (!current(at)) return state.status;
         state.remembered = false;
       }
     }
     return state.status;
   }
 
+  function refresh(): Promise<VaultStatus> {
+    return refreshOperation({ generation });
+  }
+
   /** Lock: the decrypted vault and every native vault-key handle go. */
   async function lock(): Promise<void> {
+    // Invalidate even if another lock already owns native cleanup, and even
+    // when core is already locked (its store emits no event in that case).
+    invalidate();
     deps.core.lock();
     if (state.status === 'unlocked') state.status = 'locked';
     await releaseHandles();
@@ -162,29 +223,46 @@ export function createAndroidVault(deps: AndroidVaultDeps) {
 
   /** Sign-out: lock, and forget every remembered record and the device key. */
   async function signedOut(): Promise<void> {
-    await lock();
+    const locked = lock();
+    const at = generation;
+    await locked;
+    if (!current(at)) return;
     await deps.native.forgetAll().catch(() => undefined);
+    if (!current(at)) return;
     state.remembered = false;
     state.status = 'signed-out';
   }
 
-  async function handleFor(keyId: string, pem: string, vault: UnlockedVault): Promise<string> {
+  async function handleFor(keyId: string, pem: string, vault: UnlockedVault, at: number): Promise<string> {
+    requireCurrent(at);
     let pending = handles.get(keyId);
     if (!pending) {
-      const at = generation;
-      const accountId = await deps.accountId?.();
-      pending = deps.native.holdVaultKey({ privateKeyPem: pem,
-        ...(accountId?.startsWith('google:') ? { accountId, vaultId: vault.vaultId, epoch: vault.epoch, keyId } : {}),
-      }).then(async (held) => {
-        if (at !== generation) {
-          // The vault locked while native was holding it: never keep it.
-          await deps.native.releaseVaultKeys({ handleIds: [held.handleId] }).catch(() => undefined);
-          throw new Error('Your key vault locked. Unlock it and connect again.');
-        }
-        return held.handleId;
-      });
+      pending = (async () => {
+        const accountId = await deps.accountId?.();
+        requireCurrent(at);
+        // Google lookup can itself await auth-loss cleanup. Join only the
+        // native lease operation; joining this whole request would make that
+        // cleanup wait on its own callback. Register before invoking native.
+        const holding = Promise.resolve().then(() => {
+          requireCurrent(at);
+          return deps.native.holdVaultKey({ privateKeyPem: pem,
+            ...(accountId?.startsWith('google:') ? { accountId, vaultId: vault.vaultId, epoch: vault.epoch, keyId } : {}),
+          });
+        }).then(async held => {
+          if (at !== generation) {
+            // The vault locked while native was holding it: never keep it.
+            await deps.native.releaseVaultKeys({ handleIds: [held.handleId] }).catch(() => undefined);
+            throw new Error('Your key vault locked. Unlock it and connect again.');
+          }
+          return held.handleId;
+        });
+        pendingHolds.add(holding);
+        const finished = () => { pendingHolds.delete(holding); };
+        void holding.then(finished, finished);
+        return holding;
+      })();
       handles.set(keyId, pending);
-      pending.catch(() => {
+      void pending.catch(() => {
         if (handles.get(keyId) === pending) handles.delete(keyId);
       });
     }
@@ -203,12 +281,18 @@ export function createAndroidVault(deps: AndroidVaultDeps) {
     alias: string,
     options: { gateway: boolean; mirroredPolicy?: GatewayAuthPolicy | null } = { gateway: false },
   ): Promise<VaultDialDecision> {
-    let status = deps.core.current() ? 'unlocked' : await refresh();
+    const operation = { generation };
+    if (!await ready(operation.generation) || !current(operation.generation)) return { kind: 'locked' };
+    let status = deps.core.current() ? 'unlocked' : await refreshOperation(operation);
+    const at = operation.generation;
+    if (!current(at)) return { kind: 'locked' };
     if (status === 'signed-out' || status === 'absent') return { kind: 'no-vault' };
     const mirrored = options.mirroredPolicy ?? null;
     if (status === 'locked') {
       if (options.gateway && mirrored === 'host') return { kind: 'host-keys' };
-      if (!(await deps.askUnlock(alias)) || !deps.core.current()) {
+      const unlocked = await deps.askUnlock(alias);
+      if (!current(at)) return { kind: 'locked' };
+      if (!unlocked || !deps.core.current()) {
         return options.gateway && mirrored !== 'managed' ? { kind: 'host-keys' } : { kind: 'locked' };
       }
       status = 'unlocked';
@@ -222,11 +306,15 @@ export function createAndroidVault(deps: AndroidVaultDeps) {
       return mirrored === 'managed' ? { kind: 'unbound' } : { kind: 'host-keys' };
     }
     if (options.gateway && binding.gatewayAuth === 'host') return { kind: 'host-keys' };
-    const secret = await vault.decryptForHost(alias);
+    let secret: VaultSecret;
+    try { secret = await vault.decryptForHost(alias); }
+    catch (error) { if (!current(at)) return { kind: 'locked' }; throw error; }
+    if (!current(at)) return { kind: 'locked' };
     if (secret.kind === 'password') {
       return { kind: 'credential', credential: { kind: 'password', password: secret.password }, secret: 'password', gatewayAuth: binding.gatewayAuth };
     }
-    const handleId = await handleFor(binding.keyId, secret.pem, vault);
+    const handleId = await handleFor(binding.keyId, secret.pem, vault, at);
+    if (!current(at)) return { kind: 'locked' };
     return { kind: 'credential', credential: { kind: 'key-handle', handleId }, secret: 'key', gatewayAuth: binding.gatewayAuth };
   }
 

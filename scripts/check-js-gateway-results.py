@@ -253,7 +253,8 @@ def validate_authloss_runtime(artifacts: Path) -> None:
         raise GateFailure("exactly one native auth-loss custody receipt is required")
     row = receipts[0]
     expected = {"losses":3,"silentFailures":3,"interactive":4,"gatewayChallenges":1,"signOuts":0,"cloudWrites":0,"floor":1,
-                "encryptedSlotsUnchanged":True,"protectedBytesSurviveLoss":True,"rememberBytesUnchanged":True,"scopeStable":True}
+                "encryptedSlotsUnchanged":True,"protectedBytesSurviveLoss":True,"rememberBytesUnchanged":True,"scopeStable":True,
+                "rememberedReauths":3,"manualLockConfirmed":True}
     if any(type(row.get(key)) is not type(value) or row.get(key) != value for key, value in expected.items()):
         raise GateFailure("native auth-loss custody or real Google recovery contract failed")
     counts = [row.get(key) for key in ("beforeDropDials", "preTapDials", "finalDials")]
@@ -270,7 +271,7 @@ def validate_authloss_runtime(artifacts: Path) -> None:
 def validate_onboarding_runtime(artifacts: Path) -> None:
     text=(artifacts/"logcat.txt").read_text(encoding="utf-8",errors="replace")
     for label,expected in (
-        ("ONBOARDING_EXISTING",{"unlockGates":1,"createGates":0,"interactive":2,"wrongPhraseRefused":True,"accountFailureNoGate":True,"cloudWrites":0}),
+        ("ONBOARDING_EXISTING",{"unlockGates":1,"createGates":0,"interactive":2,"wrongPhraseRefused":True,"accountFailureNoGate":True,"nativeLockConfirmed":True,"cloudWrites":0}),
         ("ONBOARDING_CREATED",{"epoch":3,"initializations":1,"initializeAttempts":2,"createGates":2,"unlockGates":1,"interactive":2,
                                "ciphertextPreserved":True,"plaintextUploaded":False,"emptyServers":True}),
     ):
@@ -281,7 +282,7 @@ def validate_onboarding_runtime(artifacts: Path) -> None:
         raise GateFailure("the onboarding terminal's visible text was not retained")
     for name in ("onboarding-before-google","onboarding-account-unavailable","onboarding-wrong-phrase","onboarding-existing-terminal",
                  "onboarding-create-first-vault","onboarding-create-unavailable","onboarding-created-empty-servers","onboarding-created-vault-reopened",
-                 "onboarding-existing-terminal-viewport"):
+                 "onboarding-existing-terminal-viewport","onboarding-setup-viewport"):
         frame=artifacts/"screenshots"/f"{name}.png"
         if not frame.is_file() or frame.stat().st_size<1024 or not frame.read_bytes().startswith(b"\x89PNG\r\n\x1a\n"):
             raise GateFailure(f"native onboarding screenshot is missing or invalid: {name}")
@@ -361,7 +362,7 @@ def _write_host(directory: Path, **overrides) -> None:
     receipt = {"losses":3,"silentFailures":3,"interactive":4,"gatewayChallenges":1,"signOuts":0,"cloudWrites":0,"floor":1,
                "encryptedSlotsUnchanged":True,"protectedBytesSurviveLoss":not overrides.get("authloss_custody_bad",False),
                "rememberBytesUnchanged":True,"scopeStable":True,"beforeDropDials":1,"preTapDials":overrides.get("authloss_pre_tap_dials",2),"finalDials":3,
-               "recoveryPhaseBeforeTap":"lost"}
+               "recoveryPhaseBeforeTap":"lost","rememberedReauths":3,"manualLockConfirmed":True}
     receipt["gatewayChallenges"] = overrides.get("authloss_gateway_challenges", 1)
     (directory.parent / "logcat.txt").write_text("AUTH_LOSS_CUSTODY " + json.dumps(receipt) + "\n")
     entries.extend([
@@ -372,7 +373,7 @@ def _write_host(directory: Path, **overrides) -> None:
     ])
     with (directory.parent/"logcat.txt").open("a") as log:
         log.write("ONBOARDING_EXISTING "+json.dumps({"unlockGates":overrides.get("onboarding_unlock_gates",1),"createGates":0,"interactive":2,
-                  "wrongPhraseRefused":True,"accountFailureNoGate":True,"cloudWrites":0})+"\n")
+                  "wrongPhraseRefused":True,"accountFailureNoGate":True,"nativeLockConfirmed":True,"cloudWrites":0})+"\n")
         log.write("ONBOARDING_CREATED "+json.dumps({"epoch":3,"initializations":overrides.get("onboarding_initializations",1),"initializeAttempts":2,
                   "createGates":2,"unlockGates":1,"interactive":2,"ciphertextPreserved":True,"plaintextUploaded":False,"emptyServers":True})+"\n")
         log.write("ONBOARDING_VISIBLE_TERMINAL GWONBOARD42_r\n")
@@ -382,7 +383,7 @@ def _write_host(directory: Path, **overrides) -> None:
         (shots / f"{name}.png").write_bytes(b"\x89PNG\r\n\x1a\n" + b"x" * 1024)
     for name in ("onboarding-before-google","onboarding-account-unavailable","onboarding-wrong-phrase","onboarding-existing-terminal",
                  "onboarding-create-first-vault","onboarding-create-unavailable","onboarding-created-empty-servers","onboarding-created-vault-reopened",
-                 "onboarding-existing-terminal-viewport"):
+                 "onboarding-existing-terminal-viewport","onboarding-setup-viewport"):
         (shots/f"{name}.png").write_bytes(b"\x89PNG\r\n\x1a\n"+b"x"*1024)
     if overrides.get("onboarding_viewport_missing"):
         (shots/"onboarding-existing-terminal-viewport.png").unlink()
