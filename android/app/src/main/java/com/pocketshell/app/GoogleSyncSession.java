@@ -30,6 +30,18 @@ public final class GoogleSyncSession {
         void write(String token) throws IOException;
 
         void clear() throws IOException;
+
+        /** All sessions using one credential record must share its lifecycle lock and invalidation. */
+        default AuthenticationState authenticationState() { return AuthenticationState.forScope(this); }
+    }
+
+    /** No bearer or Activity is retained here. The monitor orders credential changes across plugin workers. */
+    static final class AuthenticationState {
+        private static final java.util.Map<Object, AuthenticationState> SCOPES = new java.util.WeakHashMap<>();
+        boolean invalidated;
+        static synchronized AuthenticationState forScope(Object scope) {
+            return SCOPES.computeIfAbsent(scope, ignored -> new AuthenticationState());
+        }
     }
 
     /** Mints a Google ID token. Production: Credential Manager. */
@@ -70,7 +82,7 @@ public final class GoogleSyncSession {
         }
     }
 
-    private boolean invalidated;
+    private final AuthenticationState authentication;
     private final TokenStore store;
     private final SignInProvider provider;
     private final Transport transport;
@@ -80,6 +92,7 @@ public final class GoogleSyncSession {
     GoogleSyncSession(TokenStore store, SignInProvider provider, Transport transport, String apiBaseUrl,
             LongSupplier nowEpochSeconds) {
         this.store = store;
+        this.authentication = store.authenticationState();
         this.provider = provider;
         this.transport = transport;
         this.apiBaseUrl = apiBaseUrl.endsWith("/") ? apiBaseUrl.substring(0, apiBaseUrl.length() - 1) : apiBaseUrl;
@@ -92,39 +105,45 @@ public final class GoogleSyncSession {
      * only — no renewal, no network; renewal happens where a token is spent.
      * The subject is an account identifier, not a secret.
      */
-    synchronized String currentAccountSubject() throws SyncAuthException {
-        GoogleIdToken token = storedToken();
-        if (token == null) {
-            throw new SyncAuthException(SyncAuthException.NOT_SIGNED_IN, "Sign in with Google first.");
+    String currentAccountSubject() throws SyncAuthException {
+        synchronized (authentication) {
+            GoogleIdToken token = storedToken();
+            if (token == null) {
+                throw new SyncAuthException(SyncAuthException.NOT_SIGNED_IN, "Sign in with Google first.");
+            }
+            return token.subject;
         }
-        return token.subject;
     }
 
     /** Verify this native Google subject with the fixed backend authorizer before exposing public identity. */
-    synchronized String verifiedAccountId() throws SyncAuthException {
-        String before = currentAccountSubject();
-        Response response = request("GET", null, null);
-        if (response.status == 401) {
-            dropExpired();
-            throw new SyncAuthException(SyncAuthException.NOT_SIGNED_IN, "Sign in to verify your account.");
+    String verifiedAccountId() throws SyncAuthException {
+        synchronized (authentication) {
+            String before = currentAccountSubject();
+            Response response = request("GET", null, null);
+            if (response.status == 401) {
+                dropExpired();
+                throw new SyncAuthException(SyncAuthException.NOT_SIGNED_IN, "Sign in to verify your account.");
+            }
+            if (response.status != 200) throw new SyncAuthException(SyncAuthException.NETWORK, "Account verification is temporarily unavailable.");
+            String verifiedSubject;
+            try { verifiedSubject = new org.json.JSONObject(response.body).getString("sub"); }
+            catch (Exception invalid) { throw new SyncAuthException(SyncAuthException.INVALID_REQUEST, "Account verification returned an invalid response."); }
+            if (response.status != 200 || !before.equals(verifiedSubject) || !before.equals(currentAccountSubject())) {
+                dropExpired();
+                throw new SyncAuthException(SyncAuthException.NOT_SIGNED_IN, "Sign in to verify your account.");
+            }
+            if (!before.matches("[0-9A-Za-z_-]{1,128}")) throw invalid();
+            return "google:" + before;
         }
-        if (response.status != 200) throw new SyncAuthException(SyncAuthException.NETWORK, "Account verification is temporarily unavailable.");
-        String verifiedSubject;
-        try { verifiedSubject = new org.json.JSONObject(response.body).getString("sub"); }
-        catch (Exception invalid) { throw new SyncAuthException(SyncAuthException.INVALID_REQUEST, "Account verification returned an invalid response."); }
-        if (response.status != 200 || !before.equals(verifiedSubject) || !before.equals(currentAccountSubject())) {
-            dropExpired();
-            throw new SyncAuthException(SyncAuthException.NOT_SIGNED_IN, "Sign in to verify your account.");
-        }
-        if (!before.matches("[0-9A-Za-z_-]{1,128}")) throw invalid();
-        return "google:" + before;
     }
 
-    synchronized Response listSettings() throws SyncAuthException {
-        GoogleIdToken token = usableToken();
-        Response response = send("GET", "/settings", null, token);
-        if (response.status == 401) response = send("GET", "/settings", null, renew(token));
-        return response;
+    Response listSettings() throws SyncAuthException {
+        synchronized (authentication) {
+            GoogleIdToken token = usableToken();
+            Response response = send("GET", "/settings", null, token);
+            if (response.status == 401) response = send("GET", "/settings", null, renew(token));
+            return response;
+        }
     }
 
     /**
@@ -144,16 +163,18 @@ public final class GoogleSyncSession {
      * answer, so the strict response parser can refuse an endpoint that
      * echoes the Google token back instead of minting a scoped one.
      */
-    synchronized GatewayBrokerExchange gatewayTokenExchange() throws SyncAuthException {
-        GoogleIdToken token = usableToken();
-        // Empty body by contract: an explicit zero-length body, so the
-        // exchange is a POST with Content-Length: 0 on every HTTP stack.
-        Response response = send("POST", "/gateway/token", "", token);
-        if (response.status == 401) {
-            token = renew(token);
-            response = send("POST", "/gateway/token", "", token);
+    GatewayBrokerExchange gatewayTokenExchange() throws SyncAuthException {
+        synchronized (authentication) {
+            GoogleIdToken token = usableToken();
+            // Empty body by contract: an explicit zero-length body, so the
+            // exchange is a POST with Content-Length: 0 on every HTTP stack.
+            Response response = send("POST", "/gateway/token", "", token);
+            if (response.status == 401) {
+                token = renew(token);
+                response = send("POST", "/gateway/token", "", token);
+            }
+            return new GatewayBrokerExchange(response, token.token);
         }
-        return new GatewayBrokerExchange(response, token.token);
     }
 
     /** One broker exchange answer plus the bearer-echo check for its parse. */
@@ -173,26 +194,33 @@ public final class GoogleSyncSession {
     }
 
     /** Signed in means a stored token exists; an expired one is renewed on the next request. */
-    synchronized Status status() throws SyncAuthException {
-        GoogleIdToken token = storedToken();
-        return token == null ? new Status(false, null) : new Status(true, token.email);
+    Status status() throws SyncAuthException {
+        synchronized (authentication) {
+            GoogleIdToken token = storedToken();
+            return token == null ? new Status(false, null) : new Status(true, token.email);
+        }
     }
 
     /** The interactive sign-in: choose an account, store its ID token. */
-    synchronized Status signIn() throws SyncAuthException {
-        GoogleIdToken token = GoogleIdToken.parse(provider.obtainIdToken(true));
-        write(token.token);
-        return new Status(true, token.email);
+    Status signIn() throws SyncAuthException {
+        synchronized (authentication) {
+            GoogleIdToken token = GoogleIdToken.parse(provider.obtainIdToken(true));
+            write(token.token);
+            return new Status(true, token.email);
+        }
     }
 
     /** Delete the stored token and forget the authorized account. */
-    synchronized void signOut() throws SyncAuthException {
-        try {
-            store.clear();
-        } catch (IOException error) {
-            throw new SyncAuthException(SyncAuthException.STORAGE, "The Google sign-in could not be removed from secure storage.");
-        } finally {
-            provider.clearCredentialState();
+    void signOut() throws SyncAuthException {
+        synchronized (authentication) {
+            authentication.invalidated = true;
+            try {
+                store.clear();
+            } catch (IOException error) {
+                throw new SyncAuthException(SyncAuthException.STORAGE, "The Google sign-in could not be removed from secure storage.");
+            } finally {
+                provider.clearCredentialState();
+            }
         }
     }
 
@@ -201,54 +229,60 @@ public final class GoogleSyncSession {
      * first; a 401 is retried once after a silent renewal, because the token
      * can age out between the check and the server.
      */
-    synchronized Response request(String method, String slot, String body) throws SyncAuthException {
-        String path = pathFor(method, slot, body);
-        GoogleIdToken token = usableToken();
-        Response response = send(method, path, body, token);
-        if (response.status == 401) {
-            token = renew(token);
-            response = send(method, path, body, token);
+    Response request(String method, String slot, String body) throws SyncAuthException {
+        synchronized (authentication) {
+            String path = pathFor(method, slot, body);
+            GoogleIdToken token = usableToken();
+            Response response = send(method, path, body, token);
+            if (response.status == 401) {
+                token = renew(token);
+                response = send(method, path, body, token);
+            }
+            return response;
         }
-        return response;
     }
 
     /**
      * Fixed vault routes: status, verify, and account-bound atomic first
      * initialization. Reset and verifier replacement are not exposed.
      */
-    synchronized Response requestVault(String method, String endpoint, String body) throws SyncAuthException {
-        String path;
-        if ("GET".equals(method) && "vault/status".equals(endpoint) && body == null) {
-            path = "/vault/status";
-        } else if ("POST".equals(method) && "vault/verify".equals(endpoint) && body != null
-                && body.getBytes(StandardCharsets.UTF_8).length <= 1024) {
-            path = "/vault/verify";
-        } else if ("POST".equals(method) && "vault/initialize".equals(endpoint) && validVaultInitialization(body)) {
-            path = "/vault/initialize";
-        } else {
-            throw invalid();
+    Response requestVault(String method, String endpoint, String body) throws SyncAuthException {
+        synchronized (authentication) {
+            String path;
+            if ("GET".equals(method) && "vault/status".equals(endpoint) && body == null) {
+                path = "/vault/status";
+            } else if ("POST".equals(method) && "vault/verify".equals(endpoint) && body != null
+                    && body.getBytes(StandardCharsets.UTF_8).length <= 1024) {
+                path = "/vault/verify";
+            } else if ("POST".equals(method) && "vault/initialize".equals(endpoint) && validVaultInitialization(body)) {
+                path = "/vault/initialize";
+            } else {
+                throw invalid();
+            }
+            GoogleIdToken token = usableToken();
+            Response response = send(method, path, body, token);
+            if (response.status == 401 && !"/vault/verify".equals(path)) {
+                token = renew(token);
+                response = send(method, path, body, token);
+            }
+            return response;
         }
-        GoogleIdToken token = usableToken();
-        Response response = send(method, path, body, token);
-        if (response.status == 401 && !"/vault/verify".equals(path)) {
-            token = renew(token);
-            response = send(method, path, body, token);
-        }
-        return response;
     }
 
     /** Account-bound vault IO remains on the original subject across asynchronous KDF work. */
-    synchronized Response requestBound(String method, String slot, String endpoint, String body, String accountId) throws SyncAuthException {
-        if (accountId != null && (!accountId.matches("google:[0-9A-Za-z_-]{1,128}")
-                || !accountId.equals("google:" + currentAccountSubject()))) throw invalid();
-        // First setup must always name the verified account; it cannot be an unscoped write.
-        if ("vault/initialize".equals(endpoint) && accountId == null) throw invalid();
-        if ("settings".equals(endpoint) && "GET".equals(method) && slot == null && body == null) return listSettings();
-        if (endpoint != null) {
-            if (slot != null) throw invalid();
-            return requestVault(method, endpoint, body);
+    Response requestBound(String method, String slot, String endpoint, String body, String accountId) throws SyncAuthException {
+        synchronized (authentication) {
+            if (accountId != null && (!accountId.matches("google:[0-9A-Za-z_-]{1,128}")
+                    || !accountId.equals("google:" + currentAccountSubject()))) throw invalid();
+            // First setup must always name the verified account; it cannot be an unscoped write.
+            if ("vault/initialize".equals(endpoint) && accountId == null) throw invalid();
+            if ("settings".equals(endpoint) && "GET".equals(method) && slot == null && body == null) return listSettings();
+            if (endpoint != null) {
+                if (slot != null) throw invalid();
+                return requestVault(method, endpoint, body);
+            }
+            return request(method, slot, body);
         }
-        return request(method, slot, body);
     }
 
     private static boolean validInitialVerifier(String body) {
@@ -337,16 +371,16 @@ public final class GoogleSyncSession {
     }
 
     private void dropExpired() {
-        invalidated = true;
+        authentication.invalidated = true;
         try {
             store.clear();
         } catch (IOException ignored) {
-            // The next status read reports whatever the store still holds.
+            // Shared invalidation refuses the old record even when deletion fails.
         }
     }
 
     private GoogleIdToken storedToken() throws SyncAuthException {
-        if (invalidated) return null;
+        if (authentication.invalidated) return null;
         String raw;
         try {
             raw = store.read();
@@ -366,7 +400,7 @@ public final class GoogleSyncSession {
     private void write(String token) throws SyncAuthException {
         try {
             store.write(token);
-            invalidated = false;
+            authentication.invalidated = false;
         } catch (IOException error) {
             throw new SyncAuthException(SyncAuthException.STORAGE, "The Google sign-in could not be saved to secure storage.");
         }

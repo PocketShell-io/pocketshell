@@ -172,6 +172,95 @@ public final class GoogleSyncSessionTest {
         assertEquals("sub-1", session.currentAccountSubject());
     }
 
+    @Test public void twoPluginSessionsObserveNormalSignInAfterGatewayRenewalLossWithoutRecreation() throws Exception {
+        GoogleSyncSession gateway = new GoogleSyncSession(store, signIn, transport, API, () -> now);
+        store.value = token("sub-1", "phone@example.com", NOW - 10, "OLD");
+        signIn.failure = new SyncAuthException(SyncAuthException.UNAVAILABLE, "no credential");
+        try { gateway.gatewayTokenExchange(); fail("renewal must fail"); }
+        catch (SyncAuthException expected) { assertEquals(SyncAuthException.NOT_SIGNED_IN, expected.code); }
+        assertFalse(gateway.status().signedIn);
+        signIn.failure = null;
+        signIn.tokens.add(token("sub-1", "phone@example.com", NOW + 3600, "FRESH"));
+        assertTrue(session.signIn().signedIn);
+        assertEquals("sub-1", gateway.currentAccountSubject());
+        assertTrue(gateway.status().signedIn);
+    }
+
+    @Test public void failedCredentialClearInvalidatesEverySessionUntilSuccessfulNormalSignIn() throws Exception {
+        GoogleSyncSession gateway = new GoogleSyncSession(store, signIn, transport, API, () -> now);
+        GatewaySyncSession pairing = new GatewaySyncSession(gateway);
+        GatewaySyncSession sshBroker = new GatewaySyncSession(new GoogleSyncSession(store, signIn, transport, API, () -> now));
+        store.value = token("sub-1", "phone@example.com", NOW - 10, "OLD"); store.failClear = true;
+        signIn.failure = new SyncAuthException(SyncAuthException.UNAVAILABLE, "no credential");
+        try { gateway.gatewayTokenExchange(); fail("renewal must fail"); }
+        catch (SyncAuthException expected) { assertEquals(SyncAuthException.NOT_SIGNED_IN, expected.code); }
+        assertFalse("another plugin must not resurrect the undeleted credential", session.status().signedIn);
+        assertFalse(gateway.status().signedIn);
+        for (GatewaySyncSession consumer : List.of(pairing, sshBroker)) {
+            try { consumer.subject(); fail("gateway consumers must refuse the undeleted old identity"); }
+            catch (SyncAuthException expected) { assertEquals(SyncAuthException.NOT_SIGNED_IN, expected.code); }
+        }
+        signIn.failure = null;
+        signIn.tokens.add(token("sub-2", "other@example.com", NOW + 3600, "OTHER"));
+        assertTrue(session.signIn().signedIn);
+        assertEquals("sub-2", gateway.currentAccountSubject());
+        assertEquals("other@example.com", gateway.status().email);
+        assertEquals("sub-2", pairing.subject());
+        assertEquals("sub-2", sshBroker.subject());
+        transport.responses.add(new GoogleSyncSession.Response(200, "{}"));
+        assertEquals(200, sshBroker.exchange().response.status);
+        assertFalse("the former account must not be inherited", "sub-1".equals(pairing.subject()));
+    }
+
+    @Test public void anOldGatewayRenewalCannotClearANewerInteractiveLoginAcrossPluginWorkers() throws Exception {
+        java.util.concurrent.CountDownLatch renewing = new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.CountDownLatch releaseRenewal = new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.CountDownLatch loginStarted = new java.util.concurrent.CountDownLatch(1);
+        GoogleSyncSession.SignInProvider provider = new GoogleSyncSession.SignInProvider() {
+            public String obtainIdToken(boolean interactive) throws SyncAuthException {
+                if (interactive) return token("sub-2", "other@example.com", NOW + 3600, "NEW");
+                renewing.countDown();
+                try { if (!releaseRenewal.await(5, java.util.concurrent.TimeUnit.SECONDS)) throw new AssertionError("release renewal"); }
+                catch (InterruptedException error) { throw new AssertionError(error); }
+                throw new SyncAuthException(SyncAuthException.UNAVAILABLE, "old credential unavailable");
+            }
+            public void clearCredentialState() { }
+        };
+        GoogleSyncSession gateway = new GoogleSyncSession(store, provider, transport, API, () -> now);
+        GoogleSyncSession interactive = new GoogleSyncSession(store, provider, transport, API, () -> now);
+        store.value = token("sub-1", "phone@example.com", NOW - 10, "OLD");
+        java.util.concurrent.ExecutorService workers = java.util.concurrent.Executors.newFixedThreadPool(2);
+        try {
+            java.util.concurrent.Future<?> old = workers.submit(() -> {
+                try { gateway.gatewayTokenExchange(); throw new AssertionError("renewal must fail"); }
+                catch (SyncAuthException expected) { assertEquals(SyncAuthException.NOT_SIGNED_IN, expected.code); }
+            });
+            assertTrue(renewing.await(5, java.util.concurrent.TimeUnit.SECONDS));
+            java.util.concurrent.Future<?> login = workers.submit(() -> {
+                loginStarted.countDown();
+                try { assertTrue(interactive.signIn().signedIn); }
+                catch (SyncAuthException error) { throw new AssertionError(error); }
+            });
+            assertTrue(loginStarted.await(5, java.util.concurrent.TimeUnit.SECONDS));
+            try { login.get(100, java.util.concurrent.TimeUnit.MILLISECONDS); fail("credential change must wait for the older worker"); }
+            catch (java.util.concurrent.TimeoutException expected) { }
+            releaseRenewal.countDown();
+            old.get(5, java.util.concurrent.TimeUnit.SECONDS); login.get(5, java.util.concurrent.TimeUnit.SECONDS);
+            assertEquals("sub-2", gateway.currentAccountSubject());
+            assertEquals("sub-2", interactive.currentAccountSubject());
+        } finally { releaseRenewal.countDown(); workers.shutdownNow(); }
+    }
+
+    @Test public void failedExplicitSignOutCannotResurrectCredentialInAnotherPlugin() throws Exception {
+        GoogleSyncSession gateway = new GoogleSyncSession(store, signIn, transport, API, () -> now);
+        store.value = token("sub-1", "phone@example.com", NOW + 3600, "OLD"); store.failClear = true;
+        try { session.signOut(); fail("storage error"); }
+        catch (SyncAuthException expected) { assertEquals(SyncAuthException.STORAGE, expected.code); }
+        assertFalse(gateway.status().signedIn);
+        assertFalse(session.status().signedIn);
+        assertEquals(1, signIn.cleared);
+    }
+
     @Test public void ordinaryVerificationServerErrorsDoNotInvalidateTheAccount() throws Exception {
         store.value = token("sub-1", "phone@example.com", NOW + 3600, "VALID");
         transport.responses.add(new GoogleSyncSession.Response(503, "unavailable"));
