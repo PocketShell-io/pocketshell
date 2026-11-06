@@ -425,6 +425,7 @@ export function createAndroidPlatform(deps: AndroidApiDeps): AndroidPlatform {
     },
 
     hosts: {
+      provenance: 'local',
       groupLabel: 'On this phone',
       sourceName: 'saved hosts',
       emptyHint: 'No hosts saved on this phone yet.',
