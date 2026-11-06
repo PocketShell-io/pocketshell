@@ -156,7 +156,7 @@ public final class SharedAccountPickerJourneyTest {
         assertEquals("one interactive account chooser", 1, google.interactive.get());
         backToPicker();
         awaitJsTrue("!!document.querySelector('[data-testid=vault-unlock-gate]')");
-        captureScreenshot("shared-picker-signed-in-locked.png", "[data-testid=vault-unlock-gate]");
+        captureVaultScreenshot("shared-picker-signed-in-locked.png");
         dismissVaultUnlockAndAwaitPicker();
         awaitJsTrue("!!document.querySelector('[data-testid=server-vault-unlock]')");
         assertOnlySavedLocalPickerRows();
@@ -628,9 +628,215 @@ public final class SharedAccountPickerJourneyTest {
         PhysicalTap.tap(xy[0], xy[1]);
     }
 
+    /** Screenshot readiness targets controls, not the deliberately full-height modal scrim. */
+    private String vaultScreenshotGeometry() {
+        return "JSON.stringify((() => {"
+                + "const gates=document.querySelectorAll('[data-testid=vault-unlock-gate]');if(gates.length!==1)return null;const g=gates[0];"
+                + "const ids=['passphrase','type-every-time','remember','cancel','submit'];const boxes=[];"
+                + "const v=visualViewport;if(!v || !(v.scale>0) || !Number.isFinite(v.scale))return null;"
+                + "for(const id of ids){const all=g.querySelectorAll('[data-testid=vault-unlock-'+id+']');if(all.length!==1)return null;"
+                + "const input=all[0],n=(id==='remember'||id==='type-every-time')?input.closest('label'):input;"
+                + "if(!n)return null;for(let a=n;a;a=a.parentElement){const c=getComputedStyle(a);if(c.display==='none'||c.visibility!=='visible'||Number(c.opacity)===0)return null;}"
+                + "const s=getComputedStyle(n),r=n.getBoundingClientRect(),hit=document.elementFromPoint(r.left+r.width/2,r.top+r.height/2);"
+                + "const labelled=id==='passphrase'?Array.from(input.labels??[]).some(l=>l.textContent.trim().length>0):n.textContent.trim().length>0;"
+                + "if(!labelled || s.display==='none'||s.visibility!=='visible'||Number(s.opacity)===0 || r.width<=0||r.height<=0"
+                + "||r.left<v.offsetLeft||r.top<v.offsetTop||r.right>v.offsetLeft+v.width||r.bottom>v.offsetTop+v.height"
+                + "||!hit||!(n===hit||n.contains(hit)))return null;"
+                + "boxes.push([r.left,r.top,r.right,r.bottom]);}"
+                + "return {width:innerWidth,offsetLeft:v.offsetLeft,offsetTop:v.offsetTop,viewportScale:v.scale,boxes};})())";
+    }
+
+    private String vaultNativeGeometry;
+    private String vaultReadinessReason;
+
+    private static double vaultNativeCoordinate(double css, double offset, double pixelsPerCss, double viewportScale, int origin) {
+        return origin + (css - offset) * pixelsPerCss * viewportScale;
+    }
+
+    private final java.util.Set<Throwable> capturedVaultFailures =
+            java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+
+    private void preserveVaultFailure(String name, Throwable failure) {
+        // Nested cleanup and the outer screenshot barrier must retain the FIRST
+        // failed-state frame rather than overwrite it after restoring the viewport.
+        if (!capturedVaultFailures.add(failure)) return;
+        try { captureViewportFailure(name); }
+        catch (Throwable diagnosticFailure) { failure.addSuppressed(diagnosticFailure); }
+    }
+
+    private void captureVaultScreenshot(String name) throws Exception {
+        try {
+            awaitImeSettled(true);
+            assertVaultScreenshotNegativeControls();
+            captureScreenshot(name, "[data-testid=vault-unlock-gate]");
+        } catch (AssertionError | Exception failure) {
+            preserveVaultFailure(name, failure);
+            throw failure;
+        }
+    }
+
+
+    private boolean vaultScreenshotReadyNow() throws Exception {
+        vaultNativeGeometry = null;
+        vaultReadinessReason = "DOM_GEOMETRY";
+        // Typed focus rejection is observed independently before DOM/IME checks: the
+        // native occluder control cannot pass merely because its IME also disappeared.
+        AtomicReference<Boolean> focused = new AtomicReference<>(false);
+        scenario.onActivity(activity -> focused.set(activity.hasWindowFocus()
+                && findWebView(activity.getWindow().getDecorView()).hasWindowFocus()));
+        if (!focused.get()) { vaultReadinessReason = "WINDOW_FOCUS"; return false; }
+        String encoded = evalString(vaultScreenshotGeometry());
+        if (encoded == null || "null".equals(encoded)) return false;
+        JSONObject geometry = new JSONObject(encoded);
+        AtomicReference<Boolean> ready = new AtomicReference<>(false);
+        scenario.onActivity(activity -> {
+            WebView view = findWebView(activity.getWindow().getDecorView());
+            WindowInsets insets = view.getRootWindowInsets();
+            if (!activity.hasWindowFocus() || !view.hasWindowFocus()) { vaultReadinessReason = "WINDOW_FOCUS"; return; }
+            vaultReadinessReason = "IME_OR_LAYOUT";
+            if (insets == null || !insets.isVisible(WindowInsets.Type.ime()) || !imeAnimations.isEmpty()
+                    || imeAnimationEnds == 0 || view.isLayoutRequested()) return;
+            vaultReadinessReason = "NATIVE_INTERSECTION";
+            Rect visible = new Rect(), window = new Rect();
+            if (!view.getGlobalVisibleRect(visible)) return;
+            view.getWindowVisibleDisplayFrame(window);
+            if (!visible.intersect(window)) return;
+            int[] location = new int[2];
+            view.getLocationOnScreen(location);
+            // WindowMetrics describes the full window even when adjustResize shrinks its content.
+            // Subtracting IME from an already resized decor height would double-subtract it.
+            int keyboardTop = activity.getWindowManager().getCurrentWindowMetrics().getBounds().bottom
+                    - insets.getInsets(WindowInsets.Type.ime()).bottom;
+            visible.bottom = Math.min(visible.bottom, keyboardTop);
+            try {
+                double scale = view.getWidth() / geometry.getDouble("width");
+                if (!(scale > 0) || visible.isEmpty()) return;
+                double viewportScale = geometry.getDouble("viewportScale");
+                double offsetLeft = geometry.getDouble("offsetLeft"), offsetTop = geometry.getDouble("offsetTop");
+                JSONArray boxes = geometry.getJSONArray("boxes");
+                for (int i = 0; i < boxes.length(); i++) {
+                    JSONArray box = boxes.getJSONArray(i);
+                    double left = vaultNativeCoordinate(box.getDouble(0), offsetLeft, scale, viewportScale, location[0]);
+                    double top = vaultNativeCoordinate(box.getDouble(1), offsetTop, scale, viewportScale, location[1]);
+                    double right = vaultNativeCoordinate(box.getDouble(2), offsetLeft, scale, viewportScale, location[0]);
+                    double bottom = vaultNativeCoordinate(box.getDouble(3), offsetTop, scale, viewportScale, location[1]);
+                    if (left < visible.left || top < visible.top || right > visible.right || bottom > visible.bottom) return;
+                }
+                vaultNativeGeometry = visible.flattenToString() + ":" + view.getWidth() + ":" + view.getHeight()
+                        + ":" + location[0] + ":" + location[1] + ":" + keyboardTop;
+                vaultReadinessReason = "READY";
+                ready.set(true);
+            } catch (org.json.JSONException invalid) { throw new IllegalStateException(invalid); }
+        });
+        return ready.get();
+    }
+
+    private void awaitVaultScreenshotReady() throws Exception {
+        awaitImeSettled(true);
+        long deadline = SystemClock.uptimeMillis() + WAIT_TIMEOUT_MILLIS;
+        String previous = null;
+        int stable = 0;
+        while (SystemClock.uptimeMillis() < deadline) {
+            String geometry = evalString(vaultScreenshotGeometry());
+            boolean ready = vaultScreenshotReadyNow();
+            String snapshot = geometry + ":" + vaultNativeGeometry;
+            if (ready && geometry != null && snapshot.equals(previous)) stable++;
+            else stable = 0;
+            if (stable >= 3) return;
+            previous = snapshot;
+            Thread.sleep(100);
+        }
+        throw new AssertionError("vault essential controls must be stable, labelled, hit-testable and wholly inside the native visible viewport with settled IME and window focus");
+    }
+
+    /** Actual native negative controls; always restore the owned WebView and window. */
+    private void assertVaultScreenshotNegativeControls() throws Exception {
+        awaitVaultScreenshotReady();
+        AtomicInteger originalHeight = new AtomicInteger();
+        Throwable clippingFailure = null;
+        try {
+            scenario.onActivity(activity -> {
+                WebView view = findWebView(activity.getWindow().getDecorView());
+                android.view.ViewGroup.LayoutParams params = view.getLayoutParams();
+                originalHeight.set(params.height);
+                params.height = 1;
+                view.setLayoutParams(params);
+            });
+            long deadline = SystemClock.uptimeMillis() + WAIT_TIMEOUT_MILLIS;
+            AtomicReference<Boolean> shortened = new AtomicReference<>(false);
+            while (!shortened.get() && SystemClock.uptimeMillis() < deadline) {
+                scenario.onActivity(activity -> shortened.set(findWebView(activity.getWindow().getDecorView()).getHeight() == 1));
+                Thread.sleep(50);
+            }
+            assertTrue("negative control must actually shorten native WebView", shortened.get());
+            assertFalse("clipped essential controls must reject screenshot readiness", vaultScreenshotReadyNow());
+            Log.i(TAG, "VAULT_SCREENSHOT_CLIPPED nativeHeight=1 reason=" + vaultReadinessReason + " geometry=" + evalString(vaultScreenshotGeometry()));
+        } catch (AssertionError | Exception failure) {
+            clippingFailure = failure;
+            preserveVaultFailure("shared-picker-signed-in-locked.png", failure);
+            throw failure;
+        } finally {
+            try { scenario.onActivity(activity -> {
+                WebView view = findWebView(activity.getWindow().getDecorView());
+                android.view.ViewGroup.LayoutParams params = view.getLayoutParams();
+                params.height = originalHeight.get();
+                view.setLayoutParams(params);
+            }); } catch (AssertionError | Exception failure) {
+                if (clippingFailure != null) clippingFailure.addSuppressed(failure);
+                else { preserveVaultFailure("shared-picker-signed-in-locked.png", failure); throw failure; }
+            }
+        }
+        tapDomCenter("[data-testid=vault-unlock-passphrase]");
+        awaitVaultScreenshotReady();
+        AtomicReference<android.app.Dialog> occluder = new AtomicReference<>();
+        Throwable occluderFailure = null;
+        try {
+            scenario.onActivity(activity -> {
+                android.app.Dialog dialog = new android.app.Dialog(activity);
+                dialog.setContentView(new View(activity));
+                occluder.set(dialog);
+                dialog.show();
+            });
+            InstrumentationRegistry.getInstrumentation().waitForIdleSync();
+            AtomicReference<Boolean> lostFocus = new AtomicReference<>(false);
+            long deadline = SystemClock.uptimeMillis() + WAIT_TIMEOUT_MILLIS;
+            while (!lostFocus.get() && SystemClock.uptimeMillis() < deadline) {
+                scenario.onActivity(activity -> lostFocus.set(!activity.hasWindowFocus()));
+                Thread.sleep(50);
+            }
+            assertTrue("native dialog must actually take window focus", lostFocus.get());
+            assertFalse("an occluding native window must reject screenshot readiness", vaultScreenshotReadyNow());
+            assertEquals("focus must be the specific rejecting gate", "WINDOW_FOCUS", vaultReadinessReason);
+            Log.i(TAG, "VAULT_SCREENSHOT_OCCLUDED activityFocus=false reason=" + vaultReadinessReason);
+        } catch (AssertionError | Exception failure) {
+            occluderFailure = failure;
+            preserveVaultFailure("shared-picker-signed-in-locked.png", failure);
+            throw failure;
+        } finally {
+            try { scenario.onActivity(activity -> { if (occluder.get() != null) occluder.get().dismiss(); }); }
+            catch (AssertionError | Exception failure) {
+                if (occluderFailure != null) occluderFailure.addSuppressed(failure);
+                else { preserveVaultFailure("shared-picker-signed-in-locked.png", failure); throw failure; }
+            }
+        }
+        long focusDeadline = SystemClock.uptimeMillis() + WAIT_TIMEOUT_MILLIS;
+        AtomicReference<Boolean> focused = new AtomicReference<>(false);
+        while (!focused.get() && SystemClock.uptimeMillis() < focusDeadline) {
+            scenario.onActivity(activity -> focused.set(activity.hasWindowFocus()));
+            Thread.sleep(50);
+        }
+        assertTrue("owned Activity must regain window focus after dialog dismissal", focused.get());
+        // Dialog focus can dismiss the IME; explicitly restore focus via the same actual input.
+        tapDomCenter("[data-testid=vault-unlock-passphrase]");
+        awaitVaultScreenshotReady();
+        Log.i(TAG, "VAULT_SCREENSHOT_NATIVE_NEGATIVES clipped=reject occluded=reject restored=ready");
+    }
+
     private void captureScreenshot(String name, String markerSelector) throws Exception {
         try {
-            awaitJsTrue("(() => {const node = document.querySelector(" + JSONObject.quote(markerSelector) + ");"
+            if ("[data-testid=vault-unlock-gate]".equals(markerSelector)) {
+                awaitVaultScreenshotReady();
+            } else awaitJsTrue("(() => {const node = document.querySelector(" + JSONObject.quote(markerSelector) + ");"
                     + " if (!node) return false; node.scrollIntoView({block:'nearest',behavior:'instant'});"
                     + " const r = node.getBoundingClientRect(); return r.height > 0 && r.top >= 0 && r.bottom <= innerHeight;})()");
         } catch (AssertionError | Exception failure) {
