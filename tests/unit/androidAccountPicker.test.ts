@@ -22,6 +22,10 @@ import { createAccountHostKeyPrompt } from '@/sharedApp/accountHostKey';
 import { ACCOUNT_ROUTE, createSharedAppRouter, openAccountRoute } from '@/sharedApp/router';
 import { FakeNative, HOST_KEY, settle } from './support/androidFakeNative';
 import { createGoogleSyncPlugin, DEV_SYNC_ACCOUNT, DEV_SYNC_PASSPHRASE } from '@/dev/browser/googleSyncPlugin';
+import { createTrustedMockAccount, DEV_TRUSTED_ACCOUNT } from '@/dev/browser/trustedAccount';
+import { createAndroidVaultStore } from '@/vault/coreVault';
+import { createMockSshPlugin } from '@/dev/browser/mockSsh';
+import { createKeyVaultPlugin, createMockKeyVaultBackend } from '@/dev/browser/keyVaultPlugin';
 import { createGoogleSyncNative } from '@/native/googleSync';
 
 /**
@@ -357,5 +361,37 @@ describe('Android account sync group and shared picker account hosts', () => {
     expect(await sync.login()).toBe('dev@example.com');
     expect((await sync.pull('main', DEV_SYNC_PASSPHRASE)).kind).toBe('ok');
     expect((await sync.accountHosts())?.map((host) => host.name)).toEqual(DEV_SYNC_ACCOUNT.hosts.map((host) => host.name));
+
+    // The current shared picker discovers ONLY descriptors encrypted by core,
+    // not the legacy account host list. Exercise the same native boundary as dev:mock.
+    const ssh = createMockSshPlugin({ bridge: () => { throw new Error('No event expected'); }, latencyMs: 0 });
+    const keys = createKeyVaultPlugin(createMockKeyVaultBackend(), async () => null);
+    const trusted = createTrustedMockAccount(plugin, ssh, keys);
+    await expect(plugin.methods.accountId({})).resolves.toEqual({ accountId: DEV_TRUSTED_ACCOUNT });
+    const store = createAndroidVaultStore(native);
+    expect((await store.unlock('incorrect fixture password')).kind).toBe('wrongPassphrase');
+    expect(store.state).toBe('locked');
+    expect((await trusted.gateway.methods.list({ requestId: 'before' }) as { pairings: unknown[] }).pairings).toEqual([]);
+    expect((await store.unlock(DEV_SYNC_PASSPHRASE)).kind).toBe('ok');
+    const hosts = await store.listTrustedHosts(DEV_TRUSTED_ACCOUNT);
+    expect(hosts).toHaveLength(1);
+    expect(hosts[0]).toMatchObject({ hostAlias: 'mock-devbox', accountId: DEV_TRUSTED_ACCOUNT, status: 'active' });
+    await expect(trusted.gateway.methods.installTrustedHost({ host: { ...hosts[0], username: 'attacker' } })).rejects.toThrow();
+    await trusted.gateway.methods.installTrustedHost({ host: hosts[0] });
+    const secret = await store.decryptKeyForHost(hosts[0].hostAlias);
+    expect(secret.kind).toBe('key');
+    if (secret.kind !== 'key') throw new Error('Fixture did not decrypt a key');
+    const held = await keys.methods.holdVaultKey({ privateKeyPem: secret.pem, accountId: hosts[0].accountId,
+      vaultId: hosts[0].vaultId, epoch: hosts[0].epoch, keyId: hosts[0].keyId }) as { handleId: string };
+    expect(held.handleId).toMatch(/^ephemeral-/);
+    await expect(ssh.methods.connect({ requestId: 'trusted-dial', generationId: 'test-generation', hostname: hosts[0].deviceId,
+      username: hosts[0].username, gateway: { serverUrl: hosts[0].serverUrl, deviceId: hosts[0].deviceId },
+      credential: { handleId: held.handleId } })).resolves.toMatchObject({ gatewayHostKeyVerified: true });
+    await keys.methods.releaseVaultKeys({});
+    await expect(ssh.methods.connect({ gateway: { serverUrl: hosts[0].serverUrl, deviceId: hosts[0].deviceId },
+      credential: { handleId: held.handleId } })).rejects.toThrow('Untrusted dev gateway dial');
+    store.lock();
+    await native.signOut();
+    await expect(plugin.methods.accountId({})).rejects.toThrow('Sign in first');
   });
 });

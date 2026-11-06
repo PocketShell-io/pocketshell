@@ -31,6 +31,8 @@ import { createAndroidAttachments } from './attachments';
 import type { PocketShellApi } from '@ui/app/api';
 import {
   hasGatewayMarker,
+  resolveSessionName, freeSessionNameCommand, reposListCommand,
+  parseReposJson, classifyReposFailure, mergeRepos, pathAwareCommand,
   readHostUsage,
   runHostBootstrap,
   unsupportedTransport,
@@ -45,7 +47,7 @@ import { MissingHostCredential, type AndroidHostStore } from './hostStore';
 import { declinedAccountHostMessage, type AccountHostKeys } from './accountHosts';
 import { insecureGatewayMessage, resolveGatewayTarget, type GatewayConnectRequest, type GatewayPairings } from './gatewayTarget';
 import { AndroidForwards } from './forwards';
-import { sshCapability } from '@/native/sshCapability';
+import { sshCapability, nativeRemoteDirectory } from '@/native/sshCapability';
 import type { AndroidVault, GatewayAuthPolicy } from '@/vault/androidVault';
 
 /** The generation the hub's controller-backed exec answers for (the controller owns the real one). */
@@ -130,6 +132,7 @@ export interface AndroidLifecycle {
 export interface AndroidApiDeps {
   createController: () => ConnectionController;
   hosts: AndroidHostStore;
+  remoteDirectory?: typeof nativeRemoteDirectory;
   lifecycle?: AndroidLifecycle;
   /** The user's background grace, read at the moment the app backgrounds. */
   backgroundGraceMs: () => number;
@@ -154,6 +157,7 @@ export interface AndroidApiDeps {
   gatewayTransport?: () => Promise<boolean>;
   /** The native gateway pairings (#3086); required for a gateway dial. */
   gatewayPairings?: GatewayPairings;
+  gateway?: PocketShellApi['gateway'];
   /**
    * The account key vault (key-vault W4). An account host bound to a vault
    * key is dialled with it from memory; a locked vault asks to unlock, never
@@ -177,6 +181,8 @@ export function createAndroidPlatform(deps: AndroidApiDeps): AndroidPlatform {
   const pendingDials = new Map<string, Promise<ConnectResult>>();
   const hostConnections = new Map<string, string>();
   const connectionHosts = new Map<string, ForwardResumeIntent>();
+  // Public authority only: never retain a PEM/password/ephemeral key handle.
+  const reconnectRequests = new Map<string, Parameters<PocketShellApi['ssh']['connect']>[0]>();
   function rememberedHosts(): ForwardResumeIntent[] {
     try {
       const rows: unknown = JSON.parse(localStorage.getItem(FORWARD_RESUME_STORAGE_KEY) ?? '[]');
@@ -232,16 +238,19 @@ export function createAndroidPlatform(deps: AndroidApiDeps): AndroidPlatform {
    */
   async function gatewayTarget(request: GatewayConnectRequest & { gatewayAuth?: unknown; hostAlias?: string }, label: string) {
     const paired = await resolveGatewayTarget(request, label, deps.gatewayPairings!);
+    const saved = deps.hosts.savedHostFor(request);
+    if (!deps.vault && saved?.trustedVault) throw new Error(vaultLockedMessage(label));
     if (!deps.vault) return paired;
     // The host's policy is mirrored on its synced entry (design section 7):
     // core's store sends only the transport markers with a dial, so read it
     // from the account entry this dial names.
     const entry = deps.accountHosts ? await deps.accountHosts.find(request) : null;
-    const policy = mirroredPolicy(request) ?? (entry ? mirroredPolicy(entry) : null);
+    const policy = saved?.trustedVault ? 'managed' : mirroredPolicy(request) ?? (entry ? mirroredPolicy(entry) : null);
     const decision = await deps.vault.credentialFor(label, { gateway: true, mirroredPolicy: policy });
     switch (decision.kind) {
       case 'no-vault':
       case 'host-keys':
+        if (saved?.trustedVault) throw new Error(vaultUnboundMessage(label));
         return paired;
       // Only a `managed` host (vault keys only) gets these: the pairing key
       // would be refused by the host, so say what to do instead.
@@ -291,6 +300,12 @@ export function createAndroidPlatform(deps: AndroidApiDeps): AndroidPlatform {
    * the phone). Either way it then resolves like any other phone host.
    */
   async function resolveTarget(payload: Parameters<PocketShellApi['ssh']['connect']>[0]) {
+    // A saved gateway route remains authoritative even if an older caller
+    // sends only the host alias. Losing its marker must never become direct SSH.
+    if (!hasGatewayMarker(payload)) {
+      const saved = deps.hosts.savedHostFor(payload);
+      if (saved?.gateway) payload = { ...payload, user: payload.user || saved.user, gateway: saved.gateway };
+    }
     // The native report, read at dial time; any failure reads as "no gateway".
     const transports: AndroidTransports = {
       gateway: deps.gatewayPairings !== undefined && (await deps.gatewayTransport?.().catch(() => false)) === true,
@@ -350,6 +365,7 @@ export function createAndroidPlatform(deps: AndroidApiDeps): AndroidPlatform {
   }
 
   const api: PocketShellApi = {
+    ...(deps.gateway ? { gateway: deps.gateway } : {}),
     ssh: {
       async listConfigHosts() {
         return deps.hosts.list();
@@ -371,13 +387,8 @@ export function createAndroidPlatform(deps: AndroidApiDeps): AndroidPlatform {
         });
         const existing = hostConnections.get(target.hostId);
         if (existing && hub.controllerOf(existing)) {
-          const snapshot = hub.controllerOf(existing)!.getSnapshot();
-          if (snapshot.phase !== 'lost' && snapshot.phase !== 'idle' && !(snapshot.phase === 'error' && !snapshot.connectionId)) return { ok: true, connectionId: existing };
-          const recovering = pendingDials.get(target.hostId);
-          if (recovering) return recovering;
-          const recovery = hub.reconnect(existing).then((ok) => ok ? { ok: true, connectionId: existing } : { ok: false, error: 'Could not resume the forwarding host.' });
-          pendingDials.set(target.hostId, recovery);
-          try { return await recovery; } finally { pendingDials.delete(target.hostId); }
+          const ok = await hub.reconnect(existing, target);
+          return ok ? { ok: true, connectionId: existing } : { ok: false, error: 'Could not resume the host with its current credential.' };
         }
         const pending = pendingDials.get(target.hostId);
         if (pending) return pending;
@@ -386,6 +397,10 @@ export function createAndroidPlatform(deps: AndroidApiDeps): AndroidPlatform {
           if (result.ok && result.connectionId) {
             if (disposed) { await hub.close(result.connectionId); return { ok: false, error: 'The Android platform was closed.' }; }
             hostConnections.set(target.hostId, result.connectionId);
+            reconnectRequests.set(result.connectionId, { host: target.hostname, port: target.port,
+              user: target.username, hostAlias: hostLabel,
+              ...(target.gateway ? { gateway: { ...target.gateway } } : {}),
+            });
             connectionHosts.set(result.connectionId, { name: hostLabel, hostname: target.hostname, port: target.port, user: target.username, hostId: target.hostId });
           }
           return result;
@@ -402,15 +417,22 @@ export function createAndroidPlatform(deps: AndroidApiDeps): AndroidPlatform {
         await forwards!.close(connectionId);
         for (const [host, id] of hostConnections) if (id === connectionId) hostConnections.delete(host);
         connectionHosts.delete(connectionId);
+        reconnectRequests.delete(connectionId);
         return hub.close(connectionId);
       },
       onState: (listener) => hub.onState(listener),
       // Its presence tells the shared store the controller owns recovery
       // (#2954): no store ladder, and Retry recovers the same logical id.
-      reconnect: (connectionId) => hub.reconnect(connectionId),
+      reconnect: async (connectionId) => {
+        const request = reconnectRequests.get(connectionId);
+        if (!request || disposed) return false;
+        try { return await hub.reconnect(connectionId, await resolveTarget(request)); }
+        catch { return false; }
+      },
     },
 
     hosts: {
+      provenance: 'local',
       groupLabel: 'On this phone',
       sourceName: 'saved hosts',
       emptyHint: 'No hosts saved on this phone yet.',
@@ -455,21 +477,45 @@ export function createAndroidPlatform(deps: AndroidApiDeps): AndroidPlatform {
 
     projects: {
       async home(connectionId): Promise<HomeResult> {
-        try {
-          const res = await exec(connectionId, 'printf %s "$HOME"');
-          const home = res.stdout.trim();
-          return res.exitCode === 0 && home.startsWith('/')
-            ? { ok: true, home, error: null }
-            : { ok: false, home: null, error: res.stderr.trim() || 'The host did not report a home directory.' };
-        } catch (error) {
-          return { ok: false, home: null, error: error instanceof Error ? error.message : String(error) };
-        }
+        try { return { ok: true, home: await api.sftp.realPath(connectionId, '.'), error: null }; }
+        catch (error) { return { ok: false, home: null, error: error instanceof Error ? error.message : String(error) }; }
       },
       deriveName: unsupported('projects.deriveName'),
       createFolder: unsupported('projects.createFolder'),
-      reposList: unsupported('projects.reposList'),
+      async reposList(connectionId, request = {}) {
+        const scope = async (kind: 'local' | 'remote') => {
+          try {
+            const result = await exec(connectionId, pathAwareCommand(reposListCommand({ ...request, scope: kind })));
+            return result.exitCode === 0 ? { state: 'ok' as const, repos: parseReposJson(result.stdout), error: null }
+              : { ...classifyReposFailure(result.exitCode, result.stdout, result.stderr), repos: [] };
+          } catch (error) { return { state: 'failed' as const, repos: [], error: String(error) }; }
+        };
+        const wanted = request.scope ?? 'both';
+        const [local, remote] = await Promise.all([wanted === 'remote' ? null : scope('local'), wanted === 'local' ? null : scope('remote')]);
+        return { ok: (!local || local.state === 'ok') && (!remote || remote.state === 'ok'),
+          repos: mergeRepos(local?.repos ?? [], remote?.repos ?? []), local, remote };
+      },
       reposClone: unsupported('projects.reposClone'),
-      startSession: unsupported('projects.startSession'),
+      async startSession(connectionId, request) {
+        try {
+          const folder = await api.sftp.realPath(connectionId, request.folder);
+          const existing = (await hub.sessionsList(connectionId)).find((row) => row.path === folder && !row.agentKind);
+          if (existing && request.namePolicy !== 'unique') return { ok: true, sessionName: existing.name, folder, reused: true, via: 'helper', aplexerId: existing.aplexerId ?? null, error: null, code: null };
+          const home = await api.projects.home(connectionId);
+          const base = resolveSessionName(request.customName, folder, home.home);
+          let name = base;
+          if (request.namePolicy === 'unique') {
+            const free = await exec(connectionId, freeSessionNameCommand(base));
+            name = free.stdout.trim();
+            if (free.exitCode !== 0 || !/^[A-Za-z0-9_-]+$/.test(name)) throw new Error('No session name is available.');
+          }
+          const controller = hub.controllerOf(connectionId);
+          if (!controller) throw new Error('The connection is no longer available.');
+          const created = await controller.createSession(name, { cwd: folder });
+          if (!created.ok) return { ok: false, sessionName: null, folder, reused: false, via: null, aplexerId: null, error: created.message, code: controller.getSnapshot().uncertainMutation ? 'create-uncertain' : 'create-failed' };
+          return { ok: true, sessionName: created.value.name, folder, reused: !created.value.created, via: created.value.id ? 'aplexer' : 'helper', aplexerId: created.value.id, error: null, code: null };
+        } catch (error) { return { ok: false, sessionName: null, folder: null, reused: false, via: null, aplexerId: null, error: String(error), code: 'create-failed' }; }
+      },
       renameSession: unsupported('projects.renameSession'),
       async killSession(connectionId, name, ref) {
         const controller = hub.controllerOf(connectionId);
@@ -495,7 +541,16 @@ export function createAndroidPlatform(deps: AndroidApiDeps): AndroidPlatform {
       rename: unsupported('sftp.rename'),
       deleteFile: unsupported('sftp.deleteFile'),
       rmdir: unsupported('sftp.rmdir'),
-      realPath: unsupported('sftp.realPath'),
+      async realPath(connectionId, path) {
+        if (!path || /[\u0000\r\n]/.test(path)) throw new Error('Choose a valid remote folder.');
+        const controller = hub.controllerOf(connectionId);
+        const before = controller?.getSnapshot();
+        if (!before?.connectionId || !before.generationId) throw new Error('Connect before opening a remote folder.');
+        const resolved = await (deps.remoteDirectory ?? nativeRemoteDirectory)({ connectionId: before.connectionId, generationId: before.generationId }, path);
+        const after = controller?.getSnapshot();
+        if (after?.connectionId !== before.connectionId || after.generationId !== before.generationId) throw new Error('The connection changed while resolving the folder.');
+        return resolved;
+      },
       upload: unsupported('sftp.upload'),
       download: unsupported('sftp.download'),
       saveAs: unsupported('sftp.saveAs'),
@@ -593,6 +648,7 @@ export function createAndroidPlatform(deps: AndroidApiDeps): AndroidPlatform {
       forwards?.dispose();
       for (const id of hostConnections.values()) void hub.close(id);
       hostConnections.clear();
+      reconnectRequests.clear();
     },
   };
 }

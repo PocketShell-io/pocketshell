@@ -132,6 +132,8 @@ public final class SshCapabilityPlugin extends Plugin {
     }
 
     private volatile GatewayVaultProbe gatewayVaultProbe;
+    interface GatewayTrustedRevisionProbe { long floor(GatewayPairingStore.Pairing pairing) throws Exception; }
+    GatewayTrustedRevisionProbe gatewayTrustedRevisionProbe;
     /** Wall time for the gateway path: routing-token arrival times only, never
      * a deadline. JVM tests make it jump. */
     private volatile LongSupplier gatewayWallClock = System::currentTimeMillis;
@@ -200,6 +202,7 @@ public final class SshCapabilityPlugin extends Plugin {
         this.gatewaySyncSession = gatewaySyncSession;
         this.gatewayPairingStore = gatewayPairingStore;
         this.gatewayVaultProbe = keyHandleId -> { };
+        this.gatewayTrustedRevisionProbe = pairing -> 0L; // Explicit in-memory JVM fixture only.
     }
 
     /** JVM tests: the whole connect path against a loopback gateway fixture
@@ -242,6 +245,9 @@ public final class SshCapabilityPlugin extends Plugin {
     @Override
     public void load() {
         gatewaySyncSession = new GatewaySyncSession(getContext(), this::getActivity);
+        gatewayTrustedRevisionProbe = pairing -> GatewayPairingPlugin.protectedRevisions(getContext())
+                .load("google:" + pairing.accountSubject(), pairing.vaultId())
+                .optLong(TrustedHostRevisions.slot(pairing.serverUrl(), pairing.deviceId()), 0);
         // The pairing store is opened lazily, on the connect thread, the
         // first time a gateway dial needs it (Keystore work stays off the
         // main thread, and an ordinary dial never touches it).
@@ -792,6 +798,25 @@ public final class SshCapabilityPlugin extends Plugin {
                 closePty(pty);
             }
             return ack(requestId);
+        });
+    }
+
+    @PluginMethod
+    public void sftpRealPath(PluginCall call) {
+        run(call, options -> {
+            String requestId = requiredString(options, "requestId");
+            SshConnection connection = requireConnection(options);
+            String path = requiredString(options, "path");
+            SFTPClient client = requireSftp(connection);
+            synchronized (connection.sftpLock) {
+                String expanded = path.equals("~") ? client.canonicalize(".")
+                        : path.startsWith("~/") ? client.canonicalize(".") + "/" + path.substring(2) : path;
+                String canonical = client.canonicalize(expanded);
+                FileAttributes attributes = client.stat(canonical);
+                return new JSObject().put("requestId", requestId)
+                        .put("connectionId", connection.connectionId).put("generationId", connection.generationId)
+                        .put("path", canonical).put("isDirectory", attributes.getType() == net.schmizz.sshj.sftp.FileMode.Type.DIRECTORY);
+            }
         });
     }
 
@@ -1459,6 +1484,19 @@ public final class SshCapabilityPlugin extends Plugin {
         // / `both`, key-vault W4). The pin above is enforced either way; only
         // an arbitrary STORED key that is not the pairing's is refused.
         boolean vaultKey = EphemeralCredentials.isEphemeral(keyHandleId);
+        if ("vault".equals(pairing.credentialSource())) {
+            try {
+                if (gatewayTrustedRevisionProbe == null || pairing.trustedRevision < gatewayTrustedRevisionProbe.floor(pairing))
+                    throw new IOException("Trusted descriptor was superseded.");
+            } catch (Exception unreadable) {
+                throw new PluginFailure("GATEWAY_UNPAIRED", "This server trust changed. Reload your servers before reconnecting.");
+            }
+        }
+        if ("vault".equals(pairing.credentialSource()) && (!vaultKey
+                || !ephemeralCredentials.matches(keyHandleId, "google:" + subject, pairing.vaultId(), pairing.vaultEpoch(), pairing.vaultKeyId())
+                || !pairing.username.equals(options.getString("username")))) {
+            throw new PluginFailure("GATEWAY_UNPAIRED", "The trusted vault credential or SSH user does not match this server.");
+        }
         if (!vaultKey && !pairing.keyHandleId.equals(keyHandleId)) {
             throw new PluginFailure("GATEWAY_UNPAIRED", "The saved pairing uses a different SSH key.");
         }

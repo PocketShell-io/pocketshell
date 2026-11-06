@@ -29,6 +29,62 @@ public final class SshCapabilityPluginGatewayPinTest {
         fixture.close();
     }
 
+    @Test public void vaultDescriptorAuthenticatesWithItsBoundEphemeralKeyThroughRealTunnel() throws Exception {
+        String key = "A".repeat(22), vault = "B".repeat(22);
+        fixture.pairings.installVault(GatewayDialFixture.SUBJECT, fixture.serverUrl(), GatewayDialFixture.DEVICE,
+                fixture.hostKeyLine(), key, vault, 2, 4, "work", "alexey");
+        EphemeralCredentials held = new EphemeralCredentials();
+        fixture.plugin.ephemeralCredentials = held;
+        byte[] pem = GatewayDialFixture.pkcs8Pem(fixture.clientKey).getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        String handle = held.hold(pem).handleId;
+        java.util.Arrays.fill(pem, (byte) 0);
+        held.bind(handle, "google:" + GatewayDialFixture.SUBJECT, vault, 2, key);
+        JSObject options = fixture.connectOptions("trusted-vault");
+        options.put("credential", new JSObject().put("kind", "key-handle").put("handleId", handle));
+        JSObject result = fixture.plugin.connectNow(new JSObject(options.toString()));
+        assertTrue(result.getBoolean("gatewayHostKeyVerified"));
+        assertTrue(fixture.host.acceptedLogins.get() > 0);
+        held.wipeAll();
+    }
+
+    @Test public void wrongAccountVaultEpochOrKeyNeverOpensTunnelOrAuthenticates() throws Exception {
+        String key = "A".repeat(22), vault = "B".repeat(22);
+        fixture.pairings.installVault(GatewayDialFixture.SUBJECT, fixture.serverUrl(), GatewayDialFixture.DEVICE,
+                fixture.hostKeyLine(), key, vault, 2, 4, "work", "alexey");
+        EphemeralCredentials held = new EphemeralCredentials();
+        fixture.plugin.ephemeralCredentials = held;
+        for (String[] identity : new String[][] {
+                { "google:other", vault, "2", key }, { "google:sub-1", "C".repeat(22), "2", key },
+                { "google:sub-1", vault, "1", key }, { "google:sub-1", vault, "2", "D".repeat(22) } }) {
+            String handle = held.hold(EphemeralCredentialsTest.throwawayKey()).handleId;
+            held.bind(handle, identity[0], identity[1], Long.parseLong(identity[2]), identity[3]);
+            JSObject options = fixture.connectOptions("wrong-identity");
+            options.put("credential", new JSObject().put("kind", "key-handle").put("handleId", handle));
+            try { fixture.plugin.connectNow(new JSObject(options.toString())); org.junit.Assert.fail("foreign vault credential accepted"); }
+            catch (SshCapabilityPlugin.PluginFailure error) { assertEquals("GATEWAY_UNPAIRED", error.code); }
+            held.wipeAll();
+        }
+        assertEquals(0, fixture.gateway.clientConnections.get());
+        assertEquals(0, fixture.host.userauthAttempts.get());
+    }
+
+    @Test public void aNewerProtectedRevisionRefusesCachedVaultPairingBeforeAnyReconnectSocket() throws Exception {
+        String key = "A".repeat(22), vault = "B".repeat(22);
+        fixture.pairings.installVault(GatewayDialFixture.SUBJECT, fixture.serverUrl(), GatewayDialFixture.DEVICE,
+                fixture.hostKeyLine(), key, vault, 2, 4, "work", "alexey");
+        EphemeralCredentials held = new EphemeralCredentials(); fixture.plugin.ephemeralCredentials = held;
+        String handle = held.hold(EphemeralCredentialsTest.throwawayKey()).handleId;
+        held.bind(handle, "google:sub-1", vault, 2, key);
+        fixture.plugin.gatewayTrustedRevisionProbe = pairing -> 5L;
+        JSObject options = fixture.connectOptions("stale-vault");
+        options.put("credential", new JSObject().put("kind", "key-handle").put("handleId", handle));
+        try { fixture.plugin.connectNow(new JSObject(options.toString())); org.junit.Assert.fail("stale cached pairing accepted"); }
+        catch (SshCapabilityPlugin.PluginFailure error) { assertEquals("GATEWAY_UNPAIRED", error.code); }
+        held.wipeAll();
+        assertEquals(0, fixture.gateway.clientConnections.get());
+        assertEquals(0, fixture.host.userauthAttempts.get());
+    }
+
     @Test public void aMatchingPinConnectsAndReportsTheVerifiedReceipt() throws Exception {
         fixture.pairings.pair(GatewayDialFixture.SUBJECT, fixture.serverUrl(), GatewayDialFixture.DEVICE,
                 fixture.hostFingerprint(), GatewayDialFixture.HANDLE);

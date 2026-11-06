@@ -142,11 +142,11 @@ export function createStoreVaultCore(store: KeyVaultStoreLike): VaultCore {
   };
 }
 
-/** The phone's vault: core's store over the native sync transport (read-only) and server check. */
-export function createAndroidVaultStore(native: GoogleSyncNative): KeyVaultStore {
+/** Core's vault over native account-bound reads, atomic first setup and server verification. */
+export function createAndroidVaultStore(native: GoogleSyncNative, boundAccount: () => string | null = () => null): KeyVaultStore {
   return new KeyVaultStore({
-    transport: createVaultSlotTransport(native),
-    verifier: createVaultServerVerifier(native),
+    transport: createVaultSlotTransport(native, boundAccount),
+    verifier: createVaultServerVerifier(native, boundAccount),
   });
 }
 

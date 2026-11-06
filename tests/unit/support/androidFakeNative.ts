@@ -188,7 +188,9 @@ export class FakeNative {
 
   /** The newest channel attached to session tag `name`. */
   channelOf(name: string): string {
-    const channel = [...this.channels].reverse().find((entry) => entry.command.includes(`:${name}'`));
+    const sessionId = this.sessions.find((session) => session.tag === name)?.id;
+    if (!sessionId) throw new Error(`no session identity for ${name}`);
+    const channel = [...this.channels].reverse().find((entry) => entry.command === `exec pocketshell sessions attach -- '${sessionId}'`);
     if (!channel) throw new Error(`no PTY was opened for ${name}`);
     return channel.channelId;
   }

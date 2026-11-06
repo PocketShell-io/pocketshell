@@ -16,27 +16,16 @@ import java.util.concurrent.Executors;
 import org.json.JSONArray;
 
 /**
- * The narrow native API for gateway pairing storage (#3086) — the seam the
- * shared UI's pairing flow will call (slice 4). It stores and lists pairings;
- * it never derives one.
+ * Native gateway discovery and account-bound SSH trust. Discovery is advisory:
+ * it never supplies an accepted pin. Explicit local pairings bind a phone key;
+ * the trusted-server path installs an authenticated vault descriptor with its
+ * exact host key, vault identity and key reference instead. Google and gateway
+ * tokens never cross this bridge.
  *
- * <p>The pin must arrive from an explicit user action over an out-of-band
- * channel: the line {@code pocketshell gateway show --host-key} prints on the
- * host, or that key's SHA-256 fingerprint. There is no method that accepts a
- * pairing from a host record, the gateway's ready advisory, or the device
- * list's {@code ssh_host_key}, and no method that returns or accepts any
- * token, Google or routing.
- *
- * <p>Everything is scoped to the CURRENT signed-in account. The account
- * subject is the storage namespace but is never returned to JS: a pairing
- * write is bound to the account EMAIL the user saw (the same value
- * {@code GoogleSync.status} already reports), checked before and after the
- * vault lookup, so an account switch mid-action cannot redirect it.
- *
- * <p>Storage is protected: an {@link EncryptedSharedPreferences} file keyed
- * by an Android Keystore master key (AES-256-GCM values, so a tampered row
- * fails to decrypt rather than becoming a pin), private to the app, excluded
- * from backup and device transfer, and written with {@code commit()}.
+ * <p>Pairings and monotonic trust floors use Keystore-encrypted preferences,
+ * excluded from backup and device transfer. Trusted writes require the current
+ * native Google subject before and after mutation; explicit legacy pairing
+ * also checks the email displayed by the action's UI.
  */
 @CapacitorPlugin(name = "GatewayPairing")
 public final class GatewayPairingPlugin extends Plugin {
@@ -47,6 +36,7 @@ public final class GatewayPairingPlugin extends Plugin {
 
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
     private GatewaySyncSession session;
+    private GatewayDirectoryClient directory;
 
     /** The process-wide pairing store; the SSH plugin dials from the same one. */
     static synchronized GatewayPairingStore sharedStore(Context context) throws IOException {
@@ -60,11 +50,43 @@ public final class GatewayPairingPlugin extends Plugin {
     @Override
     public void load() {
         session = new GatewaySyncSession(getContext(), this::getActivity);
+        directory = new GatewayDirectoryClient(session, new GatewayRoutingTokens(System::currentTimeMillis),
+                new HttpSyncTransport(), GatewayOriginAllowlist.forBuild(), GatewayDirectoryClient.serverUrlForBuild());
     }
 
     @Override
     protected void handleOnDestroy() {
         worker.shutdown();
+    }
+
+    /** This build's fixed gateway origin. JavaScript cannot choose where a token goes. */
+    @PluginMethod
+    public void serverUrl(PluginCall call) {
+        try {
+            call.resolve(new JSObject().put("requestId", call.getString("requestId", ""))
+                    .put("serverUrl", directory.serverUrl()));
+        } catch (GatewayDirectoryClient.DirectoryException error) {
+            call.reject(error.getMessage(), error.code);
+        }
+    }
+
+    /** Public account-bound device rows, fetched with a native-only scoped credential. */
+    @PluginMethod
+    public void devices(PluginCall call) {
+        String requestId = call.getString("requestId", "");
+        String expectedEmail = call.getString("expectedAccountEmail");
+        worker.execute(() -> {
+            try {
+                call.resolve(new JSObject().put("requestId", requestId)
+                        .put("devices", directory.devices(expectedEmail)));
+            } catch (GatewayDirectoryClient.DirectoryException error) {
+                call.reject(error.getMessage(), error.code);
+            } catch (GatewayTokenBroker.GatewayBrokerException error) {
+                call.reject(error.getMessage(), error.code);
+            } catch (SyncAuthException error) {
+                reject(call, error);
+            }
+        });
     }
 
     /** The current account's pairings: public data only, no account subject. */
@@ -142,6 +164,71 @@ public final class GatewayPairingPlugin extends Plugin {
         });
     }
 
+    static TrustedHostRevisions protectedRevisions(Context context) {
+        return new TrustedHostRevisions(new EncryptedRepository(context, "pocketshell-trusted-host-revisions"));
+    }
+
+    private TrustedHostRevisions revisions() { return protectedRevisions(getContext()); }
+
+    private String requireAccountId(String expected) throws SyncAuthException {
+        String subject = session.subject();
+        if (!("google:" + subject).equals(expected)) throw accountChanged();
+        return subject;
+    }
+
+    @PluginMethod
+    public void trustedRevisions(PluginCall call) {
+        worker.execute(() -> {
+            try {
+                String account = call.getString("accountId");
+                requireAccountId(account);
+                org.json.JSONObject floors = revisions().load(account, call.getString("vaultId"));
+                requireAccountId(account);
+                call.resolve(new JSObject().put("floors", floors));
+            } catch (Exception error) { call.reject("Trusted host revisions could not be read.", "TRUSTED_HOST_STORE_FAILED"); }
+        });
+    }
+
+    @PluginMethod
+    public void saveTrustedRevision(PluginCall call) {
+        worker.execute(() -> {
+            try {
+                String account = call.getString("accountId");
+                requireAccountId(account);
+                revisions().save(account, call.getString("vaultId"), call.getString("slot"), TrustedHostRevisions.positive(call.getData(), "revision"));
+                requireAccountId(account);
+                call.resolve();
+            } catch (Exception error) { call.reject("Trusted host revision was refused.", "TRUSTED_HOST_ROLLBACK"); }
+        });
+    }
+
+    /** Only the authenticated, decrypted vault descriptor path calls this. Local phone keys are never substituted. */
+    @PluginMethod
+    public void installTrustedHost(PluginCall call) {
+        worker.execute(() -> {
+            try {
+                JSObject host = call.getObject("host");
+                if (host == null || !"active".equals(host.getString("status"))) throw new IOException("Missing active trusted host.");
+                String account = host.getString("accountId");
+                String subject = requireAccountId(account);
+                String server = host.getString("serverUrl");
+                if (!GatewayOriginAllowlist.forBuild().allowsGatewayOrigin(server)) throw new OriginNotAllowedException();
+                String vaultId = host.getString("vaultId");
+                String slot = TrustedHostRevisions.slot(server, host.getString("deviceId"));
+                long revision = TrustedHostRevisions.positive(host, "revision");
+                if (revision < revisions().load(account, vaultId).optLong(slot, 0)) throw new IOException("Trusted host rollback refused.");
+                requireAccountId(account);
+                sharedStore(getContext()).installVault(subject, server, host.getString("deviceId"), host.getString("sshHostKey"),
+                        host.getString("keyId"), vaultId, TrustedHostRevisions.positive(host, "epoch"), revision,
+                        host.getString("hostAlias"), host.getString("username"));
+                requireAccountId(account);
+                revisions().save(account, vaultId, slot, revision);
+                call.resolve();
+            } catch (SyncAuthException error) { reject(call, error); }
+            catch (Exception error) { call.reject("Trusted host installation was refused.", "TRUSTED_HOST_INVALID"); }
+        });
+    }
+
     interface VaultProbe { boolean hasHandle(String keyHandleId); }
 
     /** A pairing for a gateway origin outside the native allowlist (B1). */
@@ -193,7 +280,11 @@ public final class GatewayPairingPlugin extends Plugin {
                 .put("fingerprintSha256", pairing.fingerprintSha256())
                 .put("pinKind", pairing.hostKeyType() != null ? "host-key" : "fingerprint")
                 .put("keyHandleId", pairing.keyHandleId())
-                .put("pairedAtEpochMs", pairing.pairedAtEpochMs());
+                .put("credentialSource", pairing.credentialSource());
+        if ("vault".equals(pairing.credentialSource())) row.put("vaultId", pairing.vaultId())
+                .put("vaultEpoch", pairing.vaultEpoch()).put("vaultKeyId", pairing.vaultKeyId())
+                .put("trustedRevision", pairing.trustedRevision).put("hostAlias", pairing.hostAlias).put("username", pairing.username);
+        row.put("pairedAtEpochMs", pairing.pairedAtEpochMs());
         if (pairing.hostKeyType() != null) row.put("hostKeyType", pairing.hostKeyType());
         return row;
     }
@@ -229,10 +320,16 @@ public final class GatewayPairingPlugin extends Plugin {
     @SuppressWarnings("deprecation") // security-crypto 1.1.0 deprecates the helper; it is the app's at-rest store.
     static final class EncryptedRepository implements GatewayPairingStore.Repository {
         private final Context context;
+        private final String fileName;
         private SharedPreferences preferences;
 
         EncryptedRepository(Context context) {
+            this(context, PREFERENCES_FILE);
+        }
+
+        EncryptedRepository(Context context, String fileName) {
             this.context = context;
+            this.fileName = fileName;
         }
 
         @Override
@@ -250,12 +347,13 @@ public final class GatewayPairingPlugin extends Plugin {
 
         private SharedPreferences open(boolean create) throws IOException {
             if (preferences != null) return preferences;
-            File file = new File(new File(context.getApplicationInfo().dataDir, "shared_prefs"), PREFERENCES_FILE + ".xml");
+            File file = new File(new File(context.getApplicationInfo().dataDir, "shared_prefs"), fileName + ".xml");
             if (!create && !file.exists()) return null;
             try {
                 preferences = create();
             } catch (Exception unreadable) {
-                context.deleteSharedPreferences(PREFERENCES_FILE);
+                if (!PREFERENCES_FILE.equals(fileName)) throw new IOException("Protected trust storage could not be opened.");
+                context.deleteSharedPreferences(fileName);
                 if (!create) return null;
                 try {
                     preferences = create();
@@ -268,7 +366,7 @@ public final class GatewayPairingPlugin extends Plugin {
 
         private SharedPreferences create() throws Exception {
             MasterKey masterKey = new MasterKey.Builder(context).setKeyScheme(MasterKey.KeyScheme.AES256_GCM).build();
-            return EncryptedSharedPreferences.create(context, PREFERENCES_FILE, masterKey,
+            return EncryptedSharedPreferences.create(context, fileName, masterKey,
                     EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
                     EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM);
         }

@@ -107,11 +107,28 @@ pocketshell_run_without_avd_lock_fd "$ADB" -s "$ANDROID_SERIAL" logcat -c >/dev/
 SCREENSHOT_DIR="/sdcard/Pictures/PocketShell/JsAccountPicker/$RUN_ID"
 printf 'Running packaged JS account-picker journey on %s (API %s), suffix %s, run %s\n' \
   "$ANDROID_SERIAL" "$device_api" "$SUFFIX" "$RUN_ID"
+# Real core vault crypto; only the HTTP boundary and Google chooser are fake.
+fixture_dir="$(mktemp -d)"
+device_fixture="/data/local/tmp/pocketshell-picker-vault-$RUN_ID.json"
+cleanup_picker_fixture() {
+  pocketshell_run_without_avd_lock_fd "$ADB" -s "$ANDROID_SERIAL" shell rm -f "$device_fixture" >/dev/null 2>&1 || true
+  rm -rf -- "$fixture_dir"
+  pocketshell_release_all
+}
+trap cleanup_picker_fixture EXIT
+node scripts/vault-journey-fixture/build.mjs \
+  --key tests/docker/test_key --alias picker-fixture --hostname picker.invalid --port 22 --user fixture \
+  --passphrase "correct horse battery staple" --sync-passphrase "correct horse battery staple" \
+  --out "$fixture_dir/vault.json" > "$ARTIFACTS_DIR/vault-fixture-build.txt" 2>&1 \
+  || { cat "$ARTIFACTS_DIR/vault-fixture-build.txt" >&2; fail 'real encrypted picker vault fixture failed'; }
+pocketshell_run_without_avd_lock_fd "$ADB" -s "$ANDROID_SERIAL" push "$fixture_dir/vault.json" "$device_fixture" >/dev/null
+
 test_status=0
 pocketshell_run_without_avd_lock_fd "$ROOT_DIR/android/gradlew" -p "$ROOT_DIR/android" :app:connectedDebugAndroidTest \
   "-PpocketshellAppIdSuffix=$SUFFIX" \
   "-Pandroid.testInstrumentationRunnerArguments.class=$test_class" \
   "-Pandroid.testInstrumentationRunnerArguments.screenshotRunId=$RUN_ID" \
+  "-Pandroid.testInstrumentationRunnerArguments.vaultFixture=$device_fixture" \
   --stacktrace --console=plain || test_status=$?
 
 shopt -s nullglob

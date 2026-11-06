@@ -133,8 +133,9 @@ describe('Android hub keeps one PTY per attached session (#2955)', () => {
     await new Promise((resolve) => setTimeout(resolve, 20));
     expect(native.connects.length - dials).toBe(1);
     const reopened = native.opened.slice(2).map((options) => options.command);
-    expect(reopened.filter((command) => command.includes(":main'"))).toHaveLength(1);
-    expect(reopened.filter((command) => command.includes(":tests'"))).toHaveLength(1);
+    expect(reopened.filter((command) => command === `exec pocketshell sessions attach -- '${native.sessions[0]!.id}'`)).toHaveLength(1);
+    expect(reopened.filter((command) => command === `exec pocketshell sessions attach -- '${native.sessions[1]!.id}'`)).toHaveLength(1);
+    expect(reopened.some((command) => command.includes(`${WORKSPACE}:`))).toBe(false);
 
     native.outputOn(native.channelOf('main'), 'A-after');
     native.outputOn(native.channelOf('tests'), 'B-after');
@@ -196,7 +197,7 @@ describe('Android hub keeps one PTY per attached session (#2955)', () => {
     await attach('main'); // main is focused again: tests is now the least recent
     const c = await attach('third');
     expect(exited).toEqual([b.shellId]);
-    expect(native.closedPtys).toEqual([native.channels.find((entry) => entry.command.includes(":tests'"))!.channelId]);
+    expect(native.closedPtys).toEqual([native.channelOf('tests')]);
     expect(await hub.input(a.shellId, 'a', 'main', WORKSPACE)).toBe(true);
     expect(await hub.input(c.shellId, 'c', 'third', WORKSPACE)).toBe(true);
     expect(await hub.input(b.shellId, 'b', 'tests', WORKSPACE)).toBe(false);

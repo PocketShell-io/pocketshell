@@ -72,47 +72,43 @@ application** client `1035162854462-kkqius5o2ni136ed6l58iig5pdpeh4u6` (the
 pocketshell-web client), which the deployed sync stack already accepts
 (`GoogleWebClientId`). No backend change is needed.
 
-Google additionally requires an OAuth client of type **Android** in the same
-Cloud project (1035162854462) for every package + signing certificate that
-signs in. Until it exists, the Account screen reports "Google sign-in is not
-available for <package>". To enable the 0.6.0 preview, create in Google Cloud
-Console → APIs & Services → Credentials → Create OAuth client ID → Android:
+Native sign-in also requires an OAuth client of type Android in the same
+Google Cloud project (`pocketshell-508120`, project number 1035162854462),
+registered for the installed package and signing-certificate SHA-1. The
+registered private APK identity is:
 
 | Field | Value |
 | --- | --- |
-| Package name | `com.pocketshell.app.preview` |
-| SHA-1 certificate fingerprint | `63:48:A0:14:94:E0:06:D5:05:0E:C6:FC:61:7D:BC:6E:6E:16:E1:25` |
+| Name | PocketShell Android private APK |
+| Package | `com.pocketshell.app` |
+| SHA-1 | `63:48:A0:14:94:E0:06:D5:05:0E:C6:FC:61:7D:BC:6E:6E:16:E1:25` |
+| Android client | `1035162854462-hfgrvtlgs915lt9merdmug4db39qocqr.apps.googleusercontent.com` |
 
-That SHA-1 is the committed `debug.keystore` (alias `androiddebugkey`), which
-signs every debug and preview build; verified against the published
-`pocketshell-0.6.0-preview-cebe73f.apk` with `apksigner verify --print-certs`.
-The Android client has no secret and nothing needs to change in the app.
-The OAuth consent screen must list the test user if the project is in
-Testing mode, and the sync stack's `AllowedEmails` must include the account.
+The Android client establishes the package/signing identity. It does not
+replace `GoogleSyncConfig.SERVER_CLIENT_ID`: the requested ID token's audience
+remains the approved Web application client that the backend accepts.
 
-Until the Android client exists for a package, sign-in does not dead-end: the
-Account screen's "Sign in with Google" first tries Credential Manager and, on
-its not-registered refusal (`SIGN_IN_UNAVAILABLE`), falls back automatically to
-the desktop app's loopback-PKCE flow (`LoopbackPkceSignIn`): the system browser
-opens Google's consent page for the desktop client, and the one-time code is
-exchanged through the sync API's token relay (`POST /auth/google/token`), which
-adds the client secret server-side. The resulting ID token enters the same
-encrypted storage as a Credential Manager token; a refresh token lets the
-one-hour ID token renew silently. Registering the Android client remains the
-proper fix — it restores the native chooser and silent renewal through Play
-services, and the fallback then simply stops triggering.
+`android/app/build.gradle` signs debug APKs with this repository's committed
+`debug.keystore` (alias `androiddebugkey`). Keep that signing identity stable;
+a machine-generated `~/.android/debug.keystore` has a different fingerprint.
+Verify the actual APK with `apksigner verify --print-certs`, not a keystore
+filename or the displayed application version. Preview/test package suffixes
+need their own Android OAuth registration with the same certificate. Keep
+registrations for other supported package/certificate pairs intact when adding
+one. Production signing requires its own registered certificate.
 
-Other packages need their own Android client entry (same project, same
-form): `com.pocketshell.app` for an unsuffixed debug install and, before a
-release ships sync, `com.pocketshell.app` with the release keystore's SHA-1.
+The app's Sign in with Google button opens Android Credential Manager's
+account picker directly. There is no provider-choice dialog, browser fallback,
+loopback listener, OAuth redirect scheme or desktop-client token relay in the
+Android sign-in path. A successful native credential removes only the retired
+browser provider's encrypted refresh-token preferences; the ID-token store,
+account vault, remembered vault keys, SSH keys and host pairings are preserved.
 
-The 0.5.x client cannot be reused: 0.5.x never had a registered Android
-client. Its `SyncConfig.GOOGLE_ANDROID_CLIENT_ID` was the placeholder
-`unconfigured-android-client-id`, and its documented SHA-1
-(`A0:4C:74:…`) came from a per-machine `~/.android/debug.keystore`, not the
-committed keystore that signs current builds. 0.5.x also used a Custom Tab +
-PKCE redirect; the rewrite uses Credential Manager, which needs no redirect
-scheme in the manifest.
+Google's consent configuration must permit the account, and the sync stack's
+`AllowedEmails` must include it. Some Play Services versions mask an incorrect
+package/certificate registration as cancellation, so diagnose that registration
+when selection immediately returns unsigned-in; do not replace native sign-in
+with another authentication protocol.
 
 ## Testing
 
@@ -160,3 +156,29 @@ empty list and silently replace the account. The shared vector fixture at
 cross-client contract for serialization, unknown fields, selection deletion,
 auto-selection, and strict parsing. Its `fixtureSchemaVersion` is test
 metadata and is not sent to the backend.
+
+## Trusted servers on Android
+
+The shared Android picker uses the account vault's authenticated trusted-host
+records for its normal server list. Google sign-in is followed by one vault
+unlock. Legacy settings host rows and local phone keys do not establish trust
+for this list. Explicit settings sync remains available separately.
+
+The native `GoogleSync.accountId` verifies `/me` through the backend authorizer
+and returns only `google:<sub>`. The Google bearer stays native. Native
+`GET /settings` returns bounded slot metadata to core's vault transport; the
+vault decrypts and validates the `th-*` descriptor, managed key binding, current
+vault ID/epoch and revision before a row can connect.
+
+Android persists descriptor revision floors in Keystore-encrypted preferences,
+scoped by account, vault and target slot and excluded from backup/transfer.
+A trusted pairing stores the exact SSH host key and a vault key ID independently
+of local phone key UUIDs. Each held native key is bound to its account, vault,
+epoch and key ID. Explicit dials revalidate the descriptor; native reconnects
+also refuse pairings older than an observed protected revision floor. Locked,
+missing, revoked, tampered or mismatched trust never falls back to a phone key.
+
+After connection, core resumes an existing workspace or opens a home shell.
+Android resolves the directory through SFTP and creates the real session through
+the existing connection controller and host CLI. This uses the same native
+SSH transport and pin checks as an existing session.

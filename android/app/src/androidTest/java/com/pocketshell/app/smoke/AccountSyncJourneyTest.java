@@ -5,7 +5,6 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 
-import android.app.Activity;
 import android.content.ContentValues;
 import android.content.Context;
 import android.graphics.Bitmap;
@@ -318,14 +317,23 @@ public final class AccountSyncJourneyTest {
         String staleDocument = "reload-" + SystemClock.uptimeMillis();
         evalRaw("window.__pocketshellStaleDocument = " + JSONObject.quote(staleDocument) + ";"
                 + "localStorage.removeItem('" + ACCOUNT_HOSTS_KEY + "'); localStorage.removeItem('" + SHARED_SETTINGS_KEY + "');"
-                + "localStorage.setItem('" + HOSTS_KEY + "', " + JSONObject.quote(hosts.toString()) + ");"
-                + "location.reload(); 'reload'");
-        Log.i(TAG, "document right after reload() is still the old one: "
-                + evalRaw("window.__pocketshellStaleDocument === " + JSONObject.quote(staleDocument)));
-        awaitJsTrue("window.__pocketshellStaleDocument !== " + JSONObject.quote(staleDocument)
+                + "localStorage.setItem('" + HOSTS_KEY + "', " + JSONObject.quote(hosts.toString()) + "); 'seeded'");
+        // Wait for the storage write's callback before navigating. A reload
+        // can cancel evaluateJavascript callbacks from the outgoing document;
+        // do not turn that expected cancellation into a failed readiness check.
+        scenario.onActivity(activity -> findWebView(activity.getWindow().getDecorView()).reload());
+        String ready = "window.__pocketshellStaleDocument !== " + JSONObject.quote(staleDocument)
                 + " && document.readyState === 'complete'"
                 + " && document.querySelector('[data-testid=build-status]')?.dataset.state === 'verified'"
-                + " && localStorage.getItem('" + ACCOUNT_HOSTS_KEY + "') === null", 45_000);
+                + " && localStorage.getItem('" + ACCOUNT_HOSTS_KEY + "') === null";
+        long deadline = SystemClock.uptimeMillis() + 45_000;
+        String last = null;
+        while (SystemClock.uptimeMillis() < deadline) {
+            last = evalRawBounded(ready, Math.min(1_000, deadline - SystemClock.uptimeMillis()));
+            if ("true".equals(last)) return;
+            Thread.sleep(100);
+        }
+        throw new AssertionError("The reloaded document never became verified (last: " + last + ")");
     }
 
     private void openSettings() throws Exception {
@@ -697,6 +705,13 @@ public final class AccountSyncJourneyTest {
     }
 
     private String evalRaw(String expression) throws Exception {
+        String result = evalRawBounded(expression, JS_TIMEOUT_SECONDS * 1_000);
+        assertNotNull("timed out evaluating WebView JavaScript", result);
+        return result;
+    }
+
+    /** Null means this evaluation lost its callback, e.g. during navigation. */
+    private String evalRawBounded(String expression, long timeoutMillis) throws Exception {
         CountDownLatch latch = new CountDownLatch(1);
         AtomicReference<String> result = new AtomicReference<>();
         scenario.onActivity(activity -> {
@@ -707,8 +722,7 @@ public final class AccountSyncJourneyTest {
                 latch.countDown();
             });
         });
-        assertTrue("timed out evaluating WebView JavaScript", latch.await(JS_TIMEOUT_SECONDS, TimeUnit.SECONDS));
-        return result.get();
+        return latch.await(Math.max(1, timeoutMillis), TimeUnit.MILLISECONDS) ? result.get() : null;
     }
 
     private String shell(String command) throws Exception {

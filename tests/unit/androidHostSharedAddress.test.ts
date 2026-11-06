@@ -81,8 +81,12 @@ describe('Android hosts sharing an address (#3068)', () => {
       keySha256: 'sha2',
       keyHandleId: 'h2',
     };
-    const storage = new MemoryStorage();
-    const hosts = new AndroidHostStore({ storage, readLegacyHosts: async () => [legacyA, legacyR] });
+    const { hosts, created } = testPlatform({ legacyHosts: [legacyA, legacyR] });
+    hosts.save({ name: 'manual-phone-host', hostname: '127.0.0.1', port: 2222, user: 'orin', keyHandleId: 'local-key' });
+    expect(created.api.hosts).toMatchObject({ provenance: 'local' });
+    const source = await created.api.ssh.listConfigHosts();
+    expect(source.map(host => host.name)).toEqual(['manual-phone-host', 'old-alexey', 'old-root']);
+    expect(source.every(host => !host.fromConfig && !Object.hasOwn(host, 'gateway'))).toBe(true);
 
     // Initialize legacy cache by resolving or listing
     await hosts.list();

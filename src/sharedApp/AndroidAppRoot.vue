@@ -3,10 +3,9 @@
 // around it (AppRoot's own contract: "a client wraps or mounts this component
 // and adds those around it"): the account-host key prompt (#3063). The vault
 // unlock sheet is core's own (AppRoot mounts it; main.ts provides the vault).
-import { onMounted, watch } from 'vue';
+import { watch } from 'vue';
 import AppRoot from '@ui/app/AppRoot.vue';
 import AndroidAttachmentBridge from './AndroidAttachmentBridge.vue';
-import { requestVaultUnlock } from '@ui/app/keyVault';
 import { useSyncStore } from '@ui/app/stores/sync';
 import AccountHostKeyGate from './AccountHostKeyGate.vue';
 import { androidVault, vaultSync } from './platform';
@@ -26,13 +25,8 @@ watch(
   },
 );
 
-// Each launch: a signed-in account with a vault this phone does not
-// remember asks for the passphrase once (Cancel leaves it locked; a dial asks
-// again). A remembered vault unlocks silently.
-onMounted(async () => {
-  const status = await androidVault.refresh().catch(() => 'signed-out' as const);
-  if (status === 'locked') void requestVaultUnlock('account');
-});
+// Account entry, remembered unlock and first setup have one owner: the shared
+// server picker. Android must not independently open a launch-time vault sheet.
 </script>
 
 <template>

@@ -23,6 +23,7 @@ import type { GatewayPairingRow } from '@/native/gatewayPairing';
 
 export interface GatewayPairings {
   list(): Promise<GatewayPairingRow[]>;
+  validateTrusted?(row: GatewayPairingRow): Promise<void>;
 }
 
 export interface GatewayConnectRequest {
@@ -85,6 +86,11 @@ export async function resolveGatewayTarget(
   }
   const pairing = rows.find((row) => samePairing(row, gateway));
   if (!pairing) throw new Error(classifyGatewayDialFailure('GATEWAY_UNPAIRED', {})!.userMessage);
+  if (pairing.credentialSource === 'vault') {
+    if (!pairings.validateTrusted) throw new Error('Trusted vault verification is unavailable.');
+    await pairings.validateTrusted(pairing);
+    if (pairing.username !== user) throw new Error('The trusted SSH user does not match this server.');
+  }
   return {
     hostId: `gateway:${gateway.serverUrl}/${gateway.deviceId}`,
     // Display label only: the native transport never resolves or dials it.

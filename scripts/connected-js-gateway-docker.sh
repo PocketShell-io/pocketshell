@@ -9,10 +9,10 @@
 #   verification) <== pocketshell-link agent (enrolled like a user's host)
 #   --> the host's own sshd on loopback (agents fixture: aplexer + CLI).
 #
-# The emulator has no route to the host's sshd. The pin the phone pairs with
+# The emulator has no route to the host's sshd. The vault-authenticated pin
 # is the line the enrolled agent prints (`pocketshell gateway show
 # --host-key`), checked here against the key file read from the host itself;
-# the phone's own vault key is authorized on the host by the journey through
+# the encrypted fixture's vault key is authorized on the host by the journey through
 # the runner's controller (scripts/gateway-lane-fixture.py), which is also
 # the host-side oracle. scripts/check-js-gateway-results.py checks the JUnit
 # report and the controller's journal.
@@ -316,7 +316,7 @@ ssh-keygen -q -t ed25519 -N '' -C "gateway lane vault key $RUN_ID" -f "$vault_di
 node "$ROOT_DIR/scripts/vault-journey-fixture/build.mjs" \
   --key "$vault_dir/key" --public-key "$(cat "$vault_dir/key.pub")" --alias gw-dev --hostname gw-dev.gateway --port 22 \
   --user vault-lane --passphrase "pocketshell-vault-test-passphrase gateway" --sync-passphrase "gateway lane passphrase" \
-  --gateway-auth both --out "$vault_dir/fixture.json" > "$ARTIFACTS_DIR/vault-fixture-build.txt" 2>&1 \
+  --trusted-hello "$ARTIFACTS_DIR/host/hello.json" --gateway-auth managed --out "$vault_dir/fixture.json" > "$ARTIFACTS_DIR/vault-fixture-build.txt" 2>&1 \
   || { cat "$ARTIFACTS_DIR/vault-fixture-build.txt" >&2; fail 'vault fixture build failed'; }
 DEVICE_VAULT_FIXTURE="/data/local/tmp/pocketshell-vault-fixture-$RUN_ID.json"
 pocketshell_run_without_avd_lock_fd "$ADB" -s "$ANDROID_SERIAL" push "$vault_dir/fixture.json" "$DEVICE_VAULT_FIXTURE" >/dev/null \
@@ -350,9 +350,15 @@ shopt -u nullglob
 pocketshell_run_without_avd_lock_fd "$ADB" -s "$ANDROID_SERIAL" logcat -d -v threadtime > "$ARTIFACTS_DIR/logcat.txt" 2>&1 || true
 pocketshell_run_without_avd_lock_fd "$ADB" -s "$ANDROID_SERIAL" exec-out screencap -p > "$ARTIFACTS_DIR/final-screen.png" 2>/dev/null || true
 mkdir -p "$ARTIFACTS_DIR/screenshots"
-for shot in pin-mismatch device-offline terminal-io vault-unlocked-gateway-hosts vault-gateway-connected after-reconnect; do
+for shot in pin-mismatch device-offline terminal-io vault-unlocked-gateway-hosts vault-gateway-connected after-reconnect trusted-vault-servers trusted-vault-terminal trusted-vault-tampered trusted-vault-foreign authloss-initial-terminal authloss-login-required authloss-unlock-cancelled authloss-recovered-terminal onboarding-before-google onboarding-account-unavailable onboarding-wrong-phrase onboarding-existing-terminal onboarding-create-first-vault onboarding-create-unavailable onboarding-created-empty-servers onboarding-created-vault-reopened; do
   pocketshell_run_without_avd_lock_fd "$ADB" -s "$ANDROID_SERIAL" pull "/data/local/tmp/gwlane-$shot.png" "$ARTIFACTS_DIR/screenshots/$shot.png" >/dev/null 2>&1 || true
   pocketshell_run_without_avd_lock_fd "$ADB" -s "$ANDROID_SERIAL" shell rm -f "/data/local/tmp/gwlane-$shot.png" >/dev/null 2>&1 || true
+done
+pocketshell_run_without_avd_lock_fd "$ADB" -s "$ANDROID_SERIAL" pull "/sdcard/Pictures/PocketShell/Onboarding/$RUN_ID/onboarding-existing-terminal-viewport.png" "$ARTIFACTS_DIR/screenshots/onboarding-existing-terminal-viewport.png" >/dev/null 2>&1 || true
+pocketshell_run_without_avd_lock_fd "$ADB" -s "$ANDROID_SERIAL" shell rm -f "/sdcard/Pictures/PocketShell/Onboarding/$RUN_ID/onboarding-existing-terminal-viewport.png" >/dev/null 2>&1 || true
+for surface in onboarding-existing-terminal-viewport-native-full onboarding-setup-viewport onboarding-setup-viewport-native-full; do
+  pocketshell_run_without_avd_lock_fd "$ADB" -s "$ANDROID_SERIAL" pull "/sdcard/Pictures/PocketShell/Onboarding/$RUN_ID/$surface.png" "$ARTIFACTS_DIR/screenshots/$surface.png" >/dev/null 2>&1 || true
+  pocketshell_run_without_avd_lock_fd "$ADB" -s "$ANDROID_SERIAL" shell rm -f "/sdcard/Pictures/PocketShell/Onboarding/$RUN_ID/$surface.png" >/dev/null 2>&1 || true
 done
 collect_and_stop_fixture
 

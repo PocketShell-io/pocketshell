@@ -33,7 +33,7 @@ DEFAULT_RESULTS_DIR = Path(
 REQUIRED_CLASS = "com.pocketshell.app.smoke.SharedAccountPickerJourneyTest"
 REQUIRED_METHODS = frozenset(
     {
-        "sharedPickerListsAccountHostsAfterSignInAndUnlockFromTheHeaderButton",
+        "sharedTrustedPickerNeverAdoptsUntrustedAccountRowsAfterSignInOrSettingsSync",
         "legacyHomeListsAccountHostsAgainAfterRestartOnceUnlocked",
     }
 )
@@ -42,7 +42,6 @@ REQUIRED_SCREENSHOTS = frozenset(
         "shared-picker-signed-out.png",
         "shared-picker-signed-in-locked.png",
         "shared-picker-account-hosts.png",
-        "shared-account-host-key-prompt.png",
         "shared-account-synced.png",
         "legacy-account-locked-after-restart.png",
         "legacy-home-synced-hosts-after-unlock.png",
@@ -52,10 +51,10 @@ REQUIRED_SCREENSHOTS = frozenset(
 TOKEN_MARKER = "FAKEIDTOKEN3020SIGNATUREdoNotLeak"
 EVIDENCE_TAG = "PocketshellAccountSync"
 EVIDENCE_MARKER = "SHARED_PICKER "
-ACCOUNT_ROWS = ["bäckerei"]
+ACCOUNT_ROWS = []
 SYNCED_HOSTS = ["bäckerei", "hetzner"]
 PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
-SELF_TEST_CASES = 20
+SELF_TEST_CASES = 21
 
 
 
@@ -278,7 +277,7 @@ def validate_logcat(logcat_path: Path) -> dict:
         raise GateFailure(f"exactly the one Sync now must upload (unlocking uploads nothing): {evidence}")
     if evidence.get("syncedHosts") != SYNCED_HOSTS or evidence.get("keptDesktopFields") is not True:
         raise GateFailure(f"Sync now must keep every account host and the desktop's fields: {evidence}")
-    if evidence.get("accountRows") != ACCOUNT_ROWS:
+    if evidence.get("accountRows") != ACCOUNT_ROWS or evidence.get("untrustedRowsHidden") is not True:
         raise GateFailure(f"the picker's account rows differ: {evidence.get('accountRows')}")
     return evidence
 
@@ -434,13 +433,14 @@ def self_test() -> int:
 
         good_line = (f"10-08 12:00:00.000 I/{EVIDENCE_TAG}( 123): {EVIDENCE_MARKER}"
                      + json.dumps({"requests": 3, "uploads": 1, "accountRows": ACCOUNT_ROWS, "syncedHosts": SYNCED_HOSTS,
-                                 "keptDesktopFields": True}, ensure_ascii=False))
+                                 "keptDesktopFields": True, "untrustedRowsHidden": True}, ensure_ascii=False))
         for label, text, should_pass in (
             ("logcat with one SHARED_PICKER line and no token passes", good_line + "\n", True),
             ("a token in logcat is rejected", good_line + "\nAuthorization: Bearer x." + TOKEN_MARKER + "\n", False),
             ("a missing SHARED_PICKER line is rejected", "nothing here\n", False),
             ("an extra upload is rejected", good_line.replace('"uploads": 1', '"uploads": 2') + "\n", False),
-            ("missing account rows are rejected", good_line.replace('"accountRows": ["bäckerei"]', '"accountRows": []') + "\n", False),
+            ("untrusted account rows are rejected", good_line.replace('"accountRows": []', '"accountRows": ["bäckerei"]') + "\n", False),
+            ("untrusted row visibility is rejected", good_line.replace('"untrustedRowsHidden": true', '"untrustedRowsHidden": false') + "\n", False),
             ("a sync that dropped an account host is rejected", good_line.replace('["bäckerei", "hetzner"]', '["bäckerei"]') + "\n", False),
             ("a sync that wiped desktop fields is rejected", good_line.replace('"keptDesktopFields": true', '"keptDesktopFields": false') + "\n", False),
         ):

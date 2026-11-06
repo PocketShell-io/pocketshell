@@ -92,7 +92,12 @@ final class CredentialManagerSignIn implements GoogleSyncSession.SignInProvider 
         Credential credential = result.get().getCredential();
         if (credential instanceof CustomCredential
                 && GoogleIdTokenCredential.TYPE_GOOGLE_ID_TOKEN_CREDENTIAL.equals(credential.getType())) {
-            return GoogleIdTokenCredential.createFrom(credential.getData()).getIdToken();
+            String token = GoogleIdTokenCredential.createFrom(credential.getData()).getIdToken();
+            // Retire only the removed browser provider's encrypted renewal
+            // secret after native auth succeeds. No vault, key, host pairing
+            // or current ID-token record is deleted.
+            host.getApplicationContext().deleteSharedPreferences("pocketshell-sync-pkce");
+            return token;
         }
         throw new SyncAuthException(SyncAuthException.FAILED, "Google returned an unexpected credential type.");
     }

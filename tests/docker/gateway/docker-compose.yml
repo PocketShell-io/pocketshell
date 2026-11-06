@@ -103,6 +103,10 @@ services:
   host:
     <<: *test-labels
     image: pocketshell-test:agents
+    # The host has no delegated user systemd. Normal CLI creates retain their
+    # production memory request under this stronger, real kernel cgroup bound.
+    mem_limit: 384m
+    memswap_limit: 384m
     pull_policy: never
     environment:
       POCKETSHELL_AGENT_FIXTURE_VERSION: ${POCKETSHELL_AGENT_FIXTURE_VERSION:-}

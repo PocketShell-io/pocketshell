@@ -56,7 +56,7 @@ public final class GatewayPairingPluginContractTest {
         JSObject reply = GatewayPairingPlugin.pairReply("request-1", pairing);
         assertEquals(Set.of("requestId", "pairing"), keys(reply));
         JSONObject row = reply.getJSONObject("pairing");
-        assertEquals(Set.of("serverUrl", "deviceId", "fingerprintSha256", "pinKind", "keyHandleId", "pairedAtEpochMs"),
+        assertEquals(Set.of("serverUrl", "deviceId", "fingerprintSha256", "pinKind", "keyHandleId", "pairedAtEpochMs", "credentialSource"),
                 keys(row));
         assertEquals("fingerprint", row.getString("pinKind"));
         assertFalse("the account subject never crosses the bridge", reply.toString().contains("sub-1"));

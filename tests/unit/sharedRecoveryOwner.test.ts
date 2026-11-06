@@ -84,6 +84,8 @@ async function connectAndAttach(ctx: ReturnType<typeof setup>) {
   await platform!.api.helper.sessionsList(connectionId);
   await platform!.api.shell.attachSession({ connectionId, sessionName: 'main', aplexerId: 'main-id' });
   await until(() => ctx.controllers.at(-1)!.getSnapshot().phase === 'live');
+  expect(ctx.native.opened.at(-1)!.command).toContain(`sessions attach -- '${ctx.native.sessions[0]!.id}'`);
+  expect(ctx.native.opened.at(-1)!.command).not.toContain("'/home/u/git/demo:main'");
   return connectionId;
 }
 
@@ -130,7 +132,8 @@ describe('Shared store delegates recovery to the ConnectionController', () => {
 
     expect(ctx.native.connects.length - dialsBefore).toBe(2);
     expect(ctx.native.opened.length - ptysBefore).toBe(1);
-    expect(ctx.native.opened.at(-1)!.command).toContain("sessions attach -- '/home/u/git/demo:main'");
+    expect(ctx.native.opened.at(-1)!.command).toContain(`sessions attach -- '${ctx.native.sessions[0]!.id}'`);
+    expect(ctx.native.opened.at(-1)!.command).not.toContain("'/home/u/git/demo:main'");
     expect(ctx.controllers).toHaveLength(1);
     expect(ctx.store.connectionId).toBe(connectionId);
     expect(ctx.store.state).toBe('connected');
@@ -177,7 +180,8 @@ describe('Shared store delegates recovery to the ConnectionController', () => {
     await second;
     expect(ctx.native.connects.length - dialsBefore).toBe(RETRY_DELAYS_MS.length + 1);
     expect(ctx.native.opened.length - ptysBefore).toBe(1);
-    expect(ctx.native.opened.at(-1)!.command).toContain("sessions attach -- '/home/u/git/demo:main'");
+    expect(ctx.native.opened.at(-1)!.command).toContain(`sessions attach -- '${ctx.native.sessions[0]!.id}'`);
+    expect(ctx.native.opened.at(-1)!.command).not.toContain("'/home/u/git/demo:main'");
     expect(ctx.controllers).toHaveLength(1);
     expect(ctx.store.connectionId).toBe(connectionId);
     expect(ctx.store.state).toBe('connected');

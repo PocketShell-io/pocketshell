@@ -854,6 +854,16 @@ public abstract class SharedAppDockerJourneyTest {
                     + "\" -- " + shellQuote(tag) + " >/dev/null");
             assertEquals("session " + tag + " must be created: " + created, 0, created.getInt("exitCode"));
         }
+        // Read identity from the host, independently of the UI/attach journal.
+        JSONObject listing = awaitNativeExec("u2-list-" + run, transport.getString("transportId"),
+                transport.getString("generationId"), "PATH=\"$HOME/.local/bin:$PATH\" pocketshell sessions list --json");
+        assertEquals("authoritative listing must succeed: " + listing, 0, listing.getInt("exitCode"));
+        JSONObject listed = new JSONObject(listing.getString("stdout"));
+        assertEquals("current host schema", 3, listed.getInt("schema"));
+        writeText(new File(artifacts, "host-session-list.json"), listed.toString(2));
+        String hostIdA = listedSessionId(listed.getJSONArray("sessions"), tagA, folder);
+        String hostIdB = listedSessionId(listed.getJSONArray("sessions"), tagB, folder);
+        assertFalse("distinct host identities", hostIdA.equals(hostIdB));
         awaitFolder(folder);
         openFolder(folder);
         awaitJsTrue(tabExpression(tagA) + " && " + tabExpression(tagB), 30_000);
@@ -862,6 +872,7 @@ public abstract class SharedAppDockerJourneyTest {
         // that prints while A is NOT the tab in front.
         selectTab(tagA);
         String idA = awaitFocusedSessionId(tagA);
+        assertEquals("A attaches the authoritative immutable host ID", hostIdA, idA);
         awaitJsTrue(VISIBLE_TERMINAL + ".includes('$')");
         typeLine("for i in $(seq 1 60); do echo PS2955_A_${i}_" + run + "; done");
         awaitTerminalLine("PS2955_A_60_" + run);
@@ -873,6 +884,7 @@ public abstract class SharedAppDockerJourneyTest {
         long leftA = SystemClock.uptimeMillis();
         selectTab(tagB);
         String idB = awaitFocusedSessionId(tagB);
+        assertEquals("B attaches the authoritative immutable host ID", hostIdB, idB);
         assertFalse("the two tabs must be two host sessions", idA.equals(idB));
         awaitJsTrue(VISIBLE_TERMINAL + ".includes('$') && !" + VISIBLE_TERMINAL + ".includes('PS2955_A_')");
         typeLine("echo PS2955_B_$((6*7))_" + run);
@@ -919,9 +931,10 @@ public abstract class SharedAppDockerJourneyTest {
         int opensB = 0;
         for (int i = 0; i < opens.length(); i += 1) {
             String command = opens.getJSONObject(i).getString("command");
-            if (command.contains(tagA)) opensA += 1;
-            if (command.contains(tagB)) opensB += 1;
+            if (command.equals("exec pocketshell sessions attach -- " + shellQuote(hostIdA))) opensA += 1;
+            if (command.equals("exec pocketshell sessions attach -- " + shellQuote(hostIdB))) opensB += 1;
         }
+        assertEquals("only the two authoritative sessions attach: " + opens, 2, opens.length());
         assertEquals("A is attached exactly once across the switches (no re-attach): " + opens, 1, opensA);
         assertEquals("B is attached exactly once across the switches (no re-attach): " + opens, 1, opensB);
         assertEquals("no PTY is closed by a tab switch: " + closes, 0, closes.length());
@@ -1013,8 +1026,8 @@ public abstract class SharedAppDockerJourneyTest {
         int reopenedB = 0;
         for (int i = 0; i < opens.length(); i += 1) {
             String command = opens.getJSONObject(i).getString("command");
-            if (command.contains(tagA)) reopenedA += 1;
-            if (command.contains(tagB)) reopenedB += 1;
+            if (command.equals("exec pocketshell sessions attach -- " + shellQuote(idA))) reopenedA += 1;
+            if (command.equals("exec pocketshell sessions attach -- " + shellQuote(idB))) reopenedB += 1;
         }
         assertEquals("one controller ladder for the drop: " + journal, 1, ladders);
         assertEquals("one native dial for the drop", 1, nativeDialCount() - dialsAtDrop);
@@ -1064,6 +1077,26 @@ public abstract class SharedAppDockerJourneyTest {
     protected void selectTab(String tag) throws Exception {
         evalString("(() => {const tab=[...document.querySelectorAll('.folder-bar button.tab')].find((n)=>n.textContent"
                 + ".includes(" + JSONObject.quote(tag) + ")); if(!tab) throw new Error('no tab'); tab.click(); return 'ok';})()");
+    }
+
+    /** Find exactly one live host-owned UUID for this test's unique tag and folder. */
+    private static String listedSessionId(JSONArray rows, String tag, String folder) throws Exception {
+        String id = null;
+        int matches = 0;
+        for (int i = 0; i < rows.length(); i += 1) {
+            JSONObject row = rows.getJSONObject(i);
+            if (!tag.equals(row.optString("tag"))) continue;
+            matches += 1;
+            assertTrue("the host row belongs to this test folder: " + row,
+                    row.getString("workspace").endsWith("/" + folder));
+            assertEquals("the host session is running: " + row, "running", row.getString("phase"));
+            assertTrue("the host session is alive: " + row, row.getBoolean("alive"));
+            id = row.getString("id");
+            assertTrue("the host supplies a canonical UUID: " + row,
+                    id.matches("[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"));
+        }
+        assertEquals("exactly one authoritative host row for " + tag, 1, matches);
+        return id;
     }
 
     /** The aplexer id of the session the controller last attached, once it is `tag`'s. */

@@ -50,6 +50,15 @@ public final class GoogleSyncPlugin extends Plugin {
         });
     }
 
+    /** Public stable verified subject only; the JWT never crosses the bridge. */
+    @PluginMethod
+    public void accountId(PluginCall call) {
+        worker.execute(() -> {
+            try { call.resolve(new JSObject().put("accountId", session.verifiedAccountId())); }
+            catch (SyncAuthException error) { reject(call, error); }
+        });
+    }
+
     @PluginMethod
     public void signIn(PluginCall call) {
         worker.execute(() -> {
@@ -91,11 +100,10 @@ public final class GoogleSyncPlugin extends Plugin {
         String slot = call.getString("slot");
         String body = call.getString("body");
         String endpoint = call.getString("endpoint");
+        String accountId = call.getString("accountId");
         worker.execute(() -> {
             try {
-                GoogleSyncSession.Response response = endpoint != null
-                        ? session.requestVault(method, endpoint, body)
-                        : session.request(method, slot, body);
+                GoogleSyncSession.Response response = session.requestBound(method, slot, endpoint, body, accountId);
                 call.resolve(new JSObject().put("status", response.status).put("body", response.body));
             } catch (SyncAuthException error) {
                 reject(call, error);

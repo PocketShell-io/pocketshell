@@ -28,6 +28,23 @@ public final class GatewayPairingStoreTest {
         store = new GatewayPairingStore(repository, () -> 1_000L);
     }
 
+    @Test public void trustedVaultReferencePersistsWithoutLocalUuidAndRejectsRollback() throws Exception {
+        String key = "A".repeat(22), vault = "B".repeat(22);
+        store.installVault("sub-1", "wss://gateway.example.io", "host-1", ED25519_LINE, key, vault, 2, 4, "work", "orin");
+        GatewayPairingStore reloaded = new GatewayPairingStore(repository, () -> 2_000L);
+        GatewayPairingStore.Pairing row = reloaded.lookup("sub-1", "wss://gateway.example.io", "host-1");
+        assertEquals("vault", row.credentialSource());
+        assertEquals(key, row.vaultKeyId());
+        assertEquals(vault, row.vaultId());
+        assertEquals(2, row.vaultEpoch());
+        assertNull(reloaded.lookup("sub-2", "wss://gateway.example.io", "host-1"));
+        try { store.installVault("sub-1", "wss://gateway.example.io", "host-1", ED25519_LINE, key, vault, 1, 5, "work", "orin"); fail("epoch rollback"); }
+        catch (GatewayPairingStore.InvalidPairingException expected) { }
+        try { store.installVault("sub-1", "wss://gateway.example.io", "host-1", ED25519_LINE, key, vault, 2, 3, "work", "orin"); fail("revision rollback"); }
+        catch (GatewayPairingStore.InvalidPairingException expected) { }
+        assertEquals(4, store.lookup("sub-1", "wss://gateway.example.io", "host-1").trustedRevision);
+    }
+
     @Test public void pairsWithACanonicalOriginAndFingerprint() throws IOException {
         GatewayPairingStore.Pairing pairing = store.pair(
                 "sub-1", "https://gateway.example.io/", "host-1", "SHA256:" + "A".repeat(43), HANDLE);

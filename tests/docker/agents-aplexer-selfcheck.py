@@ -8,7 +8,7 @@ Issue #2563 (slice 1 of #2561). Installed into the image as
 Why this exists
 ---------------
 
-``pocketshell.aplexer::_bundled_bin_dirs`` resolves ``a`` next to
+``pocketshell.runtime.aplexer::_bundled_bin_dirs`` resolves ``a`` next to
 ``sys.executable`` and NOWHERE else — the PATH lookup is a D22 hard cut
 (#2543). That makes binary PLACEMENT load-bearing in a way no build step
 would otherwise notice: with ``a`` reachable only through PATH, every real-CLI
@@ -128,7 +128,7 @@ def run_cli(args: list[str], *, timeout: float) -> subprocess.CompletedProcess:
 def check_placement() -> tuple[str, str]:
     """The bundled `a` + sibling worker must sit next to ``sys.executable``."""
     try:
-        from pocketshell import aplexer as _aplexer
+        from pocketshell.runtime import aplexer as _aplexer
     except ImportError as exc:  # pragma: no cover - packaging integrity
         raise fail(
             "import",

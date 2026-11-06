@@ -157,6 +157,26 @@ describe('Android key vault unlock, remember, account IO and core adapter (key-v
     expect(native.released).toContainEqual(null);
   });
 
+  it('user Lock joins store-triggered native cleanup and fences resumed vault reads until it finishes',async()=>{
+    const {subject,core,native}=make();await subject.refresh();core.open();
+    let finish!:()=>void;
+    const release=vi.fn(()=>new Promise<{released:number}>(resolve=>{finish=()=>resolve({released:1});}));
+    native.releaseVaultKeys=release;
+    const recall=vi.spyOn(native,'recall');
+    core.lock();const locked=subject.lock();const refreshed=subject.refresh();
+    expect(release).toHaveBeenCalledTimes(1);expect(recall).not.toHaveBeenCalled();
+    finish();await locked;await refreshed;
+    expect(recall).toHaveBeenCalledTimes(1);expect(subject.state.status).toBe('locked');
+  });
+
+  it('an explicit native cleanup failure rejects Lock without forgetting remembered state',async()=>{
+    const {subject,core,native}=make();await subject.refresh();core.open();
+    native.remembered.set('me@example.com','SEALED');
+    native.releaseVaultKeys=vi.fn(async()=>{throw new Error('native cleanup unavailable');});
+    await expect(subject.lock()).rejects.toThrow('native cleanup unavailable');
+    expect(subject.state.status).toBe('locked');expect(native.remembered.get('me@example.com')).toBe('SEALED');expect(native.forgotAll).toBe(0);
+  });
+
   it('sign-out locks, wipes held keys and forgets every remembered record', async () => {
     const { subject, core, native } = make();
     await subject.refresh();
@@ -216,14 +236,106 @@ describe('Android key vault unlock, remember, account IO and core adapter (key-v
     expect(await createStoreVaultCore(createAndroidVaultStore(google)).present()).toBe(true);
   });
 
-  it('never writes the vault from the phone', async () => {
-    const google = new Google(() => ({ status: 200, body: '{}' }));
+  it('keeps general slot writes and verifier replacement unavailable on the phone', async () => {
+    const google = new Google(() => ({ status: 200, body: '{"slots":[]}' }));
     const transport = createVaultSlotTransport(google);
     expect(await transport.push('vault', '{}', 1)).toEqual({ kind: 'error', message: ANDROID_VAULT_READ_ONLY });
     await expect(transport.delete('vk-x')).rejects.toThrow(ANDROID_VAULT_READ_ONLY);
     expect(await transport.list()).toEqual([]);
     expect(await createVaultServerVerifier(google).setVerifier({ auth: AUTH, epoch: 1 })).toEqual({ kind: 'unavailable' });
-    expect(google.requests).toEqual([]);
+    expect(google.requests).toEqual([{ method: 'GET', endpoint: 'settings' }]);
+  });
+
+  it('first setup atomically creates a header and verifier for a bound account without enabling slot writes', async () => {
+    const google = new Google(() => ({status:201,body:'{"ok":true,"version":1,"epoch":3}'}));
+    const transport = createVaultSlotTransport(google, () => 'google:one');
+    expect(await createVaultServerVerifier(google,()=> 'google:one').initialize!({data:'ENCRYPTED_HEADER',auth:AUTH,epoch:3})).toEqual({kind:'ok',version:1});
+    expect(google.requests).toEqual([{method:'POST',endpoint:'vault/initialize',accountId:'google:one',body:JSON.stringify({data:'ENCRYPTED_HEADER',auth:AUTH_WIRE,epoch:3})}]);
+    expect((await transport.push('vault','REPLACEMENT',0)).kind).toBe('error');
+    expect((await transport.push('vault','REPLACEMENT',1)).kind).toBe('error');
+    expect((await transport.push('vk-key','SECRET',0)).kind).toBe('error');
+    expect(google.requests).toHaveLength(1);
+  });
+
+  it('creation captures account context before asynchronous work instead of writing into a new account', async () => {
+    let account='google:one';
+    let finish!:()=>void;
+    const requests:GoogleSyncRequest[]=[];
+    const google = new Google(() => ({status:404,body:'{}'}));
+    google.request=async(request)=>{
+      requests.push(request);
+      if(request.method==='GET' && 'slot' in request && request.slot==='vault') {
+        await new Promise<void>(r=>{finish=r;});return {status:404,body:'{}'};
+      }
+      if(request.accountId!==account) throw new Error('The native account changed.');
+      if('endpoint' in request && request.endpoint==='vault/status') {
+        setTimeout(()=>{account='google:two';},0);
+        return {status:200,body:'{"epoch":1,"hasVerifier":false}'};
+      }
+      return {status:201,body:'{"ok":true,"version":1,"epoch":1}'};
+    };
+    const store = new KeyVaultStore({transport:createVaultSlotTransport(google,()=>account),verifier:createVaultServerVerifier(google,()=>account),kdf:{m:32768,t:3,p:1}});
+    const result=store.createVault('unrelated long vault passphrase');
+    while(!finish) await new Promise(r=>setTimeout(r,1));
+    finish();
+    expect((await result).kind).toBe('error');
+    expect(requests.every(request=>request.accountId==='google:one')).toBe(true);
+    const initialize=requests.find(request=>'endpoint' in request && request.endpoint==='vault/initialize');
+    expect(initialize).toBeDefined();
+    expect(JSON.parse(JSON.parse((initialize as {body:string}).body).data).kdf.alg).toBe('argon2id');
+    expect(store.state).toBe('locked');
+  });
+
+  it('creates and reopens the same encrypted vault at the server epoch without a second setup or plaintext upload', async () => {
+    let header:string|null=null;
+    let initialized=false;
+    const passphrase='four unrelated words for this vault';
+    const google=new Google(request=>{
+      if('endpoint' in request && request.endpoint==='vault/status') return {status:200,body:JSON.stringify({epoch:3,hasVerifier:initialized,...(header?{kdf:JSON.parse(header).kdf}:{})})};
+      if('endpoint' in request && request.endpoint==='vault/initialize') {
+        const body=JSON.parse(request.body);
+        expect(body.epoch).toBe(3);expect(JSON.parse(body.data).epoch).toBe(3);
+        expect(initialized).toBe(false);header=body.data;initialized=true;
+        return {status:201,body:'{"ok":true,"version":1,"epoch":3}'};
+      }
+      if('endpoint' in request && request.endpoint==='vault/verify') return {status:200,body:'{"ok":true,"epoch":3}'};
+      if('slot' in request && request.slot==='vault') return header ? {status:200,body:JSON.stringify({data:header,version:1})} : {status:404,body:'{}'};
+      return {status:404,body:'{}'};
+    });
+    const options={transport:createVaultSlotTransport(google,()=> 'google:one'),verifier:createVaultServerVerifier(google,()=> 'google:one'),kdf:{m:32768,t:3,p:1}};
+    const store=new KeyVaultStore(options);
+    expect(await store.createVault(passphrase)).toEqual({kind:'ok'});
+    expect(store.epoch).toBe(3);store.lock();
+    expect(await new KeyVaultStore(options).unlock(passphrase)).toEqual({kind:'ok'});
+    expect(google.requests.filter(request=>'endpoint' in request && request.endpoint==='vault/initialize')).toHaveLength(1);
+    expect(google.requests.some(request=>JSON.stringify(request).includes(passphrase))).toBe(false);
+    expect(google.requests.some(request=>request.method==='PUT')).toBe(false);
+  });
+
+  it('an unavailable or existing verifier never starts new vault initialization', async () => {
+    for(const status of [{status:503,body:'{}'},{status:200,body:'{"epoch":2,"hasVerifier":true}'}]) {
+      const google=new Google(request=>'endpoint' in request && request.endpoint==='vault/status' ? status : {status:404,body:'{}'});
+      const store=new KeyVaultStore({transport:createVaultSlotTransport(google,()=> 'google:one'),verifier:createVaultServerVerifier(google,()=> 'google:one')});
+      expect((await store.createVault('a safe unrelated vault passphrase')).kind).not.toBe('ok');
+      expect(google.requests.some(request=>request.method!=='GET')).toBe(false);
+    }
+  });
+
+  it('lists versioned vault slot metadata only through the fixed native settings endpoint', async () => {
+    const rows = [{ slot: 'th-' + 'A'.repeat(22), version: 4, size: 512, updatedAt: '2026-11-05T00:00:00.000Z' }];
+    const google = new Google(() => ({ status: 200, body: JSON.stringify({ slots: rows }) }));
+    expect(await createVaultSlotTransport(google).list()).toEqual([{ slot: rows[0].slot, version: 4 }]);
+    expect(google.requests).toEqual([{ method: 'GET', endpoint: 'settings' }]);
+  });
+
+  it('rejects duplicate malformed and unauthorized vault directories instead of treating them as empty', async () => {
+    const row = { slot: 'vault', version: 1, size: 512, updatedAt: '2026-11-05T00:00:00.000Z' };
+    for (const slots of [[row, row], [{ ...row, slot: '../token' }], [{ ...row, version: -1 }], [{ ...row, updatedAt: 'yesterday' }], ['vault']]) {
+      const google = new Google(() => ({ status: 200, body: JSON.stringify({ slots }) }));
+      await expect(createVaultSlotTransport(google).list()).rejects.toThrow(/invalid vault directory/);
+    }
+    const unauthorized = new Google(() => ({ status: 403, body: '{}' }));
+    await expect(createVaultSlotTransport(unauthorized).list()).rejects.toThrow(/HTTP 403/);
   });
 
   it('a vault the server hides until a verify (gated mode) still counts as a vault, never as "no vault"', async () => {

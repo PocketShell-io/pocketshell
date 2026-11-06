@@ -101,6 +101,14 @@ public final class EncryptedSyncTokenStoreTest {
         assertEquals("token-2", new EncryptedSyncTokenStore(backing).read());
     }
 
+    @Test public void separateEncryptedStoreHandlesShareAuthStateButUnrelatedBackingDoesNot() throws Exception {
+        EncryptedSyncTokenStore first = new EncryptedSyncTokenStore(backing);
+        EncryptedSyncTokenStore second = new EncryptedSyncTokenStore(backing);
+        assertTrue(first.authenticationState() == second.authenticationState());
+        EncryptedSyncTokenStore unrelated = new EncryptedSyncTokenStore(new FileBacking(folder.newFile("other-record")));
+        assertFalse(first.authenticationState() == unrelated.authenticationState());
+    }
+
     /** File-backed stand-in for the EncryptedSharedPreferences record. */
     private static final class FileBacking implements EncryptedSyncTokenStore.Backing {
         final File record;
