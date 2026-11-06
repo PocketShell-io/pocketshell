@@ -193,6 +193,7 @@ LANES = (
                 "dialsTheEnrolledHostThroughTheGatewayListsAttachesTypesResizesAndReconnects",
                 "dialsTheGatewayHostWithTheAccountVaultKeyAfterOneUnlockAndNoKeyPicker",
                 "connectsTrustedVaultServerWithoutManualPairingAndCreatesHomeTerminal",
+                "recoversNativeAuthLossWithoutSignOutAndPreservesVaultTrustBeforeRealTerminal",
             }
         ),
     ),

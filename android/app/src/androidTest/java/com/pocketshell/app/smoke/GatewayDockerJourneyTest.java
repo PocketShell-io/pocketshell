@@ -35,12 +35,15 @@ import org.junit.runners.MethodSorters;
 import org.junit.runner.RunWith;
 
 import java.io.BufferedReader;
+import java.io.File;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.security.KeyFactory;
+import java.security.MessageDigest;
 import java.security.KeyPairGenerator;
 import java.security.PrivateKey;
 import java.security.SecureRandom;
@@ -426,6 +429,156 @@ public final class GatewayDockerJourneyTest {
         assertNoRoutingTokenEscaped();
     }
 
+    /** Real native expiry/renewal rejection, shared cleanup, same-vault reauthentication and PTY recovery. */
+    @Test
+    public void recoversNativeAuthLossWithoutSignOutAndPreservesVaultTrustBeforeRealTerminal() throws Exception {
+        selectVariant("active");
+        String fingerprint = authorizeVault("authloss-authorize");
+        launchSignedInLocked();
+        click("[data-testid=vault-unlock-remember]");
+        awaitJsTrue("document.querySelector('[data-testid=vault-unlock-remember]')?.checked === true");
+        submitAuthLossVaultPhrase();
+        awaitJsTrue("!!document.querySelector('[data-testid=trusted-server-connect]:not([disabled])')", 120_000);
+        installDialRecorder();
+        int mark = controller(new JSONObject().put("op", "mark")).getInt("mark");
+        tapHost(DEVICE_HOST);
+        awaitJsTrue(VISIBLE_TERMINAL + ".includes('$')", 120_000);
+        assertTrue("the real SSH server accepted the authenticated vault key",
+                acceptedFingerprints(sshdSince(mark, "authloss-connect")).contains(fingerprint));
+        screenshot("authloss-initial-terminal");
+        click("button[title=\"Back to hosts\"]");
+        awaitJsTrue("!!document.querySelector('[data-testid=trusted-server-connect]:not([disabled])')");
+        assertInstalledTrustedRevision(1);
+        JSONObject binding = authLossPublicTrust();
+        String ciphertext = backend.vaultSlots.toString();
+        JSONObject protectedBytes = authLossProtectedBytes();
+        assertTrue("the remembered fixture scope really exists", targetContext()
+                .getSharedPreferences("pocketshell_vault_device_v1", Context.MODE_PRIVATE)
+                .contains("remembered:" + hello.getString("email").toLowerCase(java.util.Locale.ROOT)));
+
+        // A normal Refresh crosses real native account verification and triggers silent renewal.
+        google.silentRenewFailure = true;
+        backend.rejectNext("/me");
+        click(".trusted-servers .btn-ghost");
+        awaitAuthLossGoogleAction();
+        assertEquals("exactly one native provider renewal failed", 1, google.silentFailures);
+        assertEquals("the /me challenge was consumed", 1, backend.authChallenges);
+        assertEquals("loss must not change encrypted account slots", ciphertext, backend.vaultSlots.toString());
+        assertEquals("loss must not delete or rewrite protected custody", protectedBytes.toString(), authLossProtectedBytes().toString());
+        screenshot("authloss-login-required");
+
+        // Reauthentication must expose a locked-vault sheet, not reuse the old transient DEK.
+        click("[data-testid=server-google-login]");
+        awaitJsTrue("!!document.querySelector('[data-testid=vault-unlock-gate]')", 60_000);
+        assertEquals("normal interactive login reuses the same provider identity", 2, google.interactiveCalls);
+        google.silentRenewFailure = true;
+        backend.rejectNext("/vault/status");
+        submitAuthLossVaultPhrase();
+        awaitAuthLossGoogleAction();
+        assertEquals("the pending unlock's actual native renewal failed", 2, google.silentFailures);
+        assertEquals("both one-shot native HTTP challenges were consumed", 2, backend.authChallenges);
+        assertEquals("pending unlock loss preserves all ciphertext", ciphertext, backend.vaultSlots.toString());
+        assertEquals("pending unlock loss preserves protected custody bytes", protectedBytes.toString(), authLossProtectedBytes().toString());
+        screenshot("authloss-unlock-cancelled");
+
+        click("[data-testid=server-google-login]");
+        awaitJsTrue("!!document.querySelector('[data-testid=vault-unlock-gate]')", 60_000);
+        assertEquals("three normal same-account Google logins, no manual sign-out", 3, google.interactiveCalls);
+        // Default type-every-time does not replace the existing remembered record.
+        submitAuthLossVaultPhrase();
+        awaitJsTrue("!!document.querySelector('[data-testid=trusted-server-connect]:not([disabled])')", 120_000);
+        assertInstalledTrustedRevision(1);
+        assertEquals("same authenticated vault, scope, pin, key and floor after reauthentication", binding.toString(), authLossPublicTrust().toString());
+        assertEquals("same encrypted vault and descriptor bytes after recovery", ciphertext, backend.vaultSlots.toString());
+        assertEquals("same remembered ciphertext bytes after recovery", protectedBytes.getString("pocketshell_vault_device_v1"),
+                authLossProtectedBytes().getString("pocketshell_vault_device_v1"));
+        int beforeDropDials = nativeDials().length();
+        int recoveryMark = controller(new JSONObject().put("op", "mark")).getInt("mark");
+        assertTrue("existing fixture stream-drop completed", controller(new JSONObject().put("op", "drop")
+                .put("phase", "authloss-recovery")).getBoolean("dropped"));
+        // Observe the one existing recovery owner. Never fake a disconnected app state.
+        awaitJsTrue("(window.__gwDials?.length ?? 0) > " + beforeDropDials
+                + " && ['lost','connected','live'].includes(window.__pocketshellConnectionJournal?.at(-1)?.phase)", 120_000);
+        int preTapDials = nativeDials().length();
+        String recoveryPhase = evalString("window.__pocketshellConnectionJournal.at(-1).phase");
+        tapHost(DEVICE_HOST);
+        awaitJsTrue(VISIBLE_TERMINAL + ".includes('$')", 120_000);
+        assertTrue("post-loss recovery established a NEW SSH authentication with the same vault key",
+                acceptedFingerprints(sshdSince(recoveryMark, "authloss-recovered-connect")).contains(fingerprint));
+        String file = "gwlane-authloss-io-" + run + ".txt";
+        typeCommand("echo GWAUTH$((6*7))_" + run + " | tee ./" + file);
+        awaitJsTrue(VISIBLE_TERMINAL + ".includes('GWAUTH42')");
+        JSONObject host = awaitAuthLossHostFile(file, "GWAUTH42_" + run);
+        assertEquals("GWAUTH42_" + run, host.getString("content").trim());
+        screenshot("authloss-recovered-terminal");
+        assertEquals("final native SSH recovery retains the same vault binding and floor", binding.toString(), authLossPublicTrust().toString());
+        assertEquals("final SSH recovery preserves remembered ciphertext", protectedBytes.getString("pocketshell_vault_device_v1"),
+                authLossProtectedBytes().getString("pocketshell_vault_device_v1"));
+        assertEquals("final SSH recovery preserves encrypted account slots", ciphertext, backend.vaultSlots.toString());
+        assertEquals("no signOut/provider-clear call", 0, google.clearCalls);
+        assertEquals("no cloud PUT or DELETE", 0, backend.writes);
+        assertNoRoutingTokenEscaped();
+        Log.i(TAG, "AUTH_LOSS_CUSTODY " + new JSONObject().put("losses", backend.authChallenges)
+                .put("silentFailures", google.silentFailures).put("interactive", google.interactiveCalls)
+                .put("signOuts", google.clearCalls).put("cloudWrites", backend.writes)
+                .put("encryptedSlotsUnchanged", true).put("protectedBytesSurviveLoss", true)
+                .put("rememberBytesUnchanged", true).put("scopeStable", true).put("floor", 1)
+                .put("beforeDropDials", beforeDropDials).put("preTapDials", preTapDials)
+                .put("finalDials", nativeDials().length()).put("recoveryPhaseBeforeTap", recoveryPhase));
+    }
+
+    private void submitAuthLossVaultPhrase() throws Exception {
+        setValue("[data-testid=vault-unlock-passphrase]", "pocketshell-vault-test-passphrase gateway");
+        click("[data-testid=vault-unlock-submit]");
+    }
+
+    private void awaitAuthLossGoogleAction() throws Exception {
+        awaitJsTrue("!!document.querySelector('[data-testid=server-google-login]')"
+                + " && !document.querySelector('[data-testid=trusted-server-connect]')"
+                + " && !document.querySelector('[data-testid=vault-unlock-gate]')", 120_000);
+    }
+
+    /** Hash opaque on-device persistence only; no token, remembered DEK, or PEM enters diagnostics. */
+    private JSONObject authLossProtectedBytes() throws Exception {
+        JSONObject result = new JSONObject();
+        for (String name : new String[]{"pocketshell-gateway-pairings", "pocketshell-trusted-host-revisions", "pocketshell_vault_device_v1"}) {
+            File file = new File(new File(targetContext().getDataDir(), "shared_prefs"), name + ".xml");
+            assertTrue("protected fixture record must exist: " + name, file.isFile());
+            byte[] digest = MessageDigest.getInstance("SHA-256").digest(Files.readAllBytes(file.toPath()));
+            result.put(name, Base64.getEncoder().encodeToString(digest));
+        }
+        return result;
+    }
+
+    /** Only read existing public native identity/pairing/floor metadata. Never install or erase it. */
+    private JSONObject authLossPublicTrust() throws Exception {
+        evalRaw("(() => {window.__gwAuthTrust=null; (async()=>{try{"
+                + "const api=window.Capacitor.Plugins; const account=await api.GoogleSync.accountId();"
+                + "const rows=await api.GatewayPairing.list({requestId:'authloss-read-only'});"
+                + "const row=rows.pairings.find(r=>r.deviceId===" + JSONObject.quote(hello.getString("deviceId")) + ");"
+                + "const floors=await api.GatewayPairing.trustedRevisions({accountId:account.accountId,vaultId:row.vaultId});"
+                + "delete row.pairedAtEpochMs; window.__gwAuthTrust={row,floors:floors.floors,"
+                + "sameAccount:account.accountId===" + JSONObject.quote("google:" + hello.getString("sub")) + "};"
+                + "}catch(e){window.__gwAuthTrust={error:String(e?.message??e)};}})();return 'reading';})()");
+        awaitJsTrue("window.__gwAuthTrust!==null");
+        JSONObject result = new JSONObject(evalString("JSON.stringify(window.__gwAuthTrust)"));
+        assertFalse("public trust metadata readable", result.has("error"));
+        assertTrue("native verified identity stays in the fixture account", result.getBoolean("sameAccount"));
+        return result;
+    }
+
+    private JSONObject awaitAuthLossHostFile(String name, String content) throws Exception {
+        long deadline = SystemClock.uptimeMillis() + WAIT_TIMEOUT_MILLIS;
+        JSONObject reply;
+        do {
+            reply = controller(new JSONObject().put("op", "host-file").put("name", name).put("phase", "authloss-io"));
+            if (reply.optBoolean("exists") && "regular".equals(reply.optString("type")) && reply.optInt("readExitCode", -1) == 0
+                    && content.equals(reply.optString("content").trim())) return reply;
+            Thread.sleep(100);
+        } while (SystemClock.uptimeMillis() < deadline);
+        throw new AssertionError("independent Docker terminal file missing or wrong: " + reply);
+    }
+
     /** Metadata-only PTY witness; forwards original native arguments/results unchanged. */
     private void installTrustedPtyDiagnostics() throws Exception {
         assertEquals("installed", evalString("(() => {"
@@ -759,6 +912,10 @@ public final class GatewayDockerJourneyTest {
     static final class FakeGoogle implements GoogleSyncSession.SignInProvider {
         static final String SIGNATURE = "FAKEGOOGLEIDTOKEN3086gwlaneDoNotLeak";
         final String token;
+        volatile boolean silentRenewFailure;
+        volatile int silentFailures;
+        volatile int interactiveCalls;
+        volatile int clearCalls;
 
         FakeGoogle(String sub, String email) {
             long exp = System.currentTimeMillis() / 1000L + 3600L;
@@ -767,12 +924,15 @@ public final class GatewayDockerJourneyTest {
         }
 
         @Override
-        public String obtainIdToken(boolean interactiveRequest) throws SyncAuthException {
+        public synchronized String obtainIdToken(boolean interactiveRequest) throws SyncAuthException {
+            if (interactiveRequest) { interactiveCalls++; silentRenewFailure = false; }
+            else if (silentRenewFailure) { silentFailures++; throw new SyncAuthException(SyncAuthException.UNAVAILABLE, "Fixture has no silent credential."); }
             return token;
         }
 
         @Override
         public void clearCredentialState() {
+            clearCalls++;
         }
     }
 
@@ -798,6 +958,9 @@ public final class GatewayDockerJourneyTest {
         JSONObject vaultSlots;
         int writes;
         volatile int trustedReads;
+        private String nextUnauthorizedPath;
+        volatile int authChallenges;
+        synchronized void rejectNext(String path) { nextUnauthorizedPath = path; }
         final List<String> reads = Collections.synchronizedList(new ArrayList<>());
 
         FakeSyncBackend() throws Exception {
@@ -817,6 +980,11 @@ public final class GatewayDockerJourneyTest {
         public synchronized GoogleSyncSession.Response send(String method, String url, Map<String, String> headers, String body) {
             String path = url.replaceFirst("^https://[^/]+", "");
             if ("GET".equals(method)) reads.add(path);
+            if ("GET".equals(method) && path.equals(nextUnauthorizedPath)) {
+                nextUnauthorizedPath = null;
+                authChallenges++;
+                return new GoogleSyncSession.Response(401, "{\"message\":\"Unauthorized\"}");
+            }
             if (!("Bearer " + google.token).equals(headers.get("Authorization"))) {
                 return new GoogleSyncSession.Response(401, "{\"message\":\"Unauthorized\"}");
             }

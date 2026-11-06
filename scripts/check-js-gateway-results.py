@@ -39,9 +39,10 @@ REQUIRED_METHODS = frozenset(
         "dialsTheEnrolledHostThroughTheGatewayListsAttachesTypesResizesAndReconnects",
         "dialsTheGatewayHostWithTheAccountVaultKeyAfterOneUnlockAndNoKeyPicker",
         "connectsTrustedVaultServerWithoutManualPairingAndCreatesHomeTerminal",
+        "recoversNativeAuthLossWithoutSignOutAndPreservesVaultTrustBeforeRealTerminal",
     }
 )
-SELF_TEST_CASES = 16
+SELF_TEST_CASES = 23
 
 
 class GateFailure(ValueError):
@@ -171,6 +172,26 @@ def validate_host(host_dir: Path) -> dict:
     if not any(matching_trusted_file(reply) for reply in trusted_files):
         raise GateFailure("the Docker host never recorded the trusted server terminal command")
 
+    auth_keys = {r["fingerprint"] for r in _phase(entries, "authorize", "authloss-authorize")}
+    if auth_keys != vault_keys:
+        raise GateFailure("auth-loss recovery did not retain the authenticated vault credential")
+    for phase in ("authloss-connect", "authloss-recovered-connect"):
+        logins = _phase(entries, "sshd-since", phase)
+        if not any(accepted(reply) == auth_keys for reply in logins):
+            raise GateFailure(f"no real vault-key SSH login for {phase}")
+        if set().union(*(accepted(reply) for reply in logins)) - auth_keys:
+            raise GateFailure(f"foreign SSH key accepted during {phase}")
+    _phase(entries, "drop", "authloss-recovery")
+    auth_files = _phase(entries, "host-file", "authloss-io")
+    def matching_auth_file(reply):
+        name = re.fullmatch(r"gwlane-authloss-io-([A-Za-z0-9_-]+)\.txt", str(reply.get("name", "")))
+        return (name is not None and str(reply.get("content", "")).strip() == f"GWAUTH42_{name.group(1)}"
+                and reply.get("exists") is True and reply.get("type") == "regular"
+                and reply.get("readExitCode") == 0 and reply.get("sizeBytes", 0) > 0)
+    if not any(matching_auth_file(reply) for reply in auth_files):
+        raise GateFailure("no independent run-bound computed terminal result after auth-loss recovery")
+    validate_authloss_runtime(host_dir.parent)
+
     files = {
         reply["name"]: reply["content"].strip()
         for e in entries
@@ -208,6 +229,30 @@ def validate_host(host_dir: Path) -> dict:
     if not re.search(r"Received disconnect from 127\.0\.0\.1 port \d+:\d+: Could not verify `ssh-ed25519` host key .*\[preauth\]", sshd_text):
         raise GateFailure("sshd never saw the phone refuse the host key (the pin mismatch) during KEX")
     return {"authorized": sorted(authorized), "rows": [sizes["size1"], sizes["size2"]]}
+
+
+def validate_authloss_runtime(artifacts: Path) -> None:
+    path = artifacts / "logcat.txt"
+    if not path.is_file():
+        raise GateFailure("native auth-loss runtime log is missing")
+    receipts = [json.loads(line.split("AUTH_LOSS_CUSTODY ", 1)[1])
+                for line in path.read_text(encoding="utf-8", errors="replace").splitlines() if "AUTH_LOSS_CUSTODY " in line]
+    if len(receipts) != 1:
+        raise GateFailure("exactly one native auth-loss custody receipt is required")
+    row = receipts[0]
+    expected = {"losses":2,"silentFailures":2,"interactive":3,"signOuts":0,"cloudWrites":0,"floor":1,
+                "encryptedSlotsUnchanged":True,"protectedBytesSurviveLoss":True,"rememberBytesUnchanged":True,"scopeStable":True}
+    if any(type(row.get(key)) is not type(value) or row.get(key) != value for key, value in expected.items()):
+        raise GateFailure("native auth-loss custody or real Google recovery contract failed")
+    counts = [row.get(key) for key in ("beforeDropDials", "preTapDials", "finalDials")]
+    if any(type(n) is not int for n in counts) or not 0 < counts[0] < counts[1] <= counts[2]:
+        raise GateFailure("the controlled stream drop never caused a new native SSH dial")
+    if row.get("recoveryPhaseBeforeTap") not in ("lost", "connected", "live"):
+        raise GateFailure("pre-tap automatic recovery state was not observed")
+    for name in ("authloss-initial-terminal", "authloss-login-required", "authloss-unlock-cancelled", "authloss-recovered-terminal"):
+        frame = artifacts / "screenshots" / f"{name}.png"
+        if not frame.is_file() or frame.stat().st_size < 1024 or not frame.read_bytes().startswith(b"\x89PNG\r\n\x1a\n"):
+            raise GateFailure(f"native auth-loss screenshot is missing or invalid: {name}")
 
 
 def _write_xml(directory: Path, methods: list[str], failed: str | None = None) -> None:
@@ -271,6 +316,29 @@ def _write_host(directory: Path, **overrides) -> None:
         {"request": {"op": "host-file", "name": "gwlane-trusted-io-r.txt", "phase": "trusted-io"},
          "reply": {"ok": True, "name": "gwlane-trusted-io-r.txt", "content": overrides.get("trusted_content", "GWTRUST42_r\n")}},
     ]
+    entries.extend([
+        entry("authorize", "authloss-authorize", fingerprint=fpv),
+        entry("sshd-since", "authloss-connect", connections=1, userauth=["Accepted"], accepted=[{"fingerprint":fpv}]),
+        entry("drop", "authloss-recovery", dropped=True),
+        entry("sshd-since", "authloss-recovered-connect", connections=1, userauth=["Accepted"],
+              accepted=[{"fingerprint":overrides.get("authloss_fp", fpv)}]),
+        {"request":{"op":"host-file","phase":"authloss-io","name":"gwlane-authloss-io-r.txt"},
+         "reply":{"ok":True,"name":"gwlane-authloss-io-r.txt","content":overrides.get("authloss_content", "GWAUTH42_r\n"),
+                  "exists":True,"type":"regular","readExitCode":0,"sizeBytes":11}},
+    ])
+    receipt = {"losses":2,"silentFailures":2,"interactive":3,"signOuts":0,"cloudWrites":0,"floor":1,
+               "encryptedSlotsUnchanged":True,"protectedBytesSurviveLoss":not overrides.get("authloss_custody_bad",False),
+               "rememberBytesUnchanged":True,"scopeStable":True,"beforeDropDials":1,"preTapDials":overrides.get("authloss_pre_tap_dials",2),"finalDials":3,
+               "recoveryPhaseBeforeTap":"lost"}
+    (directory.parent / "logcat.txt").write_text("AUTH_LOSS_CUSTODY " + json.dumps(receipt) + "\n")
+    shots = directory.parent / "screenshots"
+    shots.mkdir(exist_ok=True)
+    for name in ("authloss-initial-terminal", "authloss-login-required", "authloss-unlock-cancelled", "authloss-recovered-terminal"):
+        (shots / f"{name}.png").write_bytes(b"\x89PNG\r\n\x1a\n" + b"x" * 1024)
+    if overrides.get("authloss_shot_missing"):
+        (shots / "authloss-unlock-cancelled.png").unlink()
+    if overrides.get("authloss_receipt_missing"):
+        (directory.parent / "logcat.txt").write_text("")
     if overrides.get("missing_trusted_file"):
         entries = [e for e in entries if e["request"].get("phase") != "trusted-io"]
     (directory / "controller-journal.jsonl").write_text("".join(json.dumps(e) + "\n" for e in entries))
@@ -301,7 +369,7 @@ def self_test() -> int:
         h.mkdir()
         _write_xml(r, sorted(REQUIRED_METHODS))
         _write_host(h)
-        assert validate_results(r) == 4
+        assert validate_results(r) == 5
         validate_host(h)
         cases += 1
     expect_fail("missing method", results={"methods": sorted(REQUIRED_METHODS)[:1]})
@@ -319,6 +387,13 @@ def self_test() -> int:
     expect_fail("trusted terminal output wrong", host={"trusted_content": "GWTRUST42_foreign-run\n"})
     expect_fail("precreated HOME shell", host={"home_before": 1})
     expect_fail("no HOME shell created", host={"home_after": 0})
+    expect_fail("exact new auth-loss method omitted", results={"methods":[m for m in sorted(REQUIRED_METHODS) if m != "recoversNativeAuthLossWithoutSignOutAndPreservesVaultTrustBeforeRealTerminal"]})
+    expect_fail("no observed post-loss stream redial", host={"authloss_pre_tap_dials":1})
+    expect_fail("auth-loss recovered with another key", host={"authloss_fp":"SHA256:" + "x" * 43})
+    expect_fail("auth-loss terminal output belongs to another run", host={"authloss_content":"GWAUTH42_other-run\n"})
+    expect_fail("auth-loss changed protected custody", host={"authloss_custody_bad":True})
+    expect_fail("auth-loss unlock screenshot missing", host={"authloss_shot_missing":True})
+    expect_fail("auth-loss receipt missing", host={"authloss_receipt_missing":True})
     if cases != SELF_TEST_CASES:
         raise AssertionError(f"ran {cases} self-test cases, expected {SELF_TEST_CASES}")
     print(f"PASS: gateway result checker self-test ({cases} cases)")

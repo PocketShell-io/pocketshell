@@ -350,7 +350,7 @@ shopt -u nullglob
 pocketshell_run_without_avd_lock_fd "$ADB" -s "$ANDROID_SERIAL" logcat -d -v threadtime > "$ARTIFACTS_DIR/logcat.txt" 2>&1 || true
 pocketshell_run_without_avd_lock_fd "$ADB" -s "$ANDROID_SERIAL" exec-out screencap -p > "$ARTIFACTS_DIR/final-screen.png" 2>/dev/null || true
 mkdir -p "$ARTIFACTS_DIR/screenshots"
-for shot in pin-mismatch device-offline terminal-io vault-unlocked-gateway-hosts vault-gateway-connected after-reconnect trusted-vault-servers trusted-vault-terminal trusted-vault-tampered trusted-vault-foreign; do
+for shot in pin-mismatch device-offline terminal-io vault-unlocked-gateway-hosts vault-gateway-connected after-reconnect trusted-vault-servers trusted-vault-terminal trusted-vault-tampered trusted-vault-foreign authloss-initial-terminal authloss-login-required authloss-unlock-cancelled authloss-recovered-terminal; do
   pocketshell_run_without_avd_lock_fd "$ADB" -s "$ANDROID_SERIAL" pull "/data/local/tmp/gwlane-$shot.png" "$ARTIFACTS_DIR/screenshots/$shot.png" >/dev/null 2>&1 || true
   pocketshell_run_without_avd_lock_fd "$ADB" -s "$ANDROID_SERIAL" shell rm -f "/data/local/tmp/gwlane-$shot.png" >/dev/null 2>&1 || true
 done
