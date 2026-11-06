@@ -213,9 +213,8 @@ public final class GoogleSyncSession {
     }
 
     /**
-     * The vault's phase-2 server check (key-vault W2/W4): only {@code GET
-     * vault/status} and {@code POST vault/verify}. A 404 means the route is
-     * not deployed; the caller falls back to the client-side check value.
+     * Fixed vault routes: status, verify, and account-bound atomic first
+     * initialization. Reset and verifier replacement are not exposed.
      */
     synchronized Response requestVault(String method, String endpoint, String body) throws SyncAuthException {
         String path;
@@ -224,6 +223,8 @@ public final class GoogleSyncSession {
         } else if ("POST".equals(method) && "vault/verify".equals(endpoint) && body != null
                 && body.getBytes(StandardCharsets.UTF_8).length <= 1024) {
             path = "/vault/verify";
+        } else if ("POST".equals(method) && "vault/initialize".equals(endpoint) && validVaultInitialization(body)) {
+            path = "/vault/initialize";
         } else {
             throw invalid();
         }
@@ -234,6 +235,42 @@ public final class GoogleSyncSession {
             response = send(method, path, body, token);
         }
         return response;
+    }
+
+    /** Account-bound vault IO remains on the original subject across asynchronous KDF work. */
+    synchronized Response requestBound(String method, String slot, String endpoint, String body, String accountId) throws SyncAuthException {
+        if (accountId != null && (!accountId.matches("google:[0-9A-Za-z_-]{1,128}")
+                || !accountId.equals("google:" + currentAccountSubject()))) throw invalid();
+        // First setup must always name the verified account; it cannot be an unscoped write.
+        if ("vault/initialize".equals(endpoint) && accountId == null) throw invalid();
+        if ("settings".equals(endpoint) && "GET".equals(method) && slot == null && body == null) return listSettings();
+        if (endpoint != null) {
+            if (slot != null) throw invalid();
+            return requestVault(method, endpoint, body);
+        }
+        return request(method, slot, body);
+    }
+
+    private static boolean validInitialVerifier(String body) {
+        if (body == null || body.getBytes(StandardCharsets.UTF_8).length > 1024) return false;
+        try {
+            org.json.JSONObject value = new org.json.JSONObject(body);
+            return value.length() == 2 && value.has("auth") && value.has("epoch")
+                    && value.get("auth") instanceof String && value.getString("auth").matches("[A-Za-z0-9_-]{43}")
+                    && value.get("epoch") instanceof Number && value.getDouble("epoch") == value.getLong("epoch")
+                    && value.getLong("epoch") >= 1 && value.getLong("epoch") <= 9007199254740991L;
+        } catch (Exception invalid) { return false; }
+    }
+
+    private static boolean validVaultInitialization(String body) {
+        if (body == null || body.getBytes(StandardCharsets.UTF_8).length > 10000) return false;
+        try {
+            org.json.JSONObject value = new org.json.JSONObject(body);
+            if (value.length() != 3 || !(value.get("data") instanceof String)
+                    || value.getString("data").getBytes(StandardCharsets.UTF_8).length > 8192) return false;
+            value.remove("data");
+            return validInitialVerifier(value.toString());
+        } catch (Exception invalid) { return false; }
     }
 
     private String pathFor(String method, String slot, String body) throws SyncAuthException {

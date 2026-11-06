@@ -100,12 +100,10 @@ public final class GoogleSyncPlugin extends Plugin {
         String slot = call.getString("slot");
         String body = call.getString("body");
         String endpoint = call.getString("endpoint");
+        String accountId = call.getString("accountId");
         worker.execute(() -> {
             try {
-                GoogleSyncSession.Response response = "settings".equals(endpoint) && "GET".equals(method) && slot == null && body == null
-                        ? session.listSettings() : endpoint != null
-                        ? session.requestVault(method, endpoint, body)
-                        : session.request(method, slot, body);
+                GoogleSyncSession.Response response = session.requestBound(method, slot, endpoint, body, accountId);
                 call.resolve(new JSObject().put("status", response.status).put("body", response.body));
             } catch (SyncAuthException error) {
                 reject(call, error);

@@ -6,13 +6,14 @@
  *
  *  - slots: `vault` (the plaintext header JSON) and `vk-<keyId>` (one sealed
  *    blob each) are read raw: unlike the `main` host list they are not
- *    passphrase envelopes. Android never writes the vault (keys are uploaded on
- *    the web only), so `push` and `delete` refuse; `list` reads bounded slot metadata through native GET /settings;
- *  - the server check: `GET /vault/status` and `POST /vault/verify` (native
- *    allowlists exactly those two). Not deployed yet, so a missing route reads
- *    as `unavailable` and core falls back to the client-side check value: an
- *    absent server never fails an unlock. Android never sets or resets the
- *    verifier (the web does).
+ *    passphrase envelopes. General slot `push` and `delete` still refuse;
+ *    `list` reads bounded slot metadata through native GET /settings;
+ *  - first setup uses only account-bound POST /vault/initialize, the same
+ *    atomic encrypted-header/verifier transaction as CLI enrollment. It never
+ *    overwrites an existing vault or falls back to partial initialization;
+ *  - existing unlock uses GET /vault/status and POST /vault/verify. Missing
+ *    server-check routes remain unavailable for legacy unlock, while first
+ *    setup requires a confirmed current server epoch.
  */
 import type {
   VaultServerStatus,
@@ -23,15 +24,15 @@ import type {
 } from '@pocketshell/core';
 import { isGoogleAuthLoss, type GoogleSyncNative } from '@/native/googleSync';
 
-export const ANDROID_VAULT_READ_ONLY = 'PocketShell for Android does not change the key vault. Use the PocketShell web app.';
+export const ANDROID_VAULT_READ_ONLY = 'This app supports first vault setup, but does not change or delete existing vault keys.';
 
 /**
  * One raw slot read: a missing slot is `absent`; a read the server gates on a
  * recent verify (W2 `vault_verify_required`) is `gated`, which core answers
  * with a silent re-verify or an unlock; any other non-2xx throws.
  */
-export async function readVaultSlot(native: GoogleSyncNative, slot: string): Promise<VaultSlotPullResult> {
-  const response = await native.request({ method: 'GET', slot });
+export async function readVaultSlot(native: GoogleSyncNative, slot: string, accountId?: string): Promise<VaultSlotPullResult> {
+  const response = await native.request({ method: 'GET', slot, ...(accountId ? {accountId} : {}) });
   if (response.status === 404) return { kind: 'absent' };
   if (response.status === 403 && errorCode(response.body) === 'vault_verify_required') return { kind: 'gated' };
   if (response.status < 200 || response.status > 299) {
@@ -44,15 +45,17 @@ export async function readVaultSlot(native: GoogleSyncNative, slot: string): Pro
   return { kind: 'ok', version: parsed.version, data: parsed.data };
 }
 
-export function createVaultSlotTransport(native: GoogleSyncNative): VaultSlotTransport {
+export function createVaultSlotTransport(native: GoogleSyncNative, boundAccount: () => string | null = () => null): VaultSlotTransport {
   return {
-    pull: (slot) => readVaultSlot(native, slot),
-    push: async () => ({ kind: 'error', message: ANDROID_VAULT_READ_ONLY }),
+    scoped() {const account = boundAccount();return createVaultSlotTransport(native, () => account);},
+    pull: (slot) => readVaultSlot(native, slot, boundAccount() ?? undefined),
+    push: async () => ({kind:'error',message:ANDROID_VAULT_READ_ONLY}),
     delete: async () => {
       throw new Error(ANDROID_VAULT_READ_ONLY);
     },
     async list() {
-      const response = await native.request({ method: 'GET', endpoint: 'settings' });
+      const accountId = boundAccount();
+      const response = await native.request({ method: 'GET', endpoint: 'settings', ...(accountId ? {accountId} : {}) });
       if (response.status !== 200) throw new Error(`The sync service returned HTTP ${response.status} for the vault directory.`);
       const body = parseJson(response.body);
       if (!isRecord(body) || !Array.isArray(body.slots) || body.slots.length > 1024) throw new Error('The sync service returned an invalid vault directory.');
@@ -76,10 +79,22 @@ export function authToWire(auth: Uint8Array): string {
   return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 }
 
-export function createVaultServerVerifier(native: GoogleSyncNative): VaultServerVerifier {
+export function createVaultServerVerifier(native: GoogleSyncNative, boundAccount: () => string | null = () => null): VaultServerVerifier {
+  const scope = () => {const accountId=boundAccount();return accountId ? {accountId} : {};};
   return {
+    scoped() {const account = boundAccount();return createVaultServerVerifier(native, () => account);},
+    async initialize({data,auth,epoch}) {
+      const accountId=boundAccount();
+      if (!accountId || !isCount(epoch) || epoch < 1) return {kind:'error',message:'Verify your Google account before creating a vault.'};
+      const response=await native.request({method:'POST',endpoint:'vault/initialize',accountId,
+        body:JSON.stringify({data,auth:authToWire(auth),epoch})});
+      const body=parseJson(response.body);
+      if(response.status===201 && isRecord(body) && body.ok===true && body.version===1 && body.epoch===epoch) return {kind:'ok',version:1};
+      if(response.status===409) return {kind:'conflict',currentVersion:0};
+      return {kind:'error',message:`Vault creation was not confirmed (HTTP ${response.status}). Retry with the same passphrase.`};
+    },
     async status(): Promise<VaultServerStatus> {
-      const response = await native.request({ method: 'GET', endpoint: 'vault/status' }).catch((error: unknown) => { if (isGoogleAuthLoss(error)) throw error; return null; });
+      const response = await native.request({ method: 'GET', endpoint: 'vault/status', ...scope() }).catch((error: unknown) => { if (isGoogleAuthLoss(error)) throw error; return null; });
       if (!response || response.status !== 200) return { kind: 'unavailable' };
       const body = parseJson(response.body);
       if (!isRecord(body) || !isCount(body.epoch) || typeof body.hasVerifier !== 'boolean') return { kind: 'unavailable' };
@@ -90,7 +105,7 @@ export function createVaultServerVerifier(native: GoogleSyncNative): VaultServer
 
     async verify(auth): Promise<VaultVerifyResult> {
       const wire = authToWire(auth);
-      const response = await native.request({ method: 'POST', endpoint: 'vault/verify', body: JSON.stringify({ auth: wire }) })
+      const response = await native.request({ method: 'POST', endpoint: 'vault/verify', body: JSON.stringify({ auth: wire }), ...scope() })
         .catch((error: unknown) => { if (isGoogleAuthLoss(error)) throw error; return null; });
       if (!response) return { kind: 'unavailable' };
       const body = parseJson(response.body);
@@ -104,9 +119,7 @@ export function createVaultServerVerifier(native: GoogleSyncNative): VaultServer
       return { kind: 'unavailable' };
     },
 
-    // The web sets the verifier at vault creation and passphrase change, and
-    // resets the vault; the phone only verifies.
-    setVerifier: async () => ({ kind: 'unavailable' }),
+    setVerifier: async () => ({kind:'unavailable'}),
   };
 }
 

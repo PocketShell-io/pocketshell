@@ -18,12 +18,13 @@ export interface GoogleSyncHttpResponse {
   body: string;
 }
 
-export type GoogleSyncRequest =
+export type GoogleSyncRequest = (
   | { method: 'GET'; slot?: string }
   | { method: 'PUT'; slot: string; body: string }
   /** The key vault's server check (key-vault W2 phase 2); 404/503 = not deployed. */
   | { method: 'GET'; endpoint: 'settings' | 'vault/status' }
-  | { method: 'POST'; endpoint: 'vault/verify'; body: string };
+  | { method: 'POST'; endpoint: 'vault/verify' | 'vault/initialize'; body: string }
+) & { /** Native refuses a different current Google subject before sending. */ accountId?: string };
 
 /** The narrow capability the sync adapter needs; tests supply a fake. */
 export interface GoogleSyncNative {
@@ -53,7 +54,7 @@ type NativeGoogleSyncPlugin = Plugin & {
   status(): Promise<unknown>;
   signIn(): Promise<unknown>;
   signOut(): Promise<unknown>;
-  request(options: { method: string; slot?: string; endpoint?: string; body?: string }): Promise<unknown>;
+  request(options: { method: string; slot?: string; endpoint?: string; body?: string; accountId?: string }): Promise<unknown>;
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {

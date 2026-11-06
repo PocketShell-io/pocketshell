@@ -229,8 +229,8 @@ public final class GoogleSyncSessionTest {
         assertEquals(API + "/me", transport.requests.get(0).url);
     }
 
-    /** Key-vault W4: exactly GET /vault/status and POST /vault/verify, nothing else under /vault. */
-    @Test public void onlyTheVaultStatusAndVerifyRoutesCanBeRequested() throws Exception {
+    /** First setup adds only strict, account-bound atomic initialization, never reset or replacement. */
+    @Test public void onlyFixedVaultRoutesAndStrictAtomicSetupCanBeRequested() throws Exception {
         store.value = token("sub-1", "phone@example.com", NOW + 3600, "VAULTSECRET1");
         String[][] refused = {
                 {"POST", "vault/status", "{}"},
@@ -275,6 +275,33 @@ public final class GoogleSyncSessionTest {
             assertFalse(expected.getMessage().contains("TRANSPORTSECRET9"));
             assertFalse(expected.getMessage().contains("Bearer"));
         }
+    }
+
+    @Test public void boundVaultCreationRefusesAccountSwitchBeforeAnyHttpEffect() throws Exception {
+        store.value=token("sub-2","new@example.test",NOW+3600,"BOUNDSECRET");
+        try {
+            session.requestBound("PUT","vault",null,"{\"data\":\"ciphertext\",\"version\":0}","google:sub-1");
+            fail("a different account must never receive the old creation");
+        } catch (SyncAuthException expected) {assertEquals(SyncAuthException.INVALID_REQUEST,expected.code);}
+        assertTrue(transport.requests.isEmpty());
+        transport.responses.add(new GoogleSyncSession.Response(200,"{\"version\":1}"));
+        session.requestBound("PUT","vault",null,"{\"data\":\"ciphertext\",\"version\":0}","google:sub-2");
+        assertEquals(API+"/settings/vault",transport.requests.get(0).url);
+    }
+
+    @Test public void atomicVaultSetupIsAccountBoundAndCannotResetOrChangeAnExistingVerifier() throws Exception {
+        store.value=token("sub-1","phone@example.test",NOW+3600,"SETUPSECRET");
+        String valid="{\"data\":\"encrypted header\",\"auth\":\""+"A".repeat(43)+"\",\"epoch\":1}";
+        for(String body:new String[]{"{}",valid.replace("1}","1.5}"),valid.replace("1}","0}"),valid.replace("1}","1,\"currentAuth\":\"old\"}")}) {
+            try {session.requestBound("POST",null,"vault/initialize",body,"google:sub-1");fail("invalid setup");}
+            catch(SyncAuthException expected){assertEquals(SyncAuthException.INVALID_REQUEST,expected.code);}
+        }
+        try {session.requestBound("POST",null,"vault/initialize",valid,null);fail("unscoped setup");}
+        catch(SyncAuthException expected){assertEquals(SyncAuthException.INVALID_REQUEST,expected.code);}
+        assertTrue(transport.requests.isEmpty());
+        transport.responses.add(new GoogleSyncSession.Response(201,"{\"ok\":true,\"version\":1,\"epoch\":1}"));
+        assertEquals(201,session.requestBound("POST",null,"vault/initialize",valid,"google:sub-1").status);
+        assertEquals(API+"/vault/initialize",transport.requests.get(0).url);
     }
 
     @Test public void anUnreadableStoredRecordIsASignedOutState() throws Exception {
