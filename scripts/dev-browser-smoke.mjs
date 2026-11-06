@@ -23,7 +23,7 @@
  * wrote; then the shared app opens the same session and types into it. The
  * session and file are removed afterwards.
  */
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import net from 'node:net';
@@ -36,6 +36,40 @@ import { parseArgs as parseLauncherArgs } from './dev-browser.mjs';
 
 const repoRoot = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const PHONE = { viewport: { width: 412, height: 915 }, deviceScaleFactor: 2, isMobile: false, hasTouch: false };
+
+/** Standalone so Playwright evaluates one complete sample in the page's RAF poll. */
+export function viewportReadiness({ geometry: supplied, expected } = {}) {
+  let geometry = supplied;
+  if (!geometry) {
+    const rect = element => {
+      if (!element) return null;
+      const r = element.getBoundingClientRect();
+      return { top: r.top, bottom: r.bottom, left: r.left, right: r.right, height: r.height, width: r.width };
+    };
+    const style = getComputedStyle(document.body);
+    const screen = [...document.querySelectorAll('.xterm-screen')].find(element => element.offsetParent !== null);
+    geometry = {
+      viewport: { width: innerWidth, height: innerHeight },
+      safe: { top: parseFloat(style.paddingTop), bottom: innerHeight - parseFloat(style.paddingBottom),
+        left: parseFloat(style.paddingLeft), right: innerWidth - parseFloat(style.paddingRight) },
+      app: rect(document.querySelector('#app')), workspace: rect(document.querySelector('.workspace')), terminal: rect(screen),
+    };
+    window.__psViewportReadiness = { at: performance.now(), expected, geometry };
+  }
+  const { safe } = geometry;
+  if (!safe || !['top', 'bottom', 'left', 'right'].every(edge => Number.isFinite(safe[edge]))) return false;
+  if (expected && (geometry.viewport?.width !== expected.width || geometry.viewport?.height !== expected.height
+      || safe.top !== expected.top || geometry.viewport.height - safe.bottom !== expected.bottom)) return false;
+  for (const name of ['app', 'workspace', 'terminal']) {
+    const box = geometry[name];
+    if (!box || !['top', 'bottom', 'left', 'right', 'height', 'width'].every(key => Number.isFinite(box[key]))
+        || box.height <= 0 || box.width <= 0 || box.top < safe.top || box.bottom > safe.bottom
+        || box.left < safe.left || box.right > safe.right) return false;
+  }
+  // Return the accepted sample itself. A subsequent measurement can observe a
+  // different point in responsive layout/xterm's asynchronous resize sequence.
+  return geometry;
+}
 
 function parseArgs(argv) {
   const [mode, ...rest] = argv;
@@ -371,24 +405,42 @@ async function mockJourneys(browser, base, smoke) {
           const screen = [...document.querySelectorAll('.xterm-screen')].find(element => element.offsetParent !== null);
           return { safe, app: rect(document.querySelector('#app')), workspace: rect(document.querySelector('.workspace')), terminal: rect(screen) };
         });
+        let failedGeometry = null;
+        let failedOperand = null;
         try {
-          await sharedPage.waitForFunction(() => {
-            const style = getComputedStyle(document.body), bottom = innerHeight - parseFloat(style.paddingBottom);
-            const app = document.querySelector('#app').getBoundingClientRect();
-            const terminal = [...document.querySelectorAll('.xterm-screen')].find(element => element.offsetParent !== null)?.getBoundingClientRect();
-            return terminal && app.top >= parseFloat(style.paddingTop) && app.bottom <= bottom && terminal.bottom <= bottom;
-          }, null, { timeout: 5_000 });
-          const geometry = await measure();
-          for (const [name, rect] of Object.entries(geometry).filter(([name]) => name !== 'safe')) {
+          const ready = await sharedPage.waitForFunction(viewportReadiness, { expected: item }, { timeout: 5_000 });
+          const geometry = await ready.jsonValue();
+          await ready.dispose();
+          for (const name of ['app', 'workspace', 'terminal']) {
+            const rect = geometry[name];
             if (rect.top < geometry.safe.top || rect.bottom > geometry.safe.bottom || rect.left < geometry.safe.left || rect.right > geometry.safe.right) {
+                failedGeometry = geometry;
+                failedOperand = { name, top: rect.top < geometry.safe.top, bottom: rect.bottom > geometry.safe.bottom,
+                  left: rect.left < geometry.safe.left, right: rect.right > geometry.safe.right };
               throw new Error(`${name} exceeds the safe content box`);
             }
           }
           measured.push({ name: item.name, ...geometry });
           await shot(sharedPage, smoke, `shared-viewport-${item.name}`);
         } catch (error) {
+          const diagnostics = await sharedPage.evaluate(() => {
+            const properties = ['height', 'min-height', 'max-height', 'box-sizing', 'display', 'position', 'overflow',
+              'padding-top', 'padding-bottom', 'padding-left', 'padding-right', '--ps-inset-top', '--ps-inset-bottom'];
+            const describe = element => {
+              const style = getComputedStyle(element);
+              return { tag: element.tagName, id: element.id, className: element.className,
+                inline: Object.fromEntries(properties.map(key => [key, element.style.getPropertyValue(key)]).filter(([, value]) => value)),
+                computed: Object.fromEntries(properties.map(key => [key, style.getPropertyValue(key)])) };
+            };
+            return { at: performance.now(), innerWidth, innerHeight, devicePixelRatio, userAgent: navigator.userAgent,
+              viewport: visualViewport && { width: visualViewport.width, height: visualViewport.height, offsetTop: visualViewport.offsetTop },
+              readiness: window.__psViewportReadiness, html: describe(document.documentElement), body: describe(document.body),
+              app: describe(document.querySelector('#app')), workspace: describe(document.querySelector('.workspace')) };
+          });
+          const failure = { variant: item, failedOperand, failedGeometry, diagnostics };
+          writeFileSync(path.join(smoke.artifacts, `shared-viewport-${item.name}-failure-geometry.json`), JSON.stringify(failure, null, 2));
           await shot(sharedPage, smoke, `shared-viewport-${item.name}-failure`);
-          throw new Error(`${item.name}: ${error.message}; actual ${JSON.stringify(await measure())}`);
+          throw new Error(`${item.name}: ${error.message}; failed ${JSON.stringify(failure)}; afterCapture ${JSON.stringify(await measure())}`);
         }
       }
       writeFileSync(path.join(smoke.artifacts, 'shared-viewport-geometry.json'), JSON.stringify(measured, null, 2));
@@ -534,6 +586,10 @@ async function liveJourney(browser, base, smoke, options, token) {
 
 async function main() {
   const options = parseArgs(process.argv.slice(2));
+  if (options.mode === 'mock') {
+    const contract = spawnSync(process.execPath, ['--test', path.join(repoRoot, 'tests/scripts/dev-browser-viewport-readiness.test.mjs')], { stdio: 'inherit' });
+    if (contract.status !== 0) throw new Error('Viewport readiness regression contract failed');
+  }
   mkdirSync(options.artifacts, { recursive: true });
   const smoke = new Smoke(options.artifacts);
   const port = options.port || await freePort();
@@ -567,7 +623,9 @@ async function main() {
   if (failed || passed === 0 || result.failed > 0) process.exit(1);
 }
 
-main().catch((error) => {
-  process.stderr.write(`dev-browser-smoke: ${error?.message ?? error}\n`);
-  process.exit(2);
-});
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  main().catch((error) => {
+    process.stderr.write(`dev-browser-smoke: ${error?.message ?? error}\n`);
+    process.exit(2);
+  });
+}

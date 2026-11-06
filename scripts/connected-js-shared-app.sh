@@ -318,6 +318,7 @@ pull_phase_traces() {
 # the raw copy sits outside every app package and the test deletes it.
 DEVICE_KEY_PATH="/data/local/tmp/pocketshell-$SUFFIX-shared-key.pem"
 "$ADB" -s "$ANDROID_SERIAL" push "$ROOT_DIR/tests/docker/test_key" "$DEVICE_KEY_PATH" >/dev/null
+"$ADB" -s "$ANDROID_SERIAL" shell rm -f /data/local/tmp/ps2952-j21-guest-failure-current.png >/dev/null 2>&1 || true
 
 printf 'Running shared-app journeys on %s (API %s), suffix %s\n' "$ANDROID_SERIAL" "$device_api" "$SUFFIX"
 if "$ROOT_DIR/android/gradlew" -p "$ROOT_DIR/android" :app:connectedDebugAndroidTest \
@@ -340,6 +341,8 @@ else
   pull_phase_traces "$RESULTS_DIR" 7>&-
   fetch_host_bytes
   fetch_guest_host_proof || true
+  "$ADB" -s "$ANDROID_SERIAL" pull "/data/local/tmp/ps2952-j21-guest-failure-current.png" "$RESULTS_DIR/j21-guest-failure-current.png" >/dev/null 2>&1 || true
+  "$ADB" -s "$ANDROID_SERIAL" shell rm -f "/data/local/tmp/ps2952-j21-guest-failure-current.png" >/dev/null 2>&1 || true
   [[ -f "$HOST_BYTES_FILE" ]] && cp "$HOST_BYTES_FILE" "$RESULTS_DIR/host-ime-bytes.hex"
   "$ADB" -s "$ANDROID_SERIAL" logcat -d 7>&- -v threadtime -t 4000 \
     > "$RESULTS_DIR/diagnostics-logcat.txt" 2>&1 || true
