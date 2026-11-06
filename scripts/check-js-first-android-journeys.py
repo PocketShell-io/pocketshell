@@ -135,7 +135,7 @@ LANES = (
             ("com.pocketshell.app.smoke.J14StopSessionJourney", frozenset({'sharedAppReportsARealSessionEndWithoutReconnecting', 'stopSessionFromTabKillsItOnTheHost'})),
             ("com.pocketshell.app.smoke.J15TerminalScrollJourney", frozenset({'scrollTerminalDoesNotSendInputBytes'})),
             ("com.pocketshell.app.smoke.J19HostFormImeJourney", frozenset({'tunnelFormSubmitRemainsReachableWithTheIme', 'hostFormSubmitRemainsReachableWithTheIme'})),
-            ("com.pocketshell.app.smoke.J21HostAddConnectJourney", frozenset({'hostAddedThroughFormConnectsToFixture'})),
+            ("com.pocketshell.app.smoke.J21HostAddConnectJourney", frozenset({'hostAddedThroughFormConnectsToFixture','guestSshConnectsWithoutGoogleOrVaultAndTypesIntoRealHost'})),
             ("com.pocketshell.app.smoke.J11ShareUploadJourney", frozenset({"androidSingleShareReachesTheChosenSessionOnTheRealHost", "androidShareStreamsReachTheChosenSessionOnTheRealHost"})),
             ("com.pocketshell.app.smoke.J20ComposerUploadProgressJourney", frozenset({"aThreeFileUploadShowsTheBarMidFlightAndLeavesNoResidueAfterCompletion"})),
         ),
@@ -194,6 +194,8 @@ LANES = (
                 "dialsTheGatewayHostWithTheAccountVaultKeyAfterOneUnlockAndNoKeyPicker",
                 "connectsTrustedVaultServerWithoutManualPairingAndCreatesHomeTerminal",
                 "recoversNativeAuthLossWithoutSignOutAndPreservesVaultTrustBeforeRealTerminal",
+                "onboardingExistingVaultRequiresGoogleThenRejectsWrongPhraseBeforeOneUnlockAndRealTerminal",
+                "onboardingCreatesMissingVaultAtomicallyInAppAndReopensItWithoutWeb",
             }
         ),
     ),

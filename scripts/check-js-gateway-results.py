@@ -40,9 +40,11 @@ REQUIRED_METHODS = frozenset(
         "dialsTheGatewayHostWithTheAccountVaultKeyAfterOneUnlockAndNoKeyPicker",
         "connectsTrustedVaultServerWithoutManualPairingAndCreatesHomeTerminal",
         "recoversNativeAuthLossWithoutSignOutAndPreservesVaultTrustBeforeRealTerminal",
+        "onboardingExistingVaultRequiresGoogleThenRejectsWrongPhraseBeforeOneUnlockAndRealTerminal",
+        "onboardingCreatesMissingVaultAtomicallyInAppAndReopensItWithoutWeb",
     }
 )
-SELF_TEST_CASES = 23
+SELF_TEST_CASES = 28
 
 
 class GateFailure(ValueError):
@@ -191,6 +193,16 @@ def validate_host(host_dir: Path) -> dict:
     if not any(matching_auth_file(reply) for reply in auth_files):
         raise GateFailure("no independent run-bound computed terminal result after auth-loss recovery")
     validate_authloss_runtime(host_dir.parent)
+    onboarding_keys={r["fingerprint"] for r in _phase(entries,"authorize","onboarding-authorize")}
+    if onboarding_keys!=vault_keys or not any(accepted(reply)==onboarding_keys for reply in _phase(entries,"sshd-since","onboarding-connect")):
+        raise GateFailure("onboarding never authenticated at the real SSH host with the vault key")
+    def matching_onboarding_file(reply):
+        name=re.fullmatch(r"gwlane-onboarding-io-([A-Za-z0-9_-]+)\.txt",str(reply.get("name","")))
+        return (name is not None and str(reply.get("content","")).strip()==f"GWONBOARD42_{name.group(1)}"
+                and reply.get("exists") is True and reply.get("type")=="regular" and reply.get("readExitCode")==0)
+    if not any(matching_onboarding_file(reply) for reply in _phase(entries,"host-file","onboarding-io")):
+        raise GateFailure("the onboarding terminal never produced its run-bound independent host file")
+    validate_onboarding_runtime(host_dir.parent)
 
     files = {
         reply["name"]: reply["content"].strip()
@@ -253,6 +265,26 @@ def validate_authloss_runtime(artifacts: Path) -> None:
         frame = artifacts / "screenshots" / f"{name}.png"
         if not frame.is_file() or frame.stat().st_size < 1024 or not frame.read_bytes().startswith(b"\x89PNG\r\n\x1a\n"):
             raise GateFailure(f"native auth-loss screenshot is missing or invalid: {name}")
+
+
+def validate_onboarding_runtime(artifacts: Path) -> None:
+    text=(artifacts/"logcat.txt").read_text(encoding="utf-8",errors="replace")
+    for label,expected in (
+        ("ONBOARDING_EXISTING",{"unlockGates":1,"createGates":0,"interactive":2,"wrongPhraseRefused":True,"accountFailureNoGate":True,"cloudWrites":0}),
+        ("ONBOARDING_CREATED",{"epoch":3,"initializations":1,"initializeAttempts":2,"createGates":2,"unlockGates":1,"interactive":2,
+                               "ciphertextPreserved":True,"plaintextUploaded":False,"emptyServers":True}),
+    ):
+        rows=[json.loads(line.split(label+" ",1)[1]) for line in text.splitlines() if label+" " in line]
+        if len(rows)!=1 or any(type(rows[0].get(k)) is not type(v) or rows[0].get(k)!=v for k,v in expected.items()):
+            raise GateFailure(f"the real native onboarding flow receipt is missing or contradicts {label}")
+    if "ONBOARDING_VISIBLE_TERMINAL " not in text:
+        raise GateFailure("the onboarding terminal's visible text was not retained")
+    for name in ("onboarding-before-google","onboarding-account-unavailable","onboarding-wrong-phrase","onboarding-existing-terminal",
+                 "onboarding-create-first-vault","onboarding-create-unavailable","onboarding-created-empty-servers","onboarding-created-vault-reopened",
+                 "onboarding-existing-terminal-viewport"):
+        frame=artifacts/"screenshots"/f"{name}.png"
+        if not frame.is_file() or frame.stat().st_size<1024 or not frame.read_bytes().startswith(b"\x89PNG\r\n\x1a\n"):
+            raise GateFailure(f"native onboarding screenshot is missing or invalid: {name}")
 
 
 def _write_xml(directory: Path, methods: list[str], failed: str | None = None) -> None:
@@ -331,10 +363,28 @@ def _write_host(directory: Path, **overrides) -> None:
                "rememberBytesUnchanged":True,"scopeStable":True,"beforeDropDials":1,"preTapDials":overrides.get("authloss_pre_tap_dials",2),"finalDials":3,
                "recoveryPhaseBeforeTap":"lost"}
     (directory.parent / "logcat.txt").write_text("AUTH_LOSS_CUSTODY " + json.dumps(receipt) + "\n")
+    entries.extend([
+        entry("authorize","onboarding-authorize",fingerprint=fpv),
+        entry("sshd-since","onboarding-connect",connections=1,userauth=["Accepted"],accepted=[{"fingerprint":fpv}]),
+        {"request":{"op":"host-file","phase":"onboarding-io","name":"gwlane-onboarding-io-r.txt"},
+         "reply":{"ok":True,"name":"gwlane-onboarding-io-r.txt","content":overrides.get("onboarding_content","GWONBOARD42_r\n"),"exists":True,"type":"regular","readExitCode":0}},
+    ])
+    with (directory.parent/"logcat.txt").open("a") as log:
+        log.write("ONBOARDING_EXISTING "+json.dumps({"unlockGates":overrides.get("onboarding_unlock_gates",1),"createGates":0,"interactive":2,
+                  "wrongPhraseRefused":True,"accountFailureNoGate":True,"cloudWrites":0})+"\n")
+        log.write("ONBOARDING_CREATED "+json.dumps({"epoch":3,"initializations":overrides.get("onboarding_initializations",1),"initializeAttempts":2,
+                  "createGates":2,"unlockGates":1,"interactive":2,"ciphertextPreserved":True,"plaintextUploaded":False,"emptyServers":True})+"\n")
+        log.write("ONBOARDING_VISIBLE_TERMINAL GWONBOARD42_r\n")
     shots = directory.parent / "screenshots"
     shots.mkdir(exist_ok=True)
     for name in ("authloss-initial-terminal", "authloss-login-required", "authloss-unlock-cancelled", "authloss-recovered-terminal"):
         (shots / f"{name}.png").write_bytes(b"\x89PNG\r\n\x1a\n" + b"x" * 1024)
+    for name in ("onboarding-before-google","onboarding-account-unavailable","onboarding-wrong-phrase","onboarding-existing-terminal",
+                 "onboarding-create-first-vault","onboarding-create-unavailable","onboarding-created-empty-servers","onboarding-created-vault-reopened",
+                 "onboarding-existing-terminal-viewport"):
+        (shots/f"{name}.png").write_bytes(b"\x89PNG\r\n\x1a\n"+b"x"*1024)
+    if overrides.get("onboarding_viewport_missing"):
+        (shots/"onboarding-existing-terminal-viewport.png").unlink()
     if overrides.get("authloss_shot_missing"):
         (shots / "authloss-unlock-cancelled.png").unlink()
     if overrides.get("authloss_receipt_missing"):
@@ -369,7 +419,7 @@ def self_test() -> int:
         h.mkdir()
         _write_xml(r, sorted(REQUIRED_METHODS))
         _write_host(h)
-        assert validate_results(r) == 5
+        assert validate_results(r) == 7
         validate_host(h)
         cases += 1
     expect_fail("missing method", results={"methods": sorted(REQUIRED_METHODS)[:1]})
@@ -394,6 +444,11 @@ def self_test() -> int:
     expect_fail("auth-loss changed protected custody", host={"authloss_custody_bad":True})
     expect_fail("auth-loss unlock screenshot missing", host={"authloss_shot_missing":True})
     expect_fail("auth-loss receipt missing", host={"authloss_receipt_missing":True})
+    expect_fail("new onboarding method omitted",results={"methods":[m for m in sorted(REQUIRED_METHODS) if m!="onboardingCreatesMissingVaultAtomicallyInAppAndReopensItWithoutWeb"]})
+    expect_fail("onboarding unlock duplicated",host={"onboarding_unlock_gates":2})
+    expect_fail("onboarding vault created twice",host={"onboarding_initializations":2})
+    expect_fail("onboarding terminal output from another run",host={"onboarding_content":"GWONBOARD42_other\n"})
+    expect_fail("onboarding terminal viewport missing",host={"onboarding_viewport_missing":True})
     if cases != SELF_TEST_CASES:
         raise AssertionError(f"ran {cases} self-test cases, expected {SELF_TEST_CASES}")
     print(f"PASS: gateway result checker self-test ({cases} cases)")

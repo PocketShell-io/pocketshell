@@ -282,6 +282,22 @@ fetch_host_bytes() {
   fixture "cat ~/$SESSION_RUN-c/ps2952-bytes.hex" > "$HOST_BYTES_FILE" 2>/dev/null || rm -f "$HOST_BYTES_FILE"
 }
 
+# A different SSH connection, owned by the runner, reads the file the guest
+# terminal must create. No app-visible transport or JS return value is its oracle.
+fetch_guest_host_proof() {
+  local content user
+  content="$(fixture "cat ~/ps-guest-$SESSION_RUN.txt")" || return 1
+  user="$(fixture 'id -un')" || return 1
+  mkdir -p "$RESULTS_DIR"
+  python3 - "$SESSION_RUN" "$user" "$content" "$RESULTS_DIR/guest-host-proof.json" <<'PY'
+import json,sys
+from pathlib import Path
+run,user,content,path=sys.argv[1:]
+Path(path).write_text(json.dumps({"run":run,"user":user,"content":content})+'\n',encoding='utf-8')
+PY
+}
+fixture "test ! -e ~/ps-guest-$SESSION_RUN.txt" || fail 'guest terminal proof file already exists before this run'
+
 # #3039: the session-end and client-drop journeys copy their phase traces here
 # (the app's own files go with the app's uninstall), so passing runs keep one
 # too. Clear stale copies first: an earlier run's trace must not stand in.
@@ -323,6 +339,7 @@ else
   mkdir -p "$RESULTS_DIR"
   pull_phase_traces "$RESULTS_DIR" 7>&-
   fetch_host_bytes
+  fetch_guest_host_proof || true
   [[ -f "$HOST_BYTES_FILE" ]] && cp "$HOST_BYTES_FILE" "$RESULTS_DIR/host-ime-bytes.hex"
   "$ADB" -s "$ANDROID_SERIAL" logcat -d 7>&- -v threadtime -t 4000 \
     > "$RESULTS_DIR/diagnostics-logcat.txt" 2>&1 || true
@@ -341,12 +358,15 @@ else
   exit "$test_exit_code"
 fi
 fetch_host_bytes
+fetch_guest_host_proof || fail 'could not read guest terminal proof over the independent host connection'
 pull_phase_traces "$RESULTS_DIR" 7>&-
 # Screenshots the journeys took of the typed terminal (evidence, not a gate).
-for shot in typed-after-reattach ime-bytes j14-session-stopped j15-scrolled-terminal j19-host-form-ime j19-tunnel-form-ime j19-tunnel-form-ime-before-assertion j21-host-added-and-connected j11-shared-file-staged j20-three-file-upload-finished; do
+for shot in typed-after-reattach ime-bytes j14-session-stopped j15-scrolled-terminal j19-host-form-ime j19-tunnel-form-ime j19-tunnel-form-ime-before-assertion j21-host-added-and-connected j21-guest-local-entry j21-guest-real-terminal j11-shared-file-staged j20-three-file-upload-finished; do
   "$ADB" -s "$ANDROID_SERIAL" pull "/data/local/tmp/ps2952-$shot.png" "$SHARED_APP_RESULTS_DIR/$shot.png" >/dev/null 2>&1 || true
   "$ADB" -s "$ANDROID_SERIAL" shell rm -f "/data/local/tmp/ps2952-$shot.png" >/dev/null 2>&1 || true
 done
 
+"$ADB" -s "$ANDROID_SERIAL" pull "/sdcard/Pictures/PocketShell/Onboarding/$SESSION_RUN/guest-terminal-viewport.png" "$SHARED_APP_RESULTS_DIR/guest-terminal-viewport.png" >/dev/null 2>&1 || true
+"$ADB" -s "$ANDROID_SERIAL" shell rm -f "/sdcard/Pictures/PocketShell/Onboarding/$SESSION_RUN/guest-terminal-viewport.png" >/dev/null 2>&1 || true
 "$ROOT_DIR/scripts/check-js-shared-app-results.py" --results-dir "$RESULTS_DIR" \
   --host-bytes "$HOST_BYTES_FILE" --evidence-dir "$SHARED_APP_RESULTS_DIR"

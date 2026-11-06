@@ -32,6 +32,7 @@ METHOD_CLASSES = {'aThreeFileUploadShowsTheBarMidFlightAndLeavesNoResidueAfterCo
  'changedHostKeyIsRefusedWithVisibleMessage': 'com.pocketshell.app.smoke.J01ConnectAndTrustJourney',
  'firstContactHostKeyAsksAndHonoursRejectOnceAndAlways': 'com.pocketshell.app.smoke.J01ConnectAndTrustJourney',
  'hostAddedThroughFormConnectsToFixture': 'com.pocketshell.app.smoke.J21HostAddConnectJourney',
+ 'guestSshConnectsWithoutGoogleOrVaultAndTypesIntoRealHost': 'com.pocketshell.app.smoke.J21HostAddConnectJourney',
  'hostFormSubmitRemainsReachableWithTheIme': 'com.pocketshell.app.smoke.J19HostFormImeJourney',
  'scrollTerminalDoesNotSendInputBytes': 'com.pocketshell.app.smoke.J15TerminalScrollJourney',
  'sharedAppListsAttachesAndTypesIntoFixtureSession': 'com.pocketshell.app.smoke.J02SessionTreeListJourney',
@@ -162,6 +163,23 @@ def validate_host_bytes(path: Path) -> None:
         raise GateFailure(
             f"the host received {decoded} ({recorded}); expected {EXPECTED_IME_BYTES!r} ({EXPECTED_IME_BYTES_HEX})"
         )
+
+
+def validate_guest_host(path: Path) -> None:
+    if not path.is_file():
+        raise GateFailure(f"the independent guest SSH host proof is missing: {path}")
+    try:proof=json.loads(path.read_text(encoding="utf-8"))
+    except (OSError,ValueError) as error:raise GateFailure(f"the guest SSH host proof is unreadable: {error}") from error
+    if not isinstance(proof,dict):raise GateFailure("guest SSH host proof is not an object")
+    run=proof.get("run")
+    if not isinstance(run,str) or not run or proof.get("user")!="testuser" or proof.get("content","").strip()!="PSGUEST42_"+run:
+        raise GateFailure("guest SSH file content/user does not match this runner's host proof")
+
+
+def validate_guest_viewport(directory: Path) -> None:
+    frame=directory/"guest-terminal-viewport.png"
+    if not frame.is_file() or frame.stat().st_size<1024 or not frame.read_bytes().startswith(b"\x89PNG\r\n\x1a\n"):
+        raise GateFailure("the real guest terminal viewport screenshot is missing or invalid")
 
 
 def validate_phase_traces(results: Path) -> list[Path]:
@@ -303,7 +321,17 @@ def self_test() -> int:
                 print(f"FAIL: {label}", file=sys.stderr)
             else:
                 print(f"ok: {label}")
-    total = len(cases) + len(trace_cases)
+        guest_cases=[("guest host content matches this run",{"run":"fixture-run","user":"testuser","content":"PSGUEST42_fixture-run\n"},True),
+                     ("guest file from another run fails",{"run":"fixture-run","user":"testuser","content":"PSGUEST42_foreign\n"},False),
+                     ("guest proof missing fails",None,False)]
+        for index,(label,proof,expected_pass) in enumerate(guest_cases):
+            path=root/f"guest-{index}.json"
+            if proof is not None:path.write_text(json.dumps(proof),encoding="utf-8")
+            try:validate_guest_host(path);passed=True
+            except GateFailure:passed=False
+            if passed!=expected_pass:failures+=1;print(f"FAIL: {label}",file=sys.stderr)
+            else:print(f"ok: {label}")
+    total = len(cases) + len(trace_cases)+len(guest_cases)
     print(f"Shared-app result guard self-test: {total - failures}/{total} checks passed")
     return 1 if failures else 0
 
@@ -317,6 +345,7 @@ def main(argv: list[str] | None = None) -> int:
         help=f"the host reader's hex record (default: <results-dir>/{HOST_BYTES_NAME})",
     )
     parser.add_argument("--evidence-dir", type=Path)
+    parser.add_argument("--guest-host-proof", type=Path)
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args(argv)
     if args.self_test:
@@ -325,6 +354,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         reports = validate_results(args.results_dir)
         validate_host_bytes(host_bytes)
+        validate_guest_host(args.guest_host_proof or args.results_dir / "guest-host-proof.json")
+        validate_guest_viewport(args.evidence_dir or args.results_dir)
         traces = validate_phase_traces(args.results_dir)
         if args.evidence_dir:
             args.evidence_dir.mkdir(parents=True, exist_ok=True)
@@ -333,6 +364,9 @@ def main(argv: list[str] | None = None) -> int:
             for trace in traces:
                 if trace.resolve() != (args.evidence_dir / trace.name).resolve():
                     shutil.copy2(trace, args.evidence_dir / trace.name)
+            guest_proof=args.guest_host_proof or args.results_dir / "guest-host-proof.json"
+            if guest_proof.resolve() != (args.evidence_dir / guest_proof.name).resolve():
+                shutil.copy2(guest_proof,args.evidence_dir / guest_proof.name)
             if host_bytes.resolve() != (args.evidence_dir / HOST_BYTES_NAME).resolve():
                 shutil.copy2(host_bytes, args.evidence_dir / HOST_BYTES_NAME)
     except GateFailure as error:

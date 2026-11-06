@@ -372,25 +372,25 @@ public final class GatewayDockerJourneyTest {
         awaitJsTrue("!!document.querySelector('[data-testid=vault-unlock-gate]')", 60_000);
         setValue("[data-testid=vault-unlock-passphrase]", "pocketshell-vault-test-passphrase gateway");
         click("[data-testid=vault-unlock-submit]");
-        awaitJsTrue("!document.querySelector('[data-testid=vault-unlock-gate]') && !document.querySelector('[data-testid=trusted-server-connect]') && !!document.querySelector('.trusted-servers .btn-ghost')", 120_000);
+        awaitJsTrue("!document.querySelector('[data-testid=vault-unlock-gate]') && !document.querySelector('[data-testid=trusted-server-connect]') && [...document.querySelectorAll('.trusted-servers button')].some(n=>n.textContent.trim()==='Refresh servers')", 120_000);
         // A second client registers after this phone unlocked an older index.
         // Refresh must fetch the authenticated header/index before discovering it.
         backend.vaultSlots = stagedSlots;
         int beforeRegistration = backend.trustedReads;
-        click(".trusted-servers .btn-ghost");
+        refreshServers();
         awaitTrustedReadAfter(beforeRegistration);
         awaitJsTrue("!!document.querySelector('.trusted-servers [role=alert]') && !document.querySelector('[data-testid=trusted-server-connect]')", 120_000);
         screenshot("trusted-vault-tampered");
         JSONObject foreign = new JSONObject(originalDescriptor).put("accountId", "google:foreign-subject");
         descriptorSlot.put("data", foreign.toString());
         int beforeForeign = backend.trustedReads;
-        click(".trusted-servers .btn-ghost");
+        refreshServers();
         awaitTrustedReadAfter(beforeForeign);
         awaitJsTrue("!!document.querySelector('.trusted-servers [role=alert]') && !document.querySelector('[data-testid=trusted-server-connect]')", 120_000);
         screenshot("trusted-vault-foreign");
         descriptorSlot.put("data", originalDescriptor);
         int beforeValid = backend.trustedReads;
-        click(".trusted-servers .btn-ghost");
+        refreshServers();
         awaitTrustedReadAfter(beforeValid);
         awaitJsTrue("!!document.querySelector('[data-testid=trusted-server-connect]:not([disabled])')", 120_000);
         assertEquals("cloud descriptor discovery saves no phone host row", "[]", evalString("localStorage.getItem('" + HOSTS_KEY + "')"));
@@ -431,6 +431,113 @@ public final class GatewayDockerJourneyTest {
 
     /** Real native expiry/renewal rejection, shared cleanup, same-vault reauthentication and PTY recovery. */
     @Test
+    public void onboardingExistingVaultRequiresGoogleThenRejectsWrongPhraseBeforeOneUnlockAndRealTerminal() throws Exception {
+        selectVariant("active");
+        String fingerprint=authorizeVault("onboarding-authorize");
+        String ciphertext=backend.vaultSlots.toString();
+        backend.unavailableMe=true;
+        scenario=ActivityScenario.launch(SharedShellLaunch.intent());
+        awaitJsTrue("!!document.querySelector('[data-testid=server-google-login]')",60_000);
+        observeOnboardingGates();
+        assertFalse("no vault secret before Google",exists("[data-testid=vault-unlock-gate]"));
+        screenshot("onboarding-before-google");
+        click("[data-testid=server-google-login]");
+        awaitJsTrue("!!document.querySelector('.trusted-servers [role=alert]')",60_000);
+        assertFalse("failed account verification cannot ask for vault secrets",exists("[data-testid=vault-unlock-gate]"));
+        screenshot("onboarding-account-unavailable");
+        backend.unavailableMe=false;
+        click("[data-testid=server-google-login]");
+        awaitJsTrue("!!document.querySelector('[data-testid=vault-unlock-form]')",60_000);
+        assertTrue("the account was backend-verified before the vault form",backend.meReads>0);
+        setValue("[data-testid=vault-unlock-passphrase]","this is the wrong vault phrase");
+        click("[data-testid=vault-unlock-submit]");
+        awaitJsTrue("document.querySelector('[data-testid=vault-unlock-error]')?.textContent.includes(\"didn't unlock\")",120_000);
+        assertFalse("wrong phrase never exposes a trusted server",exists("[data-testid=trusted-server-connect]"));
+        assertEquals("wrong phrase never writes encrypted state",ciphertext,backend.vaultSlots.toString());
+        screenshot("onboarding-wrong-phrase");
+        submitAuthLossVaultPhrase();
+        awaitJsTrue("!!document.querySelector('[data-testid=trusted-server-connect]:not([disabled])')",120_000);
+        assertEquals("one existing-vault prompt, including the failed phrase",1,onboardingGates().getInt("unlock"));
+        assertEquals("existing vault is never offered setup",0,onboardingGates().getInt("create"));
+        installDialRecorder();
+        int mark=controller(new JSONObject().put("op","mark")).getInt("mark");
+        tapHost(DEVICE_HOST);
+        awaitJsTrue(VISIBLE_TERMINAL+".includes('$')",120_000);
+        assertTrue("onboarding reaches real SSH with the vault's key",acceptedFingerprints(sshdSince(mark,"onboarding-connect")).contains(fingerprint));
+        String file="gwlane-onboarding-io-"+run+".txt";
+        typeCommand("echo GWONBOARD$((6*7))_"+run+" | tee ./"+file);
+        awaitJsTrue(VISIBLE_TERMINAL+".includes('GWONBOARD42')");
+        JSONObject host=awaitOnboardingHostFile(file,"GWONBOARD42_"+run);
+        screenshot("onboarding-existing-terminal");
+        OnboardingViewportCapture.capture(scenario,evalString("JSON.stringify((()=>{const r=[...document.querySelectorAll('.xterm-screen')].find(n=>n.offsetParent!==null).getBoundingClientRect();return {left:r.left,top:r.top,right:r.right,bottom:r.bottom,innerWidth:innerWidth};})())"),run,"onboarding-existing-terminal-viewport");
+        Log.i(TAG,"ONBOARDING_VISIBLE_TERMINAL "+evalString(VISIBLE_TERMINAL));
+        assertEquals("existing-vault onboarding has no cloud writes",0,backend.writes);
+        assertEquals("Google first, retried once after a real account-service failure",2,google.interactiveCalls);
+        assertEveryDialWentThroughTheGateway(nativeDials());
+        Log.i(TAG,"ONBOARDING_EXISTING "+new JSONObject().put("unlockGates",onboardingGates().getInt("unlock"))
+                .put("createGates",onboardingGates().getInt("create")).put("interactive",google.interactiveCalls)
+                .put("wrongPhraseRefused",true).put("accountFailureNoGate",true).put("cloudWrites",backend.writes).put("hostFile",host.getString("name")));
+    }
+
+    @Test
+    public void onboardingCreatesMissingVaultAtomicallyInAppAndReopensItWithoutWeb() throws Exception {
+        backend.atomicInitialization=true;backend.vaultEpoch=3;backend.vaultSlots=new JSONObject();backend.seed(null);
+        scenario=ActivityScenario.launch(SharedShellLaunch.intent());
+        awaitJsTrue("!!document.querySelector('[data-testid=server-google-login]')",60_000);
+        observeOnboardingGates();
+        assertFalse("new accounts do not first ask for an existing phrase",exists("[data-testid=vault-unlock-gate]"));
+        click("[data-testid=server-google-login]");
+        awaitJsTrue("!!document.querySelector('[data-testid=vault-setup]')",60_000);
+        assertFalse("missing vault uses setup, never the old unlock form",exists("[data-testid=vault-unlock-form]"));
+        screenshot("onboarding-create-first-vault");
+        click("[data-testid=vault-setup-cancel]");
+        awaitJsTrue("!document.querySelector('[data-testid=vault-unlock-gate]')");
+        assertEquals("cancel before submission has no initialization effect",0,backend.initializations);
+        click("[data-testid=server-vault-unlock]");
+        awaitJsTrue("!!document.querySelector('[data-testid=vault-setup]')");
+        String phrase="unrelated long words for new vault";
+        setValue("[data-testid=vault-setup-new]",phrase);
+        setValue("[data-testid=vault-setup-again]","different confirmation phrase");
+        click("[data-testid=vault-setup-understood]");
+        assertTrue("mismatched confirmation cannot create a vault",Boolean.parseBoolean(evalRaw("document.querySelector('[data-testid=vault-setup-create]').disabled")));
+        setValue("[data-testid=vault-setup-again]",phrase);
+        backend.unavailableInitialize=true;
+        click("[data-testid=vault-setup-create]");
+        awaitJsTrue("!!document.querySelector('[data-testid=vault-setup] [role=alert]')",120_000);
+        assertEquals("unavailable initialization leaves no partial vault",0,backend.vaultSlots.length());
+        assertEquals("unavailable initialization leaves no verifier",null,backend.initializedAuth);
+        screenshot("onboarding-create-unavailable");
+        backend.unavailableInitialize=false;
+        click("[data-testid=vault-setup-create]");
+        awaitJsTrue("!document.querySelector('[data-testid=vault-unlock-gate]') && [...document.querySelectorAll('.trusted-servers button')].some(n=>n.textContent.trim()==='Refresh servers')",120_000);
+        assertEquals("one atomic creation, no slot PUT",1,backend.initializations);
+        assertEquals("atomic creation committed header and verifier at the actual epoch",3,new JSONObject(backend.vaultSlots.getJSONObject("vault").getString("data")).getInt("epoch"));
+        assertTrue("new vault has a verifier",backend.initializedAuth!=null);
+        assertFalse("empty vault invents no servers",exists("[data-testid=trusted-server-connect]"));
+        assertFalse("the actual passphrase is never uploaded",backend.initializationBody.contains(phrase));
+        screenshot("onboarding-created-empty-servers");
+        String ciphertext=backend.vaultSlots.toString();
+        click("[data-testid=server-use-local]");
+        awaitJsTrue("document.querySelector('.trusted-servers')?.textContent.includes('SSH without an account')");
+        assertFalse("local mode does not reopen the account vault",exists("[data-testid=vault-unlock-gate]"));
+        click("[data-testid=server-google-login]");
+        awaitJsTrue("!!document.querySelector('[data-testid=vault-unlock-form]')",60_000);
+        assertFalse("the same vault is unlocked rather than created twice",exists("[data-testid=vault-setup]"));
+        setValue("[data-testid=vault-unlock-passphrase]",phrase);
+        click("[data-testid=vault-unlock-submit]");
+        awaitJsTrue("!document.querySelector('[data-testid=vault-unlock-gate]') && [...document.querySelectorAll('.trusted-servers button')].some(n=>n.textContent.trim()==='Refresh servers')",120_000);
+        assertEquals("returning preserves the encrypted vault",ciphertext,backend.vaultSlots.toString());
+        assertEquals("returning never creates a second vault",1,backend.initializations);
+        assertEquals("two setup sheets: initial then explicit reopen after Cancel",2,onboardingGates().getInt("create"));
+        assertEquals("returning from local mode asks once for the existing vault",1,onboardingGates().getInt("unlock"));
+        screenshot("onboarding-created-vault-reopened");
+        Log.i(TAG,"ONBOARDING_CREATED "+new JSONObject().put("epoch",backend.vaultEpoch).put("initializations",backend.initializations)
+                .put("initializeAttempts",backend.initializeAttempts).put("createGates",onboardingGates().getInt("create"))
+                .put("unlockGates",onboardingGates().getInt("unlock")).put("interactive",google.interactiveCalls)
+                .put("ciphertextPreserved",true).put("plaintextUploaded",false).put("emptyServers",true));
+    }
+
+    @Test
     public void recoversNativeAuthLossWithoutSignOutAndPreservesVaultTrustBeforeRealTerminal() throws Exception {
         selectVariant("active");
         String fingerprint = authorizeVault("authloss-authorize");
@@ -459,7 +566,7 @@ public final class GatewayDockerJourneyTest {
         // A normal Refresh crosses real native account verification and triggers silent renewal.
         google.silentRenewFailure = true;
         backend.rejectNext("/me");
-        click(".trusted-servers .btn-ghost");
+        refreshServers();
         awaitAuthLossGoogleAction();
         assertEquals("exactly one native provider renewal failed", 1, google.silentFailures);
         assertEquals("the /me challenge was consumed", 1, backend.authChallenges);
@@ -577,6 +684,32 @@ public final class GatewayDockerJourneyTest {
             Thread.sleep(100);
         } while (SystemClock.uptimeMillis() < deadline);
         throw new AssertionError("independent Docker terminal file missing or wrong: " + reply);
+    }
+
+    private JSONObject awaitOnboardingHostFile(String name,String content) throws Exception {
+        long deadline=SystemClock.uptimeMillis()+WAIT_TIMEOUT_MILLIS;
+        JSONObject reply;
+        do {
+            reply=controller(new JSONObject().put("op","host-file").put("name",name).put("phase","onboarding-io"));
+            if(reply.optBoolean("exists") && "regular".equals(reply.optString("type")) && reply.optInt("readExitCode",-1)==0
+                    && content.equals(reply.optString("content").trim())) return reply;
+            Thread.sleep(100);
+        } while(SystemClock.uptimeMillis()<deadline);
+        throw new AssertionError("independent onboarding terminal file missing or wrong: "+reply);
+    }
+
+    private void observeOnboardingGates() throws Exception {
+        evalRaw("(() => {window.__gwOnboardingGates={create:0,unlock:0};const seen=new WeakSet();"
+                +"const record=()=>{for(const gate of document.querySelectorAll('[data-testid=vault-unlock-gate]')){"
+                +"if(seen.has(gate))continue;seen.add(gate);window.__gwOnboardingGates[gate.querySelector('[data-testid=vault-setup]')?'create':'unlock']++;}};"
+                +"new MutationObserver(record).observe(document.body,{childList:true,subtree:true});record();return 'observing';})()");
+    }
+
+    private JSONObject onboardingGates() throws Exception {return new JSONObject(evalString("JSON.stringify(window.__gwOnboardingGates)"));}
+
+    private void refreshServers() throws Exception {
+        evalString("(() => {const b=[...document.querySelectorAll('.trusted-servers button')].find(n=>n.textContent.trim()==='Refresh servers');"
+                +"if(!b)throw new Error('no Refresh servers action');b.click();return 'clicked';})()");
     }
 
     /** Metadata-only PTY witness; forwards original native arguments/results unchanged. */
@@ -958,6 +1091,15 @@ public final class GatewayDockerJourneyTest {
         JSONObject vaultSlots;
         int writes;
         volatile int trustedReads;
+        volatile boolean unavailableMe;
+        volatile boolean atomicInitialization;
+        volatile boolean unavailableInitialize;
+        volatile int vaultEpoch=1;
+        volatile int meReads;
+        volatile int initializations;
+        volatile int initializeAttempts;
+        volatile String initializedAuth;
+        volatile String initializationBody;
         private String nextUnauthorizedPath;
         volatile int authChallenges;
         synchronized void rejectNext(String path) { nextUnauthorizedPath = path; }
@@ -989,8 +1131,38 @@ public final class GatewayDockerJourneyTest {
                 return new GoogleSyncSession.Response(401, "{\"message\":\"Unauthorized\"}");
             }
             try {
-                if ("GET".equals(method) && "/me".equals(path)) return new GoogleSyncSession.Response(200,
-                        new JSONObject().put("sub", hello.getString("sub")).put("email", hello.getString("email")).toString());
+                if ("GET".equals(method) && "/me".equals(path)) {
+                    if(unavailableMe) return new GoogleSyncSession.Response(503,"{\"message\":\"account service unavailable\"}");
+                    meReads++;
+                    return new GoogleSyncSession.Response(200,new JSONObject().put("sub", hello.getString("sub")).put("email", hello.getString("email")).toString());
+                }
+                if(atomicInitialization && "GET".equals(method) && "/vault/status".equals(path)) {
+                    JSONObject status=new JSONObject().put("epoch",vaultEpoch).put("hasVerifier",initializedAuth!=null).put("retryAfter",0);
+                    if(vaultSlots.has("vault")) status.put("kdf",new JSONObject(vaultSlots.getJSONObject("vault").getString("data")).getJSONObject("kdf"));
+                    return new GoogleSyncSession.Response(200,status.toString());
+                }
+                if(atomicInitialization && "POST".equals(method) && "/vault/initialize".equals(path)) {
+                    initializeAttempts++;
+                    if(unavailableInitialize) return new GoogleSyncSession.Response(503,"{\"error\":\"vault_not_configured\"}");
+                    JSONObject request=new JSONObject(body);
+                    if(request.length()!=3 || !request.has("data") || !request.has("auth") || !request.has("epoch")
+                            || !request.getString("auth").matches("[A-Za-z0-9_-]{43}")) return new GoogleSyncSession.Response(400,"{\"error\":\"invalid_request\"}");
+                    JSONObject header=new JSONObject(request.getString("data"));
+                    if(request.getInt("epoch")!=vaultEpoch || header.getInt("epoch")!=vaultEpoch) return new GoogleSyncSession.Response(409,"{\"error\":\"epoch_mismatch\"}");
+                    if(initializedAuth!=null || vaultSlots.has("vault")) return new GoogleSyncSession.Response(409,"{\"error\":\"vault_exists\"}");
+                    if(header.getInt("v")!=1 || !"argon2id".equals(header.getJSONObject("kdf").getString("alg"))
+                            || !header.has("wrappedDek") || !header.has("check") || !header.has("index")) return new GoogleSyncSession.Response(400,"{\"error\":\"invalid_request\"}");
+                    // One synchronized fixture transaction, matching the native backend edge:
+                    // either both header and verifier exist, or neither does.
+                    vaultSlots.put("vault",new JSONObject().put("version",1).put("data",request.getString("data")));
+                    initializedAuth=request.getString("auth");initializationBody=body;initializations++;writes++;
+                    return new GoogleSyncSession.Response(201,new JSONObject().put("ok",true).put("version",1).put("epoch",vaultEpoch).toString());
+                }
+                if(atomicInitialization && "POST".equals(method) && "/vault/verify".equals(path)) {
+                    if(initializedAuth==null) return new GoogleSyncSession.Response(404,"{\"error\":\"no_verifier\"}");
+                    boolean matches=MessageDigest.isEqual(initializedAuth.getBytes(StandardCharsets.US_ASCII),new JSONObject(body).optString("auth").getBytes(StandardCharsets.US_ASCII));
+                    return new GoogleSyncSession.Response(matches?200:401,matches?new JSONObject().put("ok",true).put("epoch",vaultEpoch).toString():"{\"error\":\"wrong_passphrase\",\"retryAfter\":0}");
+                }
                 if ("GET".equals(method) && "/settings".equals(path)) {
                     JSONArray slots = new JSONArray();
                     if (vaultSlots != null) {
@@ -1026,6 +1198,7 @@ public final class GatewayDockerJourneyTest {
                 }
                 if ("PUT".equals(method) || "DELETE".equals(method)) writes += 1;
                 if ("GET".equals(method) && "/settings/main".equals(path)) {
+                    if(data==null) return new GoogleSyncSession.Response(404,"{\"message\":\"no slot\"}");
                     return new GoogleSyncSession.Response(200, new JSONObject().put("slot", "main").put("version", 1)
                             .put("data", data).toString());
                 }
