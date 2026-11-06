@@ -31,6 +31,10 @@ export interface GoogleSyncNative {
   signIn(): Promise<GoogleSyncStatus>;
   signOut(): Promise<GoogleSyncStatus>;
   request(request: GoogleSyncRequest): Promise<GoogleSyncHttpResponse>;
+  /** Verified public account identity; no token crosses the boundary. */
+  accountId?(): Promise<unknown>;
+  /** Confirmed native auth loss; consumer cleanup is awaited before request rejection. */
+  onAuthLost?(listener: () => void | Promise<void>): () => void;
 }
 
 /** Stable native rejection codes (SyncAuthException.java). */
@@ -73,12 +77,49 @@ export function parseGoogleSyncResponse(value: unknown): GoogleSyncHttpResponse 
 }
 
 /** Wrap the registered Capacitor plugin with response validation. */
+export function isGoogleAuthLoss(error: unknown): boolean {
+  return isRecord(error) && error.code === 'NOT_SIGNED_IN';
+}
+
 export function createGoogleSyncNative(plugin: NativeGoogleSyncPlugin): GoogleSyncNative {
+  const listeners = new Set<() => void | Promise<void>>();
+  let generation = 0;
+  let loss: Promise<void> | null = null;
+  let authLost = false;
+  async function guarded<T>(operation: () => Promise<T>): Promise<T> {
+    const started = generation;
+    try {
+      const result = await operation();
+      if (started !== generation) throw new Error('Google sign-in changed while the request was running. Try again.');
+      return result;
+    } catch (error) {
+      if (started === generation && !authLost && isGoogleAuthLoss(error)) {
+        // Invalidate old in-flight successes before any consumer awaits cleanup.
+        generation++;
+        authLost = true;
+        loss = Promise.allSettled([...listeners].map(async listener => listener())).then(() => undefined);
+        await loss;
+      } else if (isGoogleAuthLoss(error) && loss) {
+        await loss;
+      }
+      throw error;
+    }
+  }
   return {
-    status: async () => parseGoogleSyncStatus(await plugin.status()),
-    signIn: async () => parseGoogleSyncStatus(await plugin.signIn()),
-    signOut: async () => parseGoogleSyncStatus(await plugin.signOut()),
-    request: async (request) => parseGoogleSyncResponse(await plugin.request({ ...request })),
+    status: () => guarded(async () => parseGoogleSyncStatus(await plugin.status())),
+    signIn: async () => {
+      // An explicit new login owns its generation; late old requests cannot sign it out.
+      generation++;
+      await loss;
+      const result = parseGoogleSyncStatus(await plugin.signIn());
+      authLost = false;
+      loss = null;
+      return result;
+    },
+    signOut: async () => { generation++; loss = null; return parseGoogleSyncStatus(await plugin.signOut()); },
+    accountId: () => guarded(() => plugin.accountId()),
+    request: (request) => guarded(async () => parseGoogleSyncResponse(await plugin.request({ ...request }))),
+    onAuthLost: (listener) => { listeners.add(listener); return () => listeners.delete(listener); },
   };
 }
 
@@ -88,7 +129,7 @@ export const googleSync: GoogleSyncNative = createGoogleSyncNative(nativeGoogleS
 /** Native verifies the subject through the backend authorizer. No JWT or email-derived identity. */
 export async function verifiedGoogleAccountId(): Promise<string | null> {
   if (!(await googleSync.status()).signedIn) return null;
-  const reply = await nativeGoogleSyncPlugin.accountId();
+  const reply = await googleSync.accountId!();
   if (!isRecord(reply) || typeof reply.accountId !== 'string' || !/^google:[0-9A-Za-z_-]{1,128}$/.test(reply.accountId)) {
     throw new Error('The signed-in account could not be verified.');
   }

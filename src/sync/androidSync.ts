@@ -149,6 +149,11 @@ export class AndroidSync {
    * same way).
    */
   private account: SyncHostEntry[] | null = null;
+  private accountGeneration = 0;
+
+  private requireGeneration(generation: number): void {
+    if (generation !== this.accountGeneration) throw new Error('Google account changed while syncing. Try again.');
+  }
 
   constructor(deps: AndroidSyncDeps) {
     this.native = deps.native;
@@ -163,9 +168,13 @@ export class AndroidSync {
   }
 
   async signIn(): Promise<GoogleSyncStatus> {
+    this.clearAccountCache();
     const status = await this.native.signIn();
     return status;
   }
+
+  /** Forget only decrypted session cache; persistent hosts/selection/trust stay intact. */
+  clearAccountCache(): void { this.accountGeneration++; this.account = null; }
 
   /**
    * Native sign-out deletes the token; the cached account copy goes too. The
@@ -173,13 +182,15 @@ export class AndroidSync {
    * (the shared sync store's `logout`, the legacy screen's sign-out).
    */
   async signOut(): Promise<void> {
-    this.account = null;
+    this.clearAccountCache();
     await this.native.signOut();
   }
 
   /** Fetch and decrypt the slot. A missing slot is a fresh account, not an error. */
   async pull(slot: string, passphrase: string): Promise<SyncPullResult> {
+    const generation = this.accountGeneration;
     const response = await this.native.request({ method: 'GET', slot });
+    this.requireGeneration(generation);
     if (response.status === 404) return { kind: 'absent' };
     if (response.status < 200 || response.status > 299) throw new Error(httpFailure(response.status, response.body));
     let parsed: unknown;
@@ -192,22 +203,27 @@ export class AndroidSync {
       || !Number.isSafeInteger(parsed.version) || parsed.version < 0) {
       throw new Error('The sync service returned an unreadable response.');
     }
-    return { kind: 'ok', version: parsed.version, plaintext: await decryptEnvelope(parsed.data, passphrase) };
+    const plaintext = await decryptEnvelope(parsed.data, passphrase);
+    this.requireGeneration(generation);
+    return { kind: 'ok', version: parsed.version, plaintext };
   }
 
   /** Encrypt and upload on a base version (0 creates). 409 is a conflict result, not a throw. */
   async push(slot: string, plaintext: string, passphrase: string, baseVersion: number): Promise<SyncPushResult> {
+    const generation = this.accountGeneration;
     const hosts = await this.phoneOwnedPayload(plaintext);
     const payload = hosts === null ? plaintext : serializeSyncPayload(hosts);
     const envelope = await encryptToEnvelope(payload, passphrase, this.kdfIterations);
     if (new TextEncoder().encode(envelope).length > SYNC_DATA_LIMIT_BYTES) {
       return { kind: 'error', message: 'The encrypted host list is larger than the 8 KB sync limit.' };
     }
+    this.requireGeneration(generation);
     const response = await this.native.request({
       method: 'PUT',
       slot,
       body: JSON.stringify({ data: envelope, version: baseVersion }),
     });
+    this.requireGeneration(generation);
     let parsed: unknown = null;
     try {
       parsed = JSON.parse(response.body);
@@ -277,7 +293,9 @@ export class AndroidSync {
    * the account's hosts are listed again (both shells) after a restart.
    */
   async unlock(passphrase: string): Promise<SyncHostEntry[]> {
+    const generation = this.accountGeneration;
     const pulled = await this.pull(SYNC_SLOT, passphrase);
+    this.requireGeneration(generation);
     this.afterPull(pulled);
     return this.accountHosts() ?? [];
   }
@@ -299,12 +317,14 @@ export class AndroidSync {
    * appear on the phone even when the upload then fails.
    */
   async syncNow(request: SyncNowRequest): Promise<SyncRoundResult> {
+    const generation = this.accountGeneration;
     let pulls = 0;
     const selection: SyncSelectionState = { checked: request.selected, unticked: request.unticked };
     const result = await runSyncRound(request.localHosts.map(phoneOwnedSyncFields), selection, {
       pull: async () => {
         pulls += 1;
         const pulled = await this.pull(SYNC_SLOT, request.passphrase);
+        this.requireGeneration(generation);
         this.afterPull(pulled);
         // A re-pull after a conflict that finds no account means it was
         // cleared mid-sync: stop rather than re-create it.
@@ -313,10 +333,12 @@ export class AndroidSync {
       },
       push: ({ baseVersion, plaintext }) => this.push(SYNC_SLOT, plaintext, request.passphrase, baseVersion ?? 0),
       onPulled: ({ hosts, selectedAliases, untickedAliases }) => {
+        this.requireGeneration(generation);
         this.rememberAccount(hosts);
         request.onSelection?.({ checked: selectedAliases, unticked: untickedAliases });
       },
     });
+    this.requireGeneration(generation);
     if (result.kind !== 'synced') return result;
     // The push carried out every pending untick: they are spent (one-shot).
     request.onSelection?.({ checked: result.selectedAliases, unticked: result.untickedAliases });
@@ -341,7 +363,9 @@ export class AndroidSync {
       login: async () => (await this.signIn()).email,
       logout: () => this.signOut(),
       pull: async (slot, passphrase) => {
+        const generation = this.accountGeneration;
         const pulled = await this.pull(slot, passphrase);
+        this.requireGeneration(generation);
         // Mirror desktop's session cache so the picker can list the account;
         // the shared sync store applies core's tick rule to what it pulled.
         this.afterPull(pulled);

@@ -12,7 +12,10 @@ import AndroidAppRoot from './AndroidAppRoot.vue';
 import './phone.css';
 import { createSharedAppRouter } from './router';
 import { provideKeyVault } from '@ui/app/keyVault';
-import { androidPlatform, keyVaultPlatform } from './platform';
+import { useSyncStore } from '@ui/app/stores/sync';
+import { googleSync } from '@/native/googleSync';
+import { bindAndroidAuthLoss } from '@/platform/android/authLoss';
+import { androidPlatform, keyVaultPlatform, lockAndroidVaultAfterAuthLoss } from './platform';
 import { androidTerminalInputAdapter } from '@/platform/android/terminalImeInput';
 import { ANDROID_MONO_FALLBACK, applyAndroidInsets } from './androidShell';
 
@@ -24,7 +27,7 @@ export function mountSharedApp(target: string | Element): void {
   provideApi(androidPlatform.api);
   // The account key vault (key-vault W4): core's shared unlock sheet, which
   // AppRoot mounts, over the phone's store and Keystore-sealed remember.
-  provideKeyVault(keyVaultPlatform);
+  const vault = provideKeyVault(keyVaultPlatform)!;
   // Android-only behaviour plugs into the shared app's extension points (D42).
   // The soft keyboard's composition reaches the terminal through this adapter
   // (#2952); desktop and web contribute none and keep xterm's own handling.
@@ -45,7 +48,15 @@ export function mountSharedApp(target: string | Element): void {
   });
 
   const router = createSharedAppRouter();
-  app.use(createPinia()).use(router).mount(target);
+  const pinia = createPinia();
+  app.use(pinia).use(router);
+  const sync = useSyncStore(pinia);
+  const releaseAuthLoss = bindAndroidAuthLoss(googleSync, {
+    sync, vault,
+    lockAndroidVault: lockAndroidVaultAfterAuthLoss,
+  });
+  app.onUnmount(releaseAuthLoss);
+  app.mount(target);
 
   // Android Back closes the topmost open layer (an overlay, a prompt), then
   // walks the shared app's history, then leaves the app.

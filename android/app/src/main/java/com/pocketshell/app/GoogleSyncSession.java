@@ -70,6 +70,7 @@ public final class GoogleSyncSession {
         }
     }
 
+    private boolean invalidated;
     private final TokenStore store;
     private final SignInProvider provider;
     private final Transport transport;
@@ -103,10 +104,16 @@ public final class GoogleSyncSession {
     synchronized String verifiedAccountId() throws SyncAuthException {
         String before = currentAccountSubject();
         Response response = request("GET", null, null);
+        if (response.status == 401) {
+            dropExpired();
+            throw new SyncAuthException(SyncAuthException.NOT_SIGNED_IN, "Sign in to verify your account.");
+        }
+        if (response.status != 200) throw new SyncAuthException(SyncAuthException.NETWORK, "Account verification is temporarily unavailable.");
         String verifiedSubject;
         try { verifiedSubject = new org.json.JSONObject(response.body).getString("sub"); }
-        catch (Exception invalid) { throw new SyncAuthException(SyncAuthException.NOT_SIGNED_IN, "Account verification failed."); }
+        catch (Exception invalid) { throw new SyncAuthException(SyncAuthException.INVALID_REQUEST, "Account verification returned an invalid response."); }
         if (response.status != 200 || !before.equals(verifiedSubject) || !before.equals(currentAccountSubject())) {
+            dropExpired();
             throw new SyncAuthException(SyncAuthException.NOT_SIGNED_IN, "Sign in to verify your account.");
         }
         if (!before.matches("[0-9A-Za-z_-]{1,128}")) throw invalid();
@@ -278,18 +285,22 @@ public final class GoogleSyncSession {
         try {
             next = GoogleIdToken.parse(provider.obtainIdToken(false));
         } catch (SyncAuthException error) {
+            // Cancellation/offline failure does not establish lost authorization.
+            // Keep the account record for explicit retry, without retrying automatically.
+            if (SyncAuthException.CANCELLED.equals(error.code) || SyncAuthException.NETWORK.equals(error.code)) throw error;
             dropExpired();
-            throw new SyncAuthException(SyncAuthException.NOT_SIGNED_IN, "Your Google sign-in expired. Sign in again.");
+            throw new SyncAuthException(SyncAuthException.NOT_SIGNED_IN, "Your Google sign-in could not be renewed. Sign in again.");
         }
         if (!next.subject.equals(previous.subject) || next.isExpired(nowEpochSeconds.getAsLong())) {
             dropExpired();
-            throw new SyncAuthException(SyncAuthException.NOT_SIGNED_IN, "Your Google sign-in expired. Sign in again.");
+            throw new SyncAuthException(SyncAuthException.NOT_SIGNED_IN, "Your Google sign-in could not be renewed. Sign in again.");
         }
         write(next.token);
         return next;
     }
 
     private void dropExpired() {
+        invalidated = true;
         try {
             store.clear();
         } catch (IOException ignored) {
@@ -298,6 +309,7 @@ public final class GoogleSyncSession {
     }
 
     private GoogleIdToken storedToken() throws SyncAuthException {
+        if (invalidated) return null;
         String raw;
         try {
             raw = store.read();
@@ -317,6 +329,7 @@ public final class GoogleSyncSession {
     private void write(String token) throws SyncAuthException {
         try {
             store.write(token);
+            invalidated = false;
         } catch (IOException error) {
             throw new SyncAuthException(SyncAuthException.STORAGE, "The Google sign-in could not be saved to secure storage.");
         }

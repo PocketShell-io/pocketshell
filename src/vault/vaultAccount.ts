@@ -21,7 +21,7 @@ import type {
   VaultSlotTransport,
   VaultVerifyResult,
 } from '@pocketshell/core';
-import type { GoogleSyncNative } from '@/native/googleSync';
+import { isGoogleAuthLoss, type GoogleSyncNative } from '@/native/googleSync';
 
 export const ANDROID_VAULT_READ_ONLY = 'PocketShell for Android does not change the key vault. Use the PocketShell web app.';
 
@@ -79,7 +79,7 @@ export function authToWire(auth: Uint8Array): string {
 export function createVaultServerVerifier(native: GoogleSyncNative): VaultServerVerifier {
   return {
     async status(): Promise<VaultServerStatus> {
-      const response = await native.request({ method: 'GET', endpoint: 'vault/status' }).catch(() => null);
+      const response = await native.request({ method: 'GET', endpoint: 'vault/status' }).catch((error: unknown) => { if (isGoogleAuthLoss(error)) throw error; return null; });
       if (!response || response.status !== 200) return { kind: 'unavailable' };
       const body = parseJson(response.body);
       if (!isRecord(body) || !isCount(body.epoch) || typeof body.hasVerifier !== 'boolean') return { kind: 'unavailable' };
@@ -91,7 +91,7 @@ export function createVaultServerVerifier(native: GoogleSyncNative): VaultServer
     async verify(auth): Promise<VaultVerifyResult> {
       const wire = authToWire(auth);
       const response = await native.request({ method: 'POST', endpoint: 'vault/verify', body: JSON.stringify({ auth: wire }) })
-        .catch(() => null);
+        .catch((error: unknown) => { if (isGoogleAuthLoss(error)) throw error; return null; });
       if (!response) return { kind: 'unavailable' };
       const body = parseJson(response.body);
       const code = errorCode(response.body);

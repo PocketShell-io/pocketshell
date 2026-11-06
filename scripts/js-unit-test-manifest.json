@@ -594,7 +594,11 @@
         "turns sync API refusals into plain words and refuses an envelope over the 8 KB limit before sending",
         "signing out deletes the native sign-in and the cached account copy",
         "serves the shared app's api.sync group from the same adapter",
-        "accepts only signed-in state from the native plugin, never a token field"
+        "accepts only signed-in state from the native plugin, never a token field",
+        "notifies confirmed native auth loss once and permits normal sign-in without sign-out",
+        "keeps network cancellation successful requests and wrong-passphrase responses out of auth loss",
+        "rejects late successes from the lost generation without invalidating a fresh login",
+        "refuses old decrypted account results after auth loss and a different login"
       ]
     },
     "tests/unit/devBrowserCapacitor.test.ts": {
@@ -1012,6 +1016,16 @@
       "tests": [
         "creates an ordinary home shell from a canonical POSIX or Windows SFTP directory through the controller",
         "reuses an existing ordinary shell and never creates one after canonicalization fails"
+      ]
+    },
+    "tests/unit/androidAuthLoss.test.ts": {
+      "suite": "Android native auth loss shared-store custody",
+      "tests": [
+        "cancels an in-flight unlock and restores normal login without deleting encrypted vault or remembered trust",
+        "does not cancel or lock a signed-in consumer for ordinary network or provider cancellation",
+        "rejects pre-loss status completion without resurrecting the actual shared signed-in display",
+        "keeps a later different login when obsolete signed-in or signed-out status completes out of order",
+        "binds auth loss in the actual shared bootstrap to transient-only Android cleanup"
       ]
     }
   }

@@ -141,6 +141,46 @@ public final class GoogleSyncSessionTest {
         assertTrue(transport.requests.isEmpty());
     }
 
+    @Test public void cancellationAndNetworkDuringRenewalPreserveTheAccountWithoutRetry() throws Exception {
+        for (String code : List.of(SyncAuthException.CANCELLED, SyncAuthException.NETWORK)) {
+            setUp();
+            String previous = token("sub-1", "phone@example.com", NOW - 10, "TRANSIENT");
+            store.value = previous;
+            signIn.failure = new SyncAuthException(code, "safe transient error");
+            try { session.request("GET", "main", null); fail("transient error"); }
+            catch (SyncAuthException expected) { assertEquals(code, expected.code); }
+            assertEquals(previous, store.value);
+            assertTrue(session.status().signedIn);
+            assertEquals(List.of(false), signIn.interactive);
+            assertTrue(transport.requests.isEmpty());
+        }
+    }
+
+    @Test public void failedRenewalInvalidatesMemoryEvenIfDeletingCredentialFailsAndLoginRecovers() throws Exception {
+        store.value = token("sub-1", "phone@example.com", NOW - 10, "STALE");
+        store.failClear = true;
+        signIn.failure = new SyncAuthException(SyncAuthException.UNAVAILABLE, "no credential");
+        assertTrue(session.status().signedIn);
+        try { session.request("GET", "main", null); fail("renewal"); }
+        catch (SyncAuthException expected) { assertEquals(SyncAuthException.NOT_SIGNED_IN, expected.code); }
+        assertFalse(session.status().signedIn);
+        try { session.currentAccountSubject(); fail("invalidated account"); }
+        catch (SyncAuthException expected) { assertEquals(SyncAuthException.NOT_SIGNED_IN, expected.code); }
+        signIn.failure = null;
+        signIn.tokens.add(token("sub-1", "phone@example.com", NOW + 3600, "FRESH"));
+        assertTrue(session.signIn().signedIn);
+        assertEquals("sub-1", session.currentAccountSubject());
+    }
+
+    @Test public void ordinaryVerificationServerErrorsDoNotInvalidateTheAccount() throws Exception {
+        store.value = token("sub-1", "phone@example.com", NOW + 3600, "VALID");
+        transport.responses.add(new GoogleSyncSession.Response(503, "unavailable"));
+        try { session.verifiedAccountId(); fail("server failure"); }
+        catch (SyncAuthException expected) { assertEquals(SyncAuthException.NETWORK, expected.code); }
+        assertTrue(session.status().signedIn);
+        assertTrue(signIn.interactive.isEmpty());
+    }
+
     @Test public void aRenewalForAnotherGoogleAccountIsRefused() throws Exception {
         store.value = token("sub-1", "phone@example.com", NOW - 10, "ACCOUNTONE6");
         signIn.tokens.add(token("sub-2", "other@example.com", NOW + 3600, "ACCOUNTTWO6"));
@@ -284,6 +324,7 @@ public final class GoogleSyncSessionTest {
 
     private static final class MemoryStore implements GoogleSyncSession.TokenStore {
         String value;
+        boolean failClear;
 
         @Override public String read() {
             return value;
@@ -293,7 +334,8 @@ public final class GoogleSyncSessionTest {
             value = token;
         }
 
-        @Override public void clear() {
+        @Override public void clear() throws IOException {
+            if (failClear) throw new IOException("fixture clear failure");
             value = null;
         }
     }

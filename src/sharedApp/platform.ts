@@ -116,6 +116,13 @@ export const androidVault = createAndroidVault({
   },
 });
 
+/** Auth loss locks transient credentials; it must not invoke sign-out's forgetAll. */
+export function lockAndroidVaultAfterAuthLoss(): Promise<void> {
+  vaultSync.passphrase = '';
+  androidSync().clearAccountCache();
+  return androidVault.lock();
+}
+
 const syncApi: typeof baseSyncApi = {
   ...baseSyncApi,
   // Signing out locks the vault, wipes the held keys and forgets this
