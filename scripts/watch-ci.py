@@ -170,7 +170,7 @@ _SIGNATURE_PATTERNS = [
     re.compile(r"^.*\bBUILD FAILED\b.*$"),
     re.compile(r"^.*\bFAILED\b.*$"),
     re.compile(r"^.*\bFAIL\b\s+—.*$"),
-    re.compile(r"^.*\b(Exception|Traceback)\b.*$"),
+    re.compile(r"^.*\b(AssertionError|Exception|Traceback)\b.*$"),
     re.compile(r"^.*\b(Install|installing).*\bfailed\b.*$", re.IGNORECASE),
     re.compile(r"^.*\bTests? (failed|FAILED)\b.*$"),
 ]
@@ -189,11 +189,13 @@ _INFRA_SIGNATURE_PATTERNS = [
     re.compile(r"Process crashed", re.IGNORECASE),
     re.compile(r"signal[ -]?9", re.IGNORECASE),
     re.compile(r"\bSIGKILL\b"),
-    re.compile(r"emulator.*(boot|timeout)", re.IGNORECASE),
+    # Launch configuration (-no-boot-anim / -gpu swiftshader_indirect) and
+    # successful boot output are not failures (#3109).
+    re.compile(r"\bemulator\b.*(?:(?:boot|startup)\s+(?:has\s+)?(?:timed out|failed|failure)\b|(?:boot|startup)\s+timeout\s+(?:after|exceeded|expired)\b|(?:failed to|did not)\s+(?:boot|start)\b)", re.IGNORECASE),
     re.compile(r"(Timed out|Timeout) waiting for (emulator|device)", re.IGNORECASE),
     re.compile(r"docker.*(fixture|compose).*(fail|error)", re.IGNORECASE),
     re.compile(r"Could not (connect|resolve) to (github|registry)", re.IGNORECASE),
-    re.compile(r"swiftshader", re.IGNORECASE),
+    re.compile(r"(?:\bswiftshader\b.*(?:fail|error|fatal|crash)|(?:fail|error|fatal|crash|could not).*\bswiftshader\b)", re.IGNORECASE),
 ]
 
 
@@ -289,7 +291,9 @@ def extract_signature(log_text: str, *, annotations_only: bool = False) -> Optio
     1. A runner-emitted `##[error]` annotation with real diagnostic content.
        This is the strongest anchor: the runner only writes it when a step
        actually failed, so it cannot come from unexecuted script text.
-    2. The heuristic error-line patterns, but ONLY over lines that are not
+    2. An executed test AssertionError, ahead of incidental infrastructure
+       output from earlier recovered attempts within the failed step (#3109).
+    3. The heuristic error-line patterns, but ONLY over lines that are not
        GitHub command-echo (script body). Skipped entirely when
        `annotations_only` is set.
 
@@ -321,7 +325,13 @@ def extract_signature(log_text: str, *, annotations_only: bool = False) -> Optio
     if annotations_only:
         return None
 
-    # 2. Heuristic scan over executed output only.
+    # An assertion in the failed step is more specific than an infrastructure
+    # hint from an earlier recovered attempt in that same step (#3109).
+    for line in executed:
+        if re.match(r"^(?:java\.lang\.)?AssertionError(?::|$)", line):
+            return line
+
+    # 3. Heuristic scan over executed output only.
     for line in executed:
         for pat in _SIGNATURE_PATTERNS:
             if pat.match(line):
@@ -1465,6 +1475,33 @@ def self_test() -> int:
             is None,
         ),
     ]
+    # Real #3109 failure: ordinary launch flags preceded executed JUnit output.
+    launch = "emulator-options: -no-window -gpu swiftshader_indirect -no-boot-anim\nemulator-boot-timeout: 900\nEmulator boot timeout: 900"
+    assertion = "java.lang.AssertionError: A is attached exactly once expected:<1> but was:<0>"
+    boot_failure = "emulator: boot timed out after 600 seconds"
+    renderer_failure = "ERROR: Failed to initialize SwiftShader renderer"
+    cases.extend([
+        ("normal emulator launch flags are not infrastructure failure evidence",
+         lambda: extract_signature(launch) is None and not is_likely_infra(launch)),
+        ("an earlier infrastructure line cannot hide an executed test assertion",
+         lambda: extract_signature("INSTRUMENTATION_RESULT: shortMsg=Process crashed.\n" + assertion) == assertion
+         and not is_likely_infra(extract_signature("INSTRUMENTATION_RESULT: shortMsg=Process crashed.\n" + assertion))),
+        ("ordinary launch options cannot hide the executed source-test assertion",
+         lambda: extract_signature(launch + "\n" + assertion) == assertion
+         and not is_likely_infra(extract_signature(launch + "\n" + assertion))),
+        ("successful emulator boot and renderer setup are not failures",
+         lambda: extract_signature("emulator: boot completed\nSwiftShader renderer initialized") is None),
+        ("genuine emulator boot timeout remains classified",
+         lambda: extract_signature(boot_failure) == boot_failure and is_likely_infra(boot_failure)),
+        ("genuine SwiftShader renderer failure remains classified",
+         lambda: extract_signature(renderer_failure) == renderer_failure and is_likely_infra(renderer_failure)),
+        ("whole-run fallback still requires an actual runner annotation",
+         lambda: extract_signature(assertion, annotations_only=True) is None),
+        ("actual runner diagnostic keeps priority over test assertion",
+         lambda: extract_signature(assertion + "\n##[error] actual runner diagnostic") == "actual runner diagnostic"),
+        ("echoed infrastructure failure cannot replace executed assertion evidence",
+         lambda: extract_signature("\x1b[36;1m" + renderer_failure + "\n" + assertion) == assertion),
+    ])
     failures = 0
     for i, (label, check) in enumerate(cases, 1):
         try:
