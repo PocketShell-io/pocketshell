@@ -819,17 +819,124 @@ public final class SharedAccountPickerJourneyTest {
                 else { preserveVaultFailure("shared-picker-signed-in-locked.png", failure); throw failure; }
             }
         }
-        long focusDeadline = SystemClock.uptimeMillis() + WAIT_TIMEOUT_MILLIS;
-        AtomicReference<Boolean> focused = new AtomicReference<>(false);
-        while (!focused.get() && SystemClock.uptimeMillis() < focusDeadline) {
-            scenario.onActivity(activity -> focused.set(activity.hasWindowFocus()));
-            Thread.sleep(50);
-        }
-        assertTrue("owned Activity must regain window focus after dialog dismissal", focused.get());
-        // Dialog focus can dismiss the IME; explicitly restore focus via the same actual input.
-        tapDomCenter("[data-testid=vault-unlock-passphrase]");
-        awaitVaultScreenshotReady();
+        restoreVaultInputWithOneTracedTap();
         Log.i(TAG, "VAULT_SCREENSHOT_NATIVE_NEGATIVES clipped=reject occluded=reject restored=ready");
+    }
+
+    /** Observe native/window/DOM stability without forcing focus, IME or viewport state. */
+    private String vaultRestorationSnapshot() throws Exception {
+        String encoded = evalString(vaultScreenshotGeometry());
+        if (encoded == null || "null".equals(encoded)) return null;
+        JSONObject state = new JSONObject(encoded);
+        AtomicReference<String> snapshot = new AtomicReference<>();
+        scenario.onActivity(activity -> {
+            WebView view = findWebView(activity.getWindow().getDecorView());
+            WindowInsets insets = view.getRootWindowInsets();
+            if (!activity.hasWindowFocus() || !view.hasWindowFocus() || view.isLayoutRequested()
+                    || view.getRootView().isLayoutRequested() || !imeAnimations.isEmpty() || insets == null) return;
+            Rect visible = new Rect(), window = new Rect();
+            if (!view.getGlobalVisibleRect(visible)) return;
+            view.getWindowVisibleDisplayFrame(window);
+            if (!visible.intersect(window)) return;
+            int[] location = new int[2];
+            view.getLocationOnScreen(location);
+            int imeBottom = insets.getInsets(WindowInsets.Type.ime()).bottom;
+            int keyboardTop = activity.getWindowManager().getCurrentWindowMetrics().getBounds().bottom - imeBottom;
+            visible.bottom = Math.min(visible.bottom, keyboardTop);
+            try {
+                double ratio = view.getWidth() / state.getDouble("width"), zoom = state.getDouble("viewportScale");
+                JSONArray boxes = state.getJSONArray("boxes");
+                for (int i = 0; i < boxes.length(); i++) {
+                    JSONArray box = boxes.getJSONArray(i);
+                    double left = vaultNativeCoordinate(box.getDouble(0), state.getDouble("offsetLeft"), ratio, zoom, location[0]);
+                    double top = vaultNativeCoordinate(box.getDouble(1), state.getDouble("offsetTop"), ratio, zoom, location[1]);
+                    double right = vaultNativeCoordinate(box.getDouble(2), state.getDouble("offsetLeft"), ratio, zoom, location[0]);
+                    double bottom = vaultNativeCoordinate(box.getDouble(3), state.getDouble("offsetTop"), ratio, zoom, location[1]);
+                    if (left < visible.left || top < visible.top || right > visible.right || bottom > visible.bottom) return;
+                }
+                state.put("nativeX", location[0]).put("nativeY", location[1]).put("nativeWidth", view.getWidth())
+                        .put("nativeHeight", view.getHeight()).put("nativeVisible", visible.flattenToString())
+                        .put("windowBounds", activity.getWindowManager().getCurrentWindowMetrics().getBounds().flattenToString())
+                        .put("imeVisible", insets.isVisible(WindowInsets.Type.ime())).put("imeBottom", imeBottom)
+                        .put("activityFocus", activity.hasWindowFocus()).put("webViewFocus", view.hasWindowFocus())
+                        .put("rootFocus", view.getRootView().hasWindowFocus());
+                snapshot.set(state.toString());
+            } catch (org.json.JSONException invalid) { throw new IllegalStateException(invalid); }
+        });
+        return snapshot.get();
+    }
+
+    private void restoreVaultInputWithOneTracedTap() throws Exception {
+        long deadline = SystemClock.uptimeMillis() + WAIT_TIMEOUT_MILLIS;
+        String previous = null, stableSnapshot = null;
+        ScreenshotGuard.Frame before = null;
+        int stable = 0;
+        while (SystemClock.uptimeMillis() < deadline) {
+            String current = vaultRestorationSnapshot();
+            stable = current != null && current.equals(previous) ? stable + 1 : 0;
+            previous = current;
+            if (stable >= 3) {
+                before = renderedScreenshot("vault-dialog-restoration-before-tap");
+                if (current.equals(vaultRestorationSnapshot())) { stableSnapshot = current; break; }
+                stable = 0;
+            }
+            Thread.sleep(100); // Poll observed layout/animation state; never tap on a timer.
+        }
+        assertNotNull("Dialog restoration must stabilize real window, IME, layout and essential control bounds before its sole tap", stableSnapshot);
+        writeScreenshot("shared-picker-dialog-restore-before-tap.png", before.bytes);
+        JSONObject snapshot = new JSONObject(stableSnapshot);
+        JSONArray input = snapshot.getJSONArray("boxes").getJSONArray(0);
+        double ratio = snapshot.getDouble("nativeWidth") / snapshot.getDouble("width");
+        float x = (float) vaultNativeCoordinate((input.getDouble(0) + input.getDouble(2)) / 2,
+                snapshot.getDouble("offsetLeft"), ratio, snapshot.getDouble("viewportScale"), snapshot.getInt("nativeX"));
+        float y = (float) vaultNativeCoordinate((input.getDouble(1) + input.getDouble(3)) / 2,
+                snapshot.getDouble("offsetTop"), ratio, snapshot.getDouble("viewportScale"), snapshot.getInt("nativeY"));
+        evalRaw("(() => {const input=document.querySelector('[data-testid=vault-unlock-passphrase]');"
+                + "window.__vaultRestoreAbort?.abort();const abort=window.__vaultRestoreAbort=new AbortController();"
+                + "const trace=window.__vaultRestoreTap={events:[],focusedBefore:document.activeElement===input};"
+                + "for(const type of ['pointerdown','pointerup','click','focusin'])document.addEventListener(type,e=>{"
+                + "if(trace.events.length<8)trace.events.push({type,input:e.target===input,trusted:e.isTrusted,x:e.clientX??null,y:e.clientY??null});"
+                + "},{capture:true,signal:abort.signal});return 'armed';})()");
+        Log.i(TAG, "VAULT_RESTORE_TAP_BEFORE " + snapshot.put("tapNativeX", x).put("tapNativeY", y)
+                .put("frameDigest", Base64.getEncoder().encodeToString(before.contentDigest)));
+        try {
+            PhysicalTap.Result tap = PhysicalTap.tap(x, y); // Exactly ONE physical input tap, no retries or focus/IME injection.
+            Log.i(TAG, "VAULT_RESTORE_TAP_DISPATCH down=" + tap.downInjected + " up=" + tap.upInjected
+                    + " downTime=" + tap.downTime + " upTime=" + tap.upEventTime);
+            awaitJsTrue("document.activeElement===document.querySelector('[data-testid=vault-unlock-passphrase]')");
+            awaitJsTrue("(() => {const e=window.__vaultRestoreTap.events.filter(e=>e.type!=='focusin');"
+                    + "return ['pointerdown','pointerup','click'].every(t=>e.filter(e=>e.type===t).length===1)"
+                    + "&&e.every(e=>e.input&&e.trusted);})()");
+            awaitVaultScreenshotReady();
+        } finally {
+            // Metadata-only evidence even when the actual focus/IME restoration fails.
+            try {
+                AtomicReference<String> nativeAfter = new AtomicReference<>();
+                scenario.onActivity(activity -> {
+                    WebView view = findWebView(activity.getWindow().getDecorView());
+                    WindowInsets insets = view.getRootWindowInsets();
+                    Rect visible = new Rect();
+                    view.getGlobalVisibleRect(visible);
+                    try {
+                        nativeAfter.set(new JSONObject().put("activityFocus", activity.hasWindowFocus())
+                                .put("webViewFocus", view.hasWindowFocus()).put("rootFocus", view.getRootView().hasWindowFocus())
+                                .put("imeVisible", insets != null && insets.isVisible(WindowInsets.Type.ime()))
+                                .put("imeBottom", insets == null ? 0 : insets.getInsets(WindowInsets.Type.ime()).bottom)
+                                .put("imeAnimations", imeAnimations.size()).put("layoutPending", view.isLayoutRequested())
+                                .put("nativeWidth", view.getWidth()).put("nativeHeight", view.getHeight())
+                                .put("nativeVisible", visible.flattenToString()).toString());
+                    } catch (org.json.JSONException invalid) { throw new IllegalStateException(invalid); }
+                });
+                Log.i(TAG, "VAULT_RESTORE_NATIVE_AFTER " + nativeAfter.get());
+                ScreenshotGuard.Frame after = renderedScreenshot("vault-dialog-restoration-after-tap");
+                writeScreenshot("shared-picker-dialog-restore-after-tap.png", after.bytes);
+                Log.i(TAG, "VAULT_RESTORE_FRAME_AFTER " + Base64.getEncoder().encodeToString(after.contentDigest));
+            } catch (Throwable diagnosticFailure) { Log.w(TAG, "restoration native trace unavailable: " + diagnosticFailure.getClass().getSimpleName()); }
+            try { Log.i(TAG, "VAULT_RESTORE_TAP_AFTER " + evalString("JSON.stringify({trace:window.__vaultRestoreTap,inputFocused:document.activeElement===document.querySelector('[data-testid=vault-unlock-passphrase]')})")); }
+            catch (Throwable diagnosticFailure) { Log.w(TAG, "restoration DOM trace unavailable: " + diagnosticFailure.getClass().getSimpleName()); }
+            try { evalRaw("window.__vaultRestoreAbort?.abort(); 'stopped'"); }
+            catch (Throwable ignored) { /* Preserve any original focus/IME failure. */ }
+        }
     }
 
     private void captureScreenshot(String name, String markerSelector) throws Exception {
