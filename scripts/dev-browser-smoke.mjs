@@ -349,6 +349,59 @@ async function mockJourneys(browser, base, smoke) {
     return `shared-${marker}`;
   });
 
+  await smoke.step('shared: the rendered terminal stays inside the root content box across platform insets and viewport sizes', async () => {
+    const cases = [
+      { name: 'portrait-bars', width: 393, height: 851, top: 50, bottom: 24 },
+      { name: 'landscape-bars', width: 851, height: 393, top: 24, bottom: 24 },
+      { name: 'resized-ime', width: 393, height: 480, top: 50, bottom: 0 },
+      { name: 'desktop', width: 900, height: 700, top: 0, bottom: 0 },
+    ];
+    const measured = [];
+    try {
+      for (const item of cases) {
+        await sharedPage.setViewportSize({ width: item.width, height: item.height });
+        await sharedPage.evaluate(({ top, bottom }) => {
+          document.documentElement.style.setProperty('--ps-inset-top', `${top}px`);
+          document.documentElement.style.setProperty('--ps-inset-bottom', `${bottom}px`);
+        }, item);
+        const measure = () => sharedPage.evaluate(() => {
+          const rect = element => { const r = element.getBoundingClientRect(); return { top: r.top, bottom: r.bottom, left: r.left, right: r.right, height: r.height }; };
+          const style = getComputedStyle(document.body);
+          const safe = { top: parseFloat(style.paddingTop), bottom: innerHeight - parseFloat(style.paddingBottom), left: parseFloat(style.paddingLeft), right: innerWidth - parseFloat(style.paddingRight) };
+          const screen = [...document.querySelectorAll('.xterm-screen')].find(element => element.offsetParent !== null);
+          return { safe, app: rect(document.querySelector('#app')), workspace: rect(document.querySelector('.workspace')), terminal: rect(screen) };
+        });
+        try {
+          await sharedPage.waitForFunction(() => {
+            const style = getComputedStyle(document.body), bottom = innerHeight - parseFloat(style.paddingBottom);
+            const app = document.querySelector('#app').getBoundingClientRect();
+            const terminal = [...document.querySelectorAll('.xterm-screen')].find(element => element.offsetParent !== null)?.getBoundingClientRect();
+            return terminal && app.top >= parseFloat(style.paddingTop) && app.bottom <= bottom && terminal.bottom <= bottom;
+          }, null, { timeout: 5_000 });
+          const geometry = await measure();
+          for (const [name, rect] of Object.entries(geometry).filter(([name]) => name !== 'safe')) {
+            if (rect.top < geometry.safe.top || rect.bottom > geometry.safe.bottom || rect.left < geometry.safe.left || rect.right > geometry.safe.right) {
+              throw new Error(`${name} exceeds the safe content box`);
+            }
+          }
+          measured.push({ name: item.name, ...geometry });
+          await shot(sharedPage, smoke, `shared-viewport-${item.name}`);
+        } catch (error) {
+          await shot(sharedPage, smoke, `shared-viewport-${item.name}-failure`);
+          throw new Error(`${item.name}: ${error.message}; actual ${JSON.stringify(await measure())}`);
+        }
+      }
+      writeFileSync(path.join(smoke.artifacts, 'shared-viewport-geometry.json'), JSON.stringify(measured, null, 2));
+      return 'portrait, landscape, resized WebView/IME, desktop; exact root/workspace/terminal containment';
+    } finally {
+      await sharedPage.setViewportSize(PHONE.viewport);
+      await sharedPage.evaluate(() => {
+        document.documentElement.style.removeProperty('--ps-inset-top');
+        document.documentElement.style.removeProperty('--ps-inset-bottom');
+      });
+    }
+  });
+
   await smoke.step('vite: a hot update applies without reloading the page', async () => {
     const probeDir = path.join(repoRoot, 'build', 'dev-browser-smoke', 'hmr');
     mkdirSync(probeDir, { recursive: true });

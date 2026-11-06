@@ -574,6 +574,7 @@ public final class GatewayDockerJourneyTest {
         JSONObject binding = authLossPublicTrust();
         String ciphertext = backend.vaultSlots.toString();
         JSONObject protectedBytes = authLossProtectedBytes();
+        int pureLossByteIntervals=0,reauthTrustChecks=0;
         assertTrue("the remembered fixture scope really exists", targetContext()
                 .getSharedPreferences("pocketshell_vault_device_v1", Context.MODE_PRIVATE)
                 .contains("remembered:" + hello.getString("email").toLowerCase(java.util.Locale.ROOT)));
@@ -587,6 +588,7 @@ public final class GatewayDockerJourneyTest {
         assertEquals("the /me challenge was consumed", 1, backend.authChallenges);
         assertEquals("loss must not change encrypted account slots", ciphertext, backend.vaultSlots.toString());
         assertEquals("loss must not delete or rewrite protected custody", protectedBytes.toString(), authLossProtectedBytes().toString());
+        pureLossByteIntervals++;
         screenshot("authloss-login-required");
 
         // The selected Remember policy legitimately unlocks silently after verified Google reauthentication.
@@ -597,8 +599,16 @@ public final class GatewayDockerJourneyTest {
         assertTrue("the actual native recall returned the remembered record",rememberedRecalls()>recallsBefore);
         int rememberedReauths=1;
         assertEquals("normal interactive login reuses the same provider identity", 2, google.interactiveCalls);
+        assertInstalledTrustedRevision(1);
+        assertEquals("first remembered reauthentication retains the same logical trust floor and binding",binding.toString(),authLossPublicTrust().toString());
+        reauthTrustChecks++;
+        // A normal authenticated directory load may save an unchanged floor
+        // with fresh encryption. Compare raw bytes only within a pure-loss
+        // interval, and separately require the same logical trust after login.
+        JSONObject beforeUnlockLoss=authLossProtectedBytes();
         lockVaultThroughSettings();
         assertEquals("explicit user Lock preserves the sealed remember bytes",protectedBytes.getString("pocketshell_vault_device_v1"),authLossProtectedBytes().getString("pocketshell_vault_device_v1"));
+        assertEquals("explicit user Lock preserves this interval's complete protected custody",beforeUnlockLoss.toString(),authLossProtectedBytes().toString());
         click("[data-testid=vault-unlock]");
         awaitJsTrue("!!document.querySelector('[data-testid=vault-unlock-gate]')",60_000);
         google.silentRenewFailure = true;
@@ -608,7 +618,8 @@ public final class GatewayDockerJourneyTest {
         assertEquals("the pending unlock's actual native renewal failed", 2, google.silentFailures);
         assertEquals("both one-shot native HTTP challenges were consumed", 2, backend.authChallenges);
         assertEquals("pending unlock loss preserves all ciphertext", ciphertext, backend.vaultSlots.toString());
-        assertEquals("pending unlock loss preserves protected custody bytes", protectedBytes.toString(), authLossProtectedBytes().toString());
+        assertEquals("pending unlock loss preserves protected custody bytes", beforeUnlockLoss.toString(), authLossProtectedBytes().toString());
+        pureLossByteIntervals++;
         screenshot("authloss-unlock-cancelled");
         InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK);
         awaitJsTrue("!document.querySelector('.overlay-panel[aria-label=Settings]')");
@@ -621,9 +632,41 @@ public final class GatewayDockerJourneyTest {
         assertEquals("three normal same-account Google logins, no manual sign-out", 3, google.interactiveCalls);
         assertInstalledTrustedRevision(1);
         assertEquals("same authenticated vault, scope, pin, key and floor after reauthentication", binding.toString(), authLossPublicTrust().toString());
+        reauthTrustChecks++;
         assertEquals("same encrypted vault and descriptor bytes after recovery", ciphertext, backend.vaultSlots.toString());
         assertEquals("same remembered ciphertext bytes after recovery", protectedBytes.getString("pocketshell_vault_device_v1"),
                 authLossProtectedBytes().getString("pocketshell_vault_device_v1"));
+        // The two losses really wiped the original native lease. Remembered
+        // directory loading does not grant a replacement SSH credential.
+        // A click on a still-live workspace only navigates there. First let
+        // its old stream drop: recovery must refuse the wiped lease BEFORE
+        // a broker call. Then normal server Retry may grant a fresh lease.
+        int beforeStaleDrop=nativeDials().length();
+        JSONObject beforeStaleRefusal=authLossProtectedBytes();
+        assertTrue("old retained stream was dropped",controller(new JSONObject().put("op","drop")
+                .put("phase","authloss-expired-lease")).getBoolean("dropped"));
+        awaitJsTrue("window.__gwDials.length>"+beforeStaleDrop
+                +" && window.__gwDialResults.length===window.__gwDials.length"
+                +" && window.__pocketshellConnectionJournal.at(-1)?.phase==='lost'",120_000);
+        boolean staleLeaseRefusedBeforeBroker="GATEWAY_UNPAIRED".equals(evalString("window.__gwDialResults.at(-1)?.code??''"));
+        assertTrue("wiped old lease is refused before any broker request",staleLeaseRefusedBeforeBroker);
+        assertEquals("stale lease refusal cannot consume the later broker challenge",0,backend.gatewayAuthChallenges);
+        assertEquals("stale lease refusal cannot trigger an extra Google renewal",2,google.silentFailures);
+        assertEquals("stale lease refusal preserves all protected bytes",beforeStaleRefusal.toString(),authLossProtectedBytes().toString());
+        // The same explicit server click a user makes from the lost picker
+        // now resolves credentials, before the separate broker-owned loss.
+        int heldBeforeResume=Integer.parseInt(evalString("String(window.__gwVaultWitness.held)"));
+        tapHost(DEVICE_HOST);
+        awaitJsTrue(VISIBLE_TERMINAL+".includes('$')",120_000);
+        boolean freshLeaseBeforeBrokerLoss=Integer.parseInt(evalString("String(window.__gwVaultWitness.held)"))>heldBeforeResume;
+        assertTrue("normal server click obtains a current native vault lease",freshLeaseBeforeBrokerLoss);
+        click("button[title=\"Back to hosts\"]");
+        awaitJsTrue("!!document.querySelector('[data-testid=trusted-server-connect]:not([disabled])')");
+        assertInstalledTrustedRevision(1);
+        assertEquals("explicit server resume keeps the same account, vault, epoch, descriptor and floor",binding.toString(),authLossPublicTrust().toString());
+        assertEquals("explicit server resume preserves the original sealed remember blob",protectedBytes.getString("pocketshell_vault_device_v1"),authLossProtectedBytes().getString("pocketshell_vault_device_v1"));
+        assertEquals("explicit server resume preserves every encrypted cloud slot",ciphertext,backend.vaultSlots.toString());
+        JSONObject beforeGatewayLoss=authLossProtectedBytes();
         int beforeDropDials = nativeDials().length();
         int recoveryMark = controller(new JSONObject().put("op", "mark")).getInt("mark");
         google.silentRenewFailure = true;
@@ -632,15 +675,25 @@ public final class GatewayDockerJourneyTest {
                 .put("phase", "authloss-recovery")).getBoolean("dropped"));
         // Observe the one existing recovery owner. Never fake a disconnected app state.
         awaitJsTrue("(window.__gwDials?.length ?? 0) > " + beforeDropDials
+                + " && window.__gwDialResults?.length === window.__gwDials.length"
                 + " && ['lost','connected','live'].includes(window.__pocketshellConnectionJournal?.at(-1)?.phase)", 120_000);
         int preTapDials = nativeDials().length();
         String recoveryPhase = evalString("window.__pocketshellConnectionJournal.at(-1).phase");
+        boolean brokerDialUsesFreshLease=!Boolean.parseBoolean(evalString("String(window.__gwDials[0]?.handleId===window.__gwDials.at(-1)?.handleId)"));
+        assertTrue("broker-loss recovery never reuses the wiped initial lease",brokerDialUsesFreshLease);
+        Log.i(TAG,"AUTH_LOSS_RECOVERY_SETTLED "+new JSONObject().put("phase",recoveryPhase)
+                .put("dials",preTapDials).put("settlements",new JSONArray(evalString("JSON.stringify(window.__gwDialResults)")))
+                .put("leaseLifecycle",new JSONObject(evalString("JSON.stringify(window.__gwVaultWitness)")))
+                .put("sameHandleAsInitial",evalString("String(window.__gwDials[0]?.handleId===window.__gwDials.at(-1)?.handleId)"))
+                .put("ownerPhases",new JSONArray(evalString("JSON.stringify((window.__pocketshellConnectionJournal??[]).slice(-12).map(e=>e.phase))")))
+                .put("gatewayChallenges",backend.gatewayAuthChallenges).put("silentFailures",google.silentFailures));
         assertEquals("the real SSH-owned GatewaySyncSession consumed the broker challenge", 1, backend.gatewayAuthChallenges);
         assertEquals("gateway-owned native renewal failed, independently of GoogleSyncPlugin", 3, google.silentFailures);
         refreshServers();
         awaitAuthLossGoogleAction();
         assertEquals("gateway loss preserves every encrypted cloud slot", ciphertext, backend.vaultSlots.toString());
-        assertEquals("gateway loss preserves protected custody bytes", protectedBytes.toString(), authLossProtectedBytes().toString());
+        assertEquals("gateway loss preserves protected custody bytes", beforeGatewayLoss.toString(), authLossProtectedBytes().toString());
+        pureLossByteIntervals++;
         recallsBefore=rememberedRecalls();
         click("[data-testid=server-google-login]");
         awaitJsTrue("!!document.querySelector('[data-testid=trusted-server-connect]:not([disabled])')",120_000);
@@ -649,6 +702,7 @@ public final class GatewayDockerJourneyTest {
         assertEquals("normal Google reauthentication must repair existing gateway session consumers", 4, google.interactiveCalls);
         assertInstalledTrustedRevision(1);
         assertEquals("existing gateway identity now reads the unchanged binding and floors", binding.toString(), authLossPublicTrust().toString());
+        reauthTrustChecks++;
         tapHost(DEVICE_HOST);
         awaitJsTrue(VISIBLE_TERMINAL + ".includes('$')", 120_000);
         assertTrue("post-loss recovery established a NEW SSH authentication with the same vault key",
@@ -670,6 +724,9 @@ public final class GatewayDockerJourneyTest {
                 .put("silentFailures", google.silentFailures).put("interactive", google.interactiveCalls)
                 .put("gatewayChallenges", backend.gatewayAuthChallenges)
                 .put("rememberedReauths",rememberedReauths).put("manualLockConfirmed",true)
+                .put("pureLossByteIntervals",pureLossByteIntervals).put("reauthTrustChecks",reauthTrustChecks)
+                .put("freshLeaseBeforeBrokerLoss",freshLeaseBeforeBrokerLoss).put("brokerDialUsesFreshLease",brokerDialUsesFreshLease)
+                .put("staleLeaseRefusedBeforeBroker",staleLeaseRefusedBeforeBroker)
                 .put("signOuts", google.clearCalls).put("cloudWrites", backend.writes)
                 .put("encryptedSlotsUnchanged", true).put("protectedBytesSurviveLoss", true)
                 .put("rememberBytesUnchanged", true).put("scopeStable", true).put("floor", 1)
@@ -697,10 +754,11 @@ public final class GatewayDockerJourneyTest {
     }
 
     private void installVaultCustodyWitness() throws Exception {
-        evalRaw("(()=>{window.__gwVaultWitness={recalls:0,released:0};const call=window.Capacitor.nativePromise.bind(window.Capacitor);"
+        evalRaw("(()=>{window.__gwVaultWitness={recalls:0,released:0,held:0,events:[]};const call=window.Capacitor.nativePromise.bind(window.Capacitor);"
                 +"window.Capacitor.nativePromise=function(plugin,method,options){const result=call(plugin,method,options);return result.then(reply=>{"
                 +"if(plugin==='VaultDeviceKey' && method==='recall' && typeof reply?.record==='string')window.__gwVaultWitness.recalls++;"
-                +"if(plugin==='SshKeyVault' && method==='releaseVaultKeys')window.__gwVaultWitness.released+=Number(reply?.released??0);"
+                +"if(plugin==='SshKeyVault' && method==='holdVaultKey'){window.__gwVaultWitness.held++;window.__gwVaultWitness.events.push('held');}"
+                +"if(plugin==='SshKeyVault' && method==='releaseVaultKeys'){window.__gwVaultWitness.released+=Number(reply?.released??0);window.__gwVaultWitness.events.push('released:'+Number(reply?.released??0));}"
                 +"return reply;});};return 'observing';})()");
     }
 
@@ -1043,14 +1101,16 @@ public final class GatewayDockerJourneyTest {
 
     /** Every native connect() the app made, with what it asked for (failed dials included). */
     void installDialRecorder() throws Exception {
-        assertEquals("installed", evalString("(() => {window.__gwDials=[];"
+        assertEquals("installed", evalString("(() => {window.__gwDials=[];window.__gwDialResults=[];"
                 + "const nativePromise=window.Capacitor.nativePromise.bind(window.Capacitor);"
                 + "window.Capacitor.nativePromise=(plugin,method,options)=>{"
                 + "if(plugin==='SshCapability'&&method==='connect') window.__gwDials.push({at:Date.now(),"
                 + "gateway:options?.gateway ?? null, link:options?.link ?? null, hostname:String(options?.hostname ?? ''),"
                 + "credentialKind:String(options?.credential?.kind ?? ''), handleId:String(options?.credential?.handleId ?? ''),"
                 + " expectedHostKey:options?.expectedHostKey ?? null});"
-                + "return nativePromise(plugin,method,options);}; return 'installed';})()"));
+                + "const pending=nativePromise(plugin,method,options);if(plugin!=='SshCapability'||method!=='connect')return pending;"
+                + "const index=window.__gwDials.length-1;return pending.then(result=>{window.__gwDialResults.push({index,outcome:'fulfilled'});return result;},"
+                + "error=>{const code=/^[A-Z][A-Z0-9_]{0,63}$/.test(error?.code??'')?error.code:'OTHER';window.__gwDialResults.push({index,outcome:'rejected',code});throw error;});}; return 'installed';})()"));
     }
 
     JSONArray nativeDials() throws Exception {

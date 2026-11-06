@@ -39,6 +39,7 @@ final class OnboardingViewportCapture {
         AtomicReference<JSONObject> measured=new AtomicReference<>();
         AtomicReference<Boolean> contained=new AtomicReference<>(false);
         AtomicReference<Boolean> focused=new AtomicReference<>(false);
+        CountDownLatch layoutCaptured=new CountDownLatch(1);
         scenario.onActivity(activity -> {
             try {
                 WebView view=activity.getBridge().getWebView();
@@ -61,9 +62,18 @@ final class OnboardingViewportCapture {
                 measured.set(state);Log.i("PocketshellGatewayLane","ONBOARDING_NATIVE_GEOMETRY "+state);
                 view.evaluateJavascript("JSON.stringify((()=>{const rect=e=>{if(!e)return null;const r=e.getBoundingClientRect();return {left:r.left,top:r.top,right:r.right,bottom:r.bottom,width:r.width,height:r.height};};const screen=[...document.querySelectorAll('.xterm-screen')].find(e=>e.offsetParent!==null);const style=getComputedStyle(document.documentElement);return {innerWidth,innerHeight,dpr:devicePixelRatio,scrollX,scrollY,visualViewport:visualViewport?{width:visualViewport.width,height:visualViewport.height,offsetTop:visualViewport.offsetTop,offsetLeft:visualViewport.offsetLeft,scale:visualViewport.scale}:null,screen:rect(screen),xterm:rect(screen?.closest('.xterm')),terminalViewport:rect(screen?.closest('.xterm')?.querySelector('.xterm-viewport')),insets:{top:style.getPropertyValue('--ps-inset-top'),bottom:style.getPropertyValue('--ps-inset-bottom')},vault:rect(document.querySelector('[data-testid=vault-setup]'))};})())",
                     value->Log.i("PocketshellGatewayLane","ONBOARDING_DOM_GEOMETRY "+value));
+                view.evaluateJavascript("JSON.stringify((()=>{const props=['height','min-height','max-height','box-sizing','display','position','flex','overflow','padding-top','padding-bottom'];"
+                    +"const rules=[];const walk=rs=>{for(const r of rs){if(r.media&&!matchMedia(r.conditionText).matches)continue;if(r.selectorText&&r.style)rules.push(r);else if(r.cssRules)walk(r.cssRules);}};"
+                    +"for(const s of document.styleSheets){try{walk(s.cssRules);}catch{}}const result=[];let e=[...document.querySelectorAll('.xterm-screen')].find(e=>e.offsetParent!==null)||document.querySelector('.vault-setup-dialog');"
+                    +"while(e){const c=getComputedStyle(e),b=e.getBoundingClientRect();result.push({tag:e.tagName,id:e.id,classes:e.className,top:b.top,bottom:b.bottom,height:b.height,clientHeight:e.clientHeight,scrollHeight:e.scrollHeight,"
+                    +"computed:Object.fromEntries(props.map(p=>[p,c.getPropertyValue(p)])),matched:rules.filter(r=>{try{return e.matches(r.selectorText);}catch{return false;}}).map(r=>({selector:r.selectorText,style:Object.fromEntries(props.filter(p=>r.style.getPropertyValue(p)).map(p=>[p,r.style.getPropertyValue(p)]))})).filter(r=>Object.keys(r.style).length)});e=e.parentElement;}return result;})())",
+                    value->{try{org.json.JSONArray rows=new org.json.JSONArray((String)new org.json.JSONTokener(value).nextValue());
+                        for(int i=0;i<rows.length();i++)Log.i("PocketshellGatewayLane","ONBOARDING_LAYOUT_ANCESTOR "+rows.getJSONObject(i));
+                    }catch(Exception error){Log.e("PocketshellGatewayLane","layout capture failed",error);}finally{layoutCaptured.countDown();}});
                 viewport.set(crop);
             } catch(org.json.JSONException e) {throw new IllegalStateException(e);}
         });
+        assertTrue("computed layout ancestry captured before the frame",layoutCaptured.await(15,TimeUnit.SECONDS));
         Bitmap screen=InstrumentationRegistry.getInstrumentation().getUiAutomation().takeScreenshot();
         assertNotNull(screen);Rect rect=viewport.get();assertNotNull(rect);
         try {

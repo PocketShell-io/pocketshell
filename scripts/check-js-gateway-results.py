@@ -44,7 +44,7 @@ REQUIRED_METHODS = frozenset(
         "onboardingCreatesMissingVaultAtomicallyInAppAndReopensItWithoutWeb",
     }
 )
-SELF_TEST_CASES = 29
+SELF_TEST_CASES = 34
 
 
 class GateFailure(ValueError):
@@ -254,7 +254,8 @@ def validate_authloss_runtime(artifacts: Path) -> None:
     row = receipts[0]
     expected = {"losses":3,"silentFailures":3,"interactive":4,"gatewayChallenges":1,"signOuts":0,"cloudWrites":0,"floor":1,
                 "encryptedSlotsUnchanged":True,"protectedBytesSurviveLoss":True,"rememberBytesUnchanged":True,"scopeStable":True,
-                "rememberedReauths":3,"manualLockConfirmed":True}
+                "rememberedReauths":3,"manualLockConfirmed":True,"pureLossByteIntervals":3,"reauthTrustChecks":3,
+                "freshLeaseBeforeBrokerLoss":True,"brokerDialUsesFreshLease":True,"staleLeaseRefusedBeforeBroker":True}
     if any(type(row.get(key)) is not type(value) or row.get(key) != value for key, value in expected.items()):
         raise GateFailure("native auth-loss custody or real Google recovery contract failed")
     counts = [row.get(key) for key in ("beforeDropDials", "preTapDials", "finalDials")]
@@ -362,7 +363,11 @@ def _write_host(directory: Path, **overrides) -> None:
     receipt = {"losses":3,"silentFailures":3,"interactive":4,"gatewayChallenges":1,"signOuts":0,"cloudWrites":0,"floor":1,
                "encryptedSlotsUnchanged":True,"protectedBytesSurviveLoss":not overrides.get("authloss_custody_bad",False),
                "rememberBytesUnchanged":True,"scopeStable":True,"beforeDropDials":1,"preTapDials":overrides.get("authloss_pre_tap_dials",2),"finalDials":3,
-               "recoveryPhaseBeforeTap":"lost","rememberedReauths":3,"manualLockConfirmed":True}
+               "recoveryPhaseBeforeTap":"lost","rememberedReauths":3,"manualLockConfirmed":True,
+               "pureLossByteIntervals":overrides.get("authloss_loss_intervals",3),"reauthTrustChecks":overrides.get("authloss_trust_checks",3)}
+    receipt["freshLeaseBeforeBrokerLoss"] = overrides.get("authloss_fresh_lease",True)
+    receipt["brokerDialUsesFreshLease"] = overrides.get("authloss_recovery_lease",True)
+    receipt["staleLeaseRefusedBeforeBroker"] = overrides.get("authloss_stale_refused",True)
     receipt["gatewayChallenges"] = overrides.get("authloss_gateway_challenges", 1)
     (directory.parent / "logcat.txt").write_text("AUTH_LOSS_CUSTODY " + json.dumps(receipt) + "\n")
     entries.extend([
@@ -447,6 +452,11 @@ def self_test() -> int:
     expect_fail("auth-loss unlock screenshot missing", host={"authloss_shot_missing":True})
     expect_fail("auth-loss receipt missing", host={"authloss_receipt_missing":True})
     expect_fail("gateway-owned loss not proven", host={"authloss_gateway_challenges":0})
+    expect_fail("pure-loss protected byte interval omitted", host={"authloss_loss_intervals":2})
+    expect_fail("post-reauth logical trust check omitted", host={"authloss_trust_checks":2})
+    expect_fail("broker fixture never acquired a fresh authorized lease",host={"authloss_fresh_lease":False})
+    expect_fail("broker recovery reused the wiped initial lease",host={"authloss_recovery_lease":False})
+    expect_fail("wiped stale lease was never refused before broker",host={"authloss_stale_refused":False})
     expect_fail("new onboarding method omitted",results={"methods":[m for m in sorted(REQUIRED_METHODS) if m!="onboardingCreatesMissingVaultAtomicallyInAppAndReopensItWithoutWeb"]})
     expect_fail("onboarding unlock duplicated",host={"onboarding_unlock_gates":2})
     expect_fail("onboarding vault created twice",host={"onboarding_initializations":2})
