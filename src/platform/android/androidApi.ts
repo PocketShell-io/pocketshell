@@ -181,6 +181,8 @@ export function createAndroidPlatform(deps: AndroidApiDeps): AndroidPlatform {
   const pendingDials = new Map<string, Promise<ConnectResult>>();
   const hostConnections = new Map<string, string>();
   const connectionHosts = new Map<string, ForwardResumeIntent>();
+  // Public authority only: never retain a PEM/password/ephemeral key handle.
+  const reconnectRequests = new Map<string, Parameters<PocketShellApi['ssh']['connect']>[0]>();
   function rememberedHosts(): ForwardResumeIntent[] {
     try {
       const rows: unknown = JSON.parse(localStorage.getItem(FORWARD_RESUME_STORAGE_KEY) ?? '[]');
@@ -385,13 +387,8 @@ export function createAndroidPlatform(deps: AndroidApiDeps): AndroidPlatform {
         });
         const existing = hostConnections.get(target.hostId);
         if (existing && hub.controllerOf(existing)) {
-          const snapshot = hub.controllerOf(existing)!.getSnapshot();
-          if (snapshot.phase !== 'lost' && snapshot.phase !== 'idle' && !(snapshot.phase === 'error' && !snapshot.connectionId)) return { ok: true, connectionId: existing };
-          const recovering = pendingDials.get(target.hostId);
-          if (recovering) return recovering;
-          const recovery = hub.reconnect(existing).then((ok) => ok ? { ok: true, connectionId: existing } : { ok: false, error: 'Could not resume the forwarding host.' });
-          pendingDials.set(target.hostId, recovery);
-          try { return await recovery; } finally { pendingDials.delete(target.hostId); }
+          const ok = await hub.reconnect(existing, target);
+          return ok ? { ok: true, connectionId: existing } : { ok: false, error: 'Could not resume the host with its current credential.' };
         }
         const pending = pendingDials.get(target.hostId);
         if (pending) return pending;
@@ -400,6 +397,10 @@ export function createAndroidPlatform(deps: AndroidApiDeps): AndroidPlatform {
           if (result.ok && result.connectionId) {
             if (disposed) { await hub.close(result.connectionId); return { ok: false, error: 'The Android platform was closed.' }; }
             hostConnections.set(target.hostId, result.connectionId);
+            reconnectRequests.set(result.connectionId, { host: target.hostname, port: target.port,
+              user: target.username, hostAlias: hostLabel,
+              ...(target.gateway ? { gateway: { ...target.gateway } } : {}),
+            });
             connectionHosts.set(result.connectionId, { name: hostLabel, hostname: target.hostname, port: target.port, user: target.username, hostId: target.hostId });
           }
           return result;
@@ -416,12 +417,18 @@ export function createAndroidPlatform(deps: AndroidApiDeps): AndroidPlatform {
         await forwards!.close(connectionId);
         for (const [host, id] of hostConnections) if (id === connectionId) hostConnections.delete(host);
         connectionHosts.delete(connectionId);
+        reconnectRequests.delete(connectionId);
         return hub.close(connectionId);
       },
       onState: (listener) => hub.onState(listener),
       // Its presence tells the shared store the controller owns recovery
       // (#2954): no store ladder, and Retry recovers the same logical id.
-      reconnect: (connectionId) => hub.reconnect(connectionId),
+      reconnect: async (connectionId) => {
+        const request = reconnectRequests.get(connectionId);
+        if (!request || disposed) return false;
+        try { return await hub.reconnect(connectionId, await resolveTarget(request)); }
+        catch { return false; }
+      },
     },
 
     hosts: {
@@ -641,6 +648,7 @@ export function createAndroidPlatform(deps: AndroidApiDeps): AndroidPlatform {
       forwards?.dispose();
       for (const id of hostConnections.values()) void hub.close(id);
       hostConnections.clear();
+      reconnectRequests.clear();
     },
   };
 }
