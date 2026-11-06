@@ -410,6 +410,7 @@ describe('Android PocketShellApi platform', () => {
         return controller;
       },
       hosts,
+      remoteDirectory: async () => '/home/u',
       lifecycle: { onActiveChange: (handler) => { lifecycle = handler; return () => { lifecycle = null; }; } },
       backgroundGraceMs: () => 60_000,
       addHostRoute: '/android/hosts',

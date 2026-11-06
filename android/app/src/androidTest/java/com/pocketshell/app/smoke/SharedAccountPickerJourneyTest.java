@@ -7,6 +7,7 @@ import static org.junit.Assert.assertTrue;
 
 import android.content.ContentValues;
 import android.content.Context;
+import android.content.Intent;
 import android.graphics.Bitmap;
 import android.graphics.Rect;
 import android.net.Uri;
@@ -17,6 +18,8 @@ import android.provider.MediaStore;
 import android.util.Log;
 import android.view.KeyEvent;
 import android.view.View;
+import android.view.WindowInsets;
+import android.view.WindowInsetsAnimation;
 import android.webkit.WebView;
 
 import androidx.test.core.app.ActivityScenario;
@@ -103,6 +106,10 @@ public final class SharedAccountPickerJourneyTest {
     private ScreenshotGuard.Frame lastScreenshot;
     private FakeSyncBackend backend;
     private FakeGoogle google;
+    // Main-thread-only platform animation state: autofocus can move Cancel after DOM layout.
+    private final java.util.Set<WindowInsetsAnimation> imeAnimations = new java.util.HashSet<>();
+    private int imeAnimationEnds;
+
 
     @Before
     public void installFakeEdges() {
@@ -130,24 +137,16 @@ public final class SharedAccountPickerJourneyTest {
     }
 
     @Test
-    public void sharedPickerListsAccountHostsAfterSignInAndUnlockFromTheHeaderButton() throws Exception {
+    public void sharedTrustedPickerNeverAdoptsUntrustedAccountRowsAfterSignInOrSettingsSync() throws Exception {
         assertTrue("packaged account journey runs on API 35+", Build.VERSION.SDK_INT >= 35);
         backend.seed(encrypt(desktopAccount().toString()), 3);
-        // The phone has its own hetzner (as a migrated 0.5.x host would be): the
-        // account must keep it, with the desktop's fields, through a phone sync.
         launchSharedWithLocalHosts(new JSONArray()
                 .put(savedHost("phone-box", "192.168.1.9", 2200, "me"))
                 .put(savedHost("hetzner", "hetzner.phone.lan", 22, "alexey")));
-
-        // Signed out: one plain list and the account button in the header actions.
-        awaitJsTrue("document.querySelector('.picker .header-actions .account-action')?.textContent.includes('Sign in') === true"
-                + " && !document.querySelector('.picker .account-action.signed-in')"
-                + " && [...document.querySelectorAll('.picker .host-name')].map((n) => n.textContent.trim()).join(',') === 'phone-box,hetzner'"
-                + " && !document.querySelector('.picker .group-label')");
+        awaitJsTrue("!!document.querySelector('[data-testid=trusted-servers]')"
+                + " && !!document.querySelector('[data-testid=server-google-login]') && !document.querySelector('.picker .host-list')");
         assertAccountButtonIsTouchSized();
-        captureScreenshot("shared-picker-signed-out.png", ".picker .account-action");
-
-        // The header button is the way in: Account & sync, then Google sign-in.
+        captureScreenshot("shared-picker-signed-out.png", "[data-testid=trusted-servers]");
         tapDomCenter(".picker .header-actions .account-action");
         awaitJsTrue("!!document.querySelector('[data-testid=android-account] .account-login .account-primary:not([disabled])')");
         tapDomCenter("[data-testid=android-account] .account-login .account-primary");
@@ -155,57 +154,27 @@ public final class SharedAccountPickerJourneyTest {
                 + JSONObject.quote(EMAIL) + ") === true");
         assertEquals("one interactive account chooser", 1, google.interactive.get());
         backToPicker();
-
-        // Signed in, still locked: the header shows the account, the list says how to reveal its hosts.
-        awaitJsTrue("document.querySelector('.picker .account-action.signed-in')?.textContent.includes(" + JSONObject.quote(EMAIL) + ") === true"
-                + " && !!document.querySelector('.picker .locked-note')");
-        captureScreenshot("shared-picker-signed-in-locked.png", ".picker .locked-note");
-
-        // Unlock with the passphrase (Check account): nothing is uploaded, and
-        // the phone's hetzner is kept for the account, not marked for removal.
-        tapDomCenter(".picker .locked-note .btn-ghost");
+        awaitJsTrue("!!document.querySelector('[data-testid=vault-unlock-gate]')");
+        captureScreenshot("shared-picker-signed-in-locked.png", "[data-testid=vault-unlock-gate]");
+        dismissVaultUnlockAndAwaitPicker();
+        awaitJsTrue("!!document.querySelector('[data-testid=server-vault-unlock]') && !document.querySelector('.picker .host-list')");
+        // Settings decrypt never grants authenticated server trust.
+        tapDomCenter(".picker .header-actions .account-action");
         awaitJsTrue("!!document.querySelector('[data-testid=android-account] .passphrase-field input:not([disabled])')");
         setValue("[data-testid=android-account] .passphrase-field input", PASSPHRASE);
         tapDomCenter("[data-testid=android-account] .host-heading .btn-ghost");
         awaitJsTrue("document.querySelector('[data-testid=android-account] .account-message')?.textContent.trim()"
                 + " === 'Your account has 2 synced hosts.'", SYNC_TIMEOUT_MILLIS);
-        String hetznerRow = "[...document.querySelectorAll('[data-testid=android-account] .account-host-row')]"
-                + ".find((row) => row.querySelector('.host-alias')?.textContent.trim() === 'hetzner')";
-        awaitJsTrue("(() => {const row = " + hetznerRow + "; return !!row && row.querySelector('input').checked"
-                + " && row.querySelector('.status-chip').textContent.trim() === 'In account';})()");
-        assertEquals("unlocking uploads nothing", 0, backend.puts.size());
+        assertEquals("decrypting settings uploads nothing", 0, backend.puts.size());
         backToPicker();
-
-        // Home now lists the account's hosts this phone does not have, beside the phone's own.
-        String rows = "[...document.querySelectorAll('.picker .host-list')].map((list) => [...list.querySelectorAll('.host-name')]"
-                + ".map((n) => n.textContent.trim()).join(',')).join('|')";
-        awaitJsTrue(rows + " === 'bäckerei|phone-box,hetzner'"
-                + " && [...document.querySelectorAll('.picker .group-label')].map((n) => n.textContent.trim()).join('|')"
-                + " === 'From your account|On this phone'"
-                + " && !document.querySelector('.picker .locked-note')");
-        assertTrue("the account rows show the account's address",
-                evalString("document.querySelector('.picker .host-list .host-detail')?.textContent.trim()").contains("root@höfn.internal:2222"));
-        assertNoTokenInWebView("after unlock");
-        assertEquals("the decrypted account copy never reaches WebView storage", "null",
-                evalRaw("localStorage.getItem('" + ACCOUNT_HOSTS_KEY + "')"));
-        assertFalse("no decrypted account address in WebView storage",
-                evalString("JSON.stringify(Object.entries(localStorage))").contains("höfn.internal"));
-        captureScreenshot("shared-picker-account-hosts.png", ".picker .group-label");
-        String accountRows = evalString("JSON.stringify([...document.querySelector('.picker .host-list')"
-                + ".querySelectorAll('.host-name')].map((n) => n.textContent.trim()))");
-
-        // An account host with no key on this phone asks for the phone's key.
-        tapDomCenter(".picker .host-list .host-item:nth-child(1) .host-row");
-        awaitJsTrue("document.querySelector('[data-testid=account-host-key] #account-host-key-title')?.textContent.trim()"
-                + " === 'Choose a key for bäckerei'"
-                + " && document.querySelector('[data-testid=account-host-key-reason]')?.dataset.reason === 'account'"
-                + " && document.querySelector('[data-testid=account-host-key-user]')?.value === 'root'");
-        captureScreenshot("shared-account-host-key-prompt.png", "[data-testid=account-host-key-connect]");
-        tapDomCenter("[data-testid=account-host-key-cancel]");
-        awaitJsTrue("!document.querySelector('[data-testid=account-host-key-gate]')"
-                + " && document.querySelector('.picker p.error')?.textContent.trim()"
-                + " === 'No SSH key was chosen for “bäckerei” on this phone, so nothing was dialled.'");
-
+        awaitJsTrue("!!document.querySelector('[data-testid=vault-unlock-gate]')");
+        dismissVaultUnlockAndAwaitPicker();
+        awaitJsTrue("!document.querySelector('.picker .host-list') && !document.querySelector('[data-testid=trusted-server-connect]')"
+                + " && !document.querySelector('[data-testid=account-host-key-gate]')");
+        assertNoTokenInWebView("after settings decrypt");
+        assertEquals("the decrypted settings copy never reaches storage", "null", evalRaw("localStorage.getItem('" + ACCOUNT_HOSTS_KEY + "')"));
+        assertFalse("no decrypted account address at rest", evalString("JSON.stringify(Object.entries(localStorage))").contains("höfn.internal"));
+        captureScreenshot("shared-picker-account-hosts.png", "[data-testid=trusted-servers]");
         // One Sync now from the shared Account screen: the account keeps both
         // hosts, and hetzner keeps every field the desktop owns.
         tapDomCenter(".picker .header-actions .account-action");
@@ -226,16 +195,21 @@ public final class SharedAccountPickerJourneyTest {
         assertEquals("unknown fields survive", "opaque", hetzner.getJSONObject("futureDirective").getString("mode"));
         assertEquals("an account-only host is carried unchanged", "höfn.internal", byName(uploaded, "bäckerei").getString("hostname"));
         captureScreenshot("shared-account-synced.png", "[data-testid=android-account] .account-message");
+        backToPicker();
+        awaitJsTrue("!!document.querySelector('[data-testid=vault-unlock-gate]')");
+        dismissVaultUnlockAndAwaitPicker();
+        awaitJsTrue("!document.querySelector('.picker .host-list') && !document.querySelector('[data-testid=trusted-server-connect]')"
+                + " && !document.querySelector('[data-testid=account-host-key-gate]')");
         assertNoTokenInLogcat();
         Log.i(TAG, "SHARED_PICKER " + new JSONObject()
                 .put("requests", backend.requests.size()).put("uploads", backend.puts.size())
-                .put("accountRows", new JSONArray(accountRows))
+                .put("accountRows", new JSONArray()).put("untrustedRowsHidden", true)
                 .put("syncedHosts", new JSONArray(uploadedNames))
                 .put("keptDesktopFields", true));
     }
 
     /**
-     * The legacy home (still the default shell) after an app restart: the
+     * The explicit legacy-shell account/settings capability after an app restart: the
      * decrypted account copy is in memory only (#3026), so the synced-host list
      * is gone until the passphrase unlocks it again, which the Account screen
      * says, and one "Show account hosts" brings it back without uploading.
@@ -280,6 +254,20 @@ public final class SharedAccountPickerJourneyTest {
 
     private void launchSharedWithLocalHosts(JSONArray hosts) throws Exception {
         scenario = ActivityScenario.launch(SharedShellLaunch.intent());
+        scenario.onActivity(activity -> findWebView(activity.getWindow().getDecorView())
+                .setWindowInsetsAnimationCallback(new WindowInsetsAnimation.Callback(
+                        WindowInsetsAnimation.Callback.DISPATCH_MODE_CONTINUE_ON_SUBTREE) {
+                    @Override public void onPrepare(WindowInsetsAnimation animation) {
+                        if ((animation.getTypeMask() & WindowInsets.Type.ime()) != 0) imeAnimations.add(animation);
+                    }
+                    @Override public WindowInsets onProgress(WindowInsets insets, List<WindowInsetsAnimation> running) { return insets; }
+                    @Override public void onEnd(WindowInsetsAnimation animation) {
+                        if ((animation.getTypeMask() & WindowInsets.Type.ime()) != 0) {
+                            imeAnimations.remove(animation);
+                            imeAnimationEnds++;
+                        }
+                    }
+                }));
         awaitJsTrue("!!document.querySelector('.picker .header-actions')", 45_000);
         String staleDocument = "reload-" + SystemClock.uptimeMillis();
         evalRaw("window.__pocketshellStaleDocument = " + JSONObject.quote(staleDocument) + ";"
@@ -291,7 +279,8 @@ public final class SharedAccountPickerJourneyTest {
     }
 
     private void launchLegacyWithLocalHosts(JSONArray hosts) throws Exception {
-        scenario = ActivityScenario.launch(MainActivity.class);
+        scenario = ActivityScenario.launch(new Intent(targetContext(), MainActivity.class)
+                .putExtra(MainActivity.EXTRA_SHELL, MainActivity.SHELL_LEGACY));
         awaitJsTrue("document.querySelector('[data-testid=build-status]')?.dataset.state === 'verified'", 45_000);
         String staleDocument = "reload-" + SystemClock.uptimeMillis();
         evalRaw("window.__pocketshellStaleDocument = " + JSONObject.quote(staleDocument) + ";"
@@ -327,6 +316,58 @@ public final class SharedAccountPickerJourneyTest {
         awaitRoute("settings");
         pressBack();
         awaitRoute("home");
+    }
+
+    /** The picker remains mounted behind the modal; row absence cannot prove dismissal. */
+    private String uncoveredPickerCondition() {
+        return "(() => {if(document.querySelector('[data-testid=vault-unlock-gate]'))return false;"
+                + "const button=document.querySelector('.picker .header-actions .account-action');"
+                + "if(!button || !document.querySelector('[data-testid=server-vault-unlock]'))return false;"
+                + "const r=button.getBoundingClientRect();const hit=document.elementFromPoint(r.left+r.width/2,r.top+r.height/2);"
+                + "return r.width>0 && r.height>0 && !!hit && (hit===button || button.contains(hit));})()";
+    }
+
+    private void awaitImeSettled(boolean visible) throws Exception {
+        long deadline = SystemClock.uptimeMillis() + WAIT_TIMEOUT_MILLIS;
+        AtomicReference<Boolean> settled = new AtomicReference<>(false);
+        while (SystemClock.uptimeMillis() < deadline) {
+            scenario.onActivity(activity -> {
+                WebView webView = findWebView(activity.getWindow().getDecorView());
+                WindowInsets insets = webView.getRootWindowInsets();
+                settled.set(insets != null && insets.isVisible(WindowInsets.Type.ime()) == visible
+                        && imeAnimations.isEmpty() && imeAnimationEnds > 0);
+            });
+            if (settled.get()) return;
+            Thread.sleep(100); // Poll observed platform state; never infer settling from elapsed time.
+        }
+        throw new AssertionError("native IME did not finish its visibility transition: " + visible);
+    }
+
+    private void dismissVaultUnlockAndAwaitPicker() throws Exception {
+        awaitJsTrue("!!document.querySelector('[data-testid=vault-unlock-gate]')");
+        // Live red control: mounted/hidden rows must not pass the new dismissal barrier.
+        assertEquals("a visible unlock sheet must block the picker", "false", evalRaw(uncoveredPickerCondition()));
+        evalRaw("(() => {const gate=document.querySelector('[data-testid=vault-unlock-gate]');"
+                + "const trace=window.__pickerDismissTrace={clicks:0,removed:false,reopened:false};"
+                + "gate.querySelector('[data-testid=vault-unlock-cancel]').addEventListener('click',()=>trace.clicks++,{once:true});"
+                + "window.__pickerDismissObserver?.disconnect();"
+                + "window.__pickerDismissObserver=new MutationObserver(()=>{"
+                + "if(!gate.isConnected)trace.removed=true;"
+                + "const current=document.querySelector('[data-testid=vault-unlock-gate]');"
+                + "if(current && current!==gate)trace.reopened=true;});"
+                + "window.__pickerDismissObserver.observe(document.body,{childList:true,subtree:true});return 'armed';})()");
+        // VaultUnlockForm autofocus opens the native IME asynchronously. A DOM-only
+        // existence/rect check can capture coordinates before the keyboard moves them.
+        awaitImeSettled(true);
+        tapDomCenter("[data-testid=vault-unlock-cancel]");
+        try {
+            awaitJsTrue(uncoveredPickerCondition());
+            assertEquals("Cancel must receive one actual click", "1", evalRaw("window.__pickerDismissTrace.clicks"));
+            awaitImeSettled(false);
+        } finally {
+            Log.i(TAG, "VAULT_DISMISS " + evalString("JSON.stringify(window.__pickerDismissTrace)"));
+            evalRaw("window.__pickerDismissObserver?.disconnect(); 'stopped'");
+        }
     }
 
     /**
@@ -491,6 +532,10 @@ public final class SharedAccountPickerJourneyTest {
             boolean authorized = ("Bearer " + google.token).equals(headers.get("Authorization"));
             requests.add(new Request(method, path, authorized));
             if (!authorized) return new GoogleSyncSession.Response(401, "{\"message\":\"Unauthorized\"}");
+            if ("GET".equals(method) && "/me".equals(path)) return new GoogleSyncSession.Response(200,
+                    "{\"sub\":\"journey-sub-3020\",\"email\":\"" + EMAIL + "\"}");
+            if ("GET".equals(method) && "/settings".equals(path)) return new GoogleSyncSession.Response(200,
+                    "{\"slots\":[{\"slot\":\"main\",\"version\":" + version + ",\"size\":" + (data == null ? 0 : data.length()) + ",\"updatedAt\":\"2026-11-05T00:00:00.000Z\"}]}");
             if (!"/settings/main".equals(path)) return new GoogleSyncSession.Response(404, "{\"message\":\"no route\"}");
             try {
                 if ("GET".equals(method)) {

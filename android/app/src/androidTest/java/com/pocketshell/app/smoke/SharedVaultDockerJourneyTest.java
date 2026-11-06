@@ -16,6 +16,8 @@ import android.os.SystemClock;
 import android.provider.MediaStore;
 import android.util.Log;
 import android.view.View;
+import android.view.WindowInsets;
+import android.view.WindowInsetsAnimation;
 import android.webkit.WebView;
 
 import androidx.test.core.app.ActivityScenario;
@@ -78,10 +80,9 @@ public final class SharedVaultDockerJourneyTest {
      * sealed record can lag the listed hosts on a loaded emulator host.
      */
     private static final long REMEMBER_TIMEOUT_MILLIS = 30_000;
-    static final String TOKEN_SIGNATURE = "FAKEIDTOKENW4VAULTSIGNATUREdoNotLeak";
-    private static final String EMAIL = "vault-journey@example.com";
+    static final String TOKEN_SIGNATURE = "FAKEGOOGLEIDTOKEN3086gwlaneDoNotLeak";
     /** Throwaway journey passphrase; the runner passes the same value to the fixture builder. */
-    static final String VAULT_PASSPHRASE = "pocketshell-vault-test-passphrase journey";
+    static final String VAULT_PASSPHRASE = "pocketshell-vault-test-passphrase gateway";
     private static final String HOSTS_KEY = "pocketshell.android.hosts.v1";
     private static final String SHARED_SETTINGS_KEY = "pocketshell.settings.v1";
     private static final String AUTH_PREFS = "pocketshell-sync-auth";
@@ -89,15 +90,16 @@ public final class SharedVaultDockerJourneyTest {
     private static final String STAGED_FIXTURE = "/data/local/tmp/pocketshell-vault-fixture-[A-Za-z0-9_-]+\\.json";
     private static final String KEY_PICKER = "[data-testid=account-host-key-gate]";
     private static final String UNLOCK = "[data-testid=vault-unlock-gate]";
-    private static final String CONNECTED = "document.querySelectorAll('.dir-header').length > 0";
 
     private ActivityScenario<?> scenario;
     private String runId;
     private ScreenshotGuard.Frame lastScreenshot;
-    private FakeSyncBackend backend;
-    private FakeGoogle google;
+    private GatewayDockerJourneyTest.FakeSyncBackend backend;
+    private GatewayDockerJourneyTest harness;
     private String alias;
     private String privateKeyBody;
+    private final java.util.Set<WindowInsetsAnimation> imeAnimations = new java.util.HashSet<>();
+    private int imeAnimationEnds;
 
     @Before
     public void installFakeEdges() throws Exception {
@@ -110,15 +112,15 @@ public final class SharedVaultDockerJourneyTest {
         JSONObject fixture = new JSONObject(shell("cat " + fixturePath));
         alias = fixture.getString("alias");
         privateKeyBody = fixture.getString("privateKeyMarker");
-        google = new FakeGoogle();
-        backend = new FakeSyncBackend(fixture.getJSONObject("slots"));
-        GoogleSyncEnvironment.installForTesting(activity -> google, backend);
-        targetContext().deleteSharedPreferences(AUTH_PREFS);
+        harness = new GatewayDockerJourneyTest();
+        harness.installFakeEdges();
+        harness.selectVariant("active");
+        backend = harness.backend;
         targetContext().deleteSharedPreferences(DEVICE_KEY_PREFS);
     }
 
     @After
-    public void restore() {
+    public void restore() throws Exception {
         if (scenario != null) {
             try {
                 evalRaw("Object.keys(localStorage).filter((key) => key.startsWith('pocketshell.ssh.host-key.')"
@@ -129,7 +131,8 @@ public final class SharedVaultDockerJourneyTest {
             }
             scenario.close();
         }
-        GoogleSyncEnvironment.resetForTesting();
+        harness.scenario = null;
+        harness.restore();
         targetContext().deleteSharedPreferences(AUTH_PREFS);
         targetContext().deleteSharedPreferences(DEVICE_KEY_PREFS);
     }
@@ -165,19 +168,19 @@ public final class SharedVaultDockerJourneyTest {
 
         // One passphrase: the vault carried the sync passphrase, so the account host is listed.
         awaitAccountHostListed();
-        captureScreenshot("vault-unlocked-account-host.png", ".picker .group-label");
+        captureScreenshot("vault-unlocked-account-host.png", "[data-testid=trusted-server-connect]");
 
         connectAccountHost();
-        captureScreenshot("vault-connected-with-vault-key.png", ".dir-header");
+        captureTerminalScreenshot("vault-connected-with-vault-key.png");
 
         assertNoKeyPickerEverShown();
-        assertEquals("the phone never writes the account", 0, backend.puts.size());
+        assertEquals("the phone never writes the account", 0, backend.writes);
         assertTrue("the vault key blob was read", backend.reads.stream().anyMatch((path) -> path.startsWith("/settings/vk-")));
         assertFalse("type every time remembers nothing on the device", deviceKeyPrefs().exists() && hasRecord(deviceKeyPrefs()));
         assertNoPrivateKeyAtRest();
         assertNoSecretsInLogcat();
         Log.i(TAG, "VAULT_TYPE_EVERY_TIME " + new JSONObject()
-                .put("reads", new org.json.JSONArray(backend.reads)).put("puts", backend.puts.size()).put("connected", true));
+                .put("reads", new org.json.JSONArray(backend.reads)).put("puts", backend.writes).put("connected", true));
     }
 
     /**
@@ -190,7 +193,12 @@ public final class SharedVaultDockerJourneyTest {
         assertTrue("packaged vault journey runs on API 35+", Build.VERSION.SDK_INT >= 35);
         signInAndRelaunch();
         awaitJsTrue("!!document.querySelector('" + UNLOCK + " [data-testid=vault-unlock-passphrase]')", 45_000);
+        assertEquals("remember is initially off", "false",
+                evalRaw("document.querySelector('[data-testid=vault-unlock-remember]').checked"));
         tapDomCenter("[data-testid=vault-unlock-remember]");
+        awaitJsTrue("document.querySelector('[data-testid=vault-unlock-remember]')?.checked === true");
+        assertEquals("one physical tap selects remember", "true",
+                evalRaw("document.querySelector('[data-testid=vault-unlock-remember]').checked"));
         setValue("[data-testid=vault-unlock-passphrase]", VAULT_PASSPHRASE);
         captureScreenshot("vault-unlock-remember-chosen.png", "[data-testid=vault-unlock-remember]");
         tapDomCenter("[data-testid=vault-unlock-submit]");
@@ -229,15 +237,54 @@ public final class SharedVaultDockerJourneyTest {
     // ---- journey steps ------------------------------------------------------
 
     private void signInAndRelaunch() throws Exception {
-        scenario = ActivityScenario.launch(SharedShellLaunch.intent());
-        awaitJsTrue("!!document.querySelector('.picker .header-actions')", 45_000);
-        evalRaw("localStorage.removeItem('" + SHARED_SETTINGS_KEY + "'); localStorage.setItem('" + HOSTS_KEY + "', '[]'); 'ok'");
-        tapDomCenter(".picker .header-actions .account-action");
-        awaitJsTrue("!!document.querySelector('[data-testid=android-account] .account-login .account-primary:not([disabled])')");
-        tapDomCenter("[data-testid=android-account] .account-login .account-primary");
-        awaitJsTrue("document.querySelector('[data-testid=android-account] .account-identity')?.textContent.includes("
-                + JSONObject.quote(EMAIL) + ") === true");
-        relaunch();
+        harness.scenario = ActivityScenario.launch(SharedShellLaunch.intent());
+        scenario = harness.scenario;
+        scenario.onActivity(activity -> findWebView(activity.getWindow().getDecorView())
+                .setWindowInsetsAnimationCallback(new WindowInsetsAnimation.Callback(
+                        WindowInsetsAnimation.Callback.DISPATCH_MODE_CONTINUE_ON_SUBTREE) {
+                    @Override public void onPrepare(WindowInsetsAnimation animation) {
+                        if ((animation.getTypeMask() & WindowInsets.Type.ime()) != 0) imeAnimations.add(animation);
+                    }
+                    @Override public WindowInsets onProgress(WindowInsets insets, List<WindowInsetsAnimation> running) { return insets; }
+                    @Override public void onEnd(WindowInsetsAnimation animation) {
+                        if ((animation.getTypeMask() & WindowInsets.Type.ime()) != 0) {
+                            imeAnimations.remove(animation);
+                            imeAnimationEnds++;
+                        }
+                    }
+                }));
+        awaitJsTrue("!!document.querySelector('[data-testid=server-google-login]')", 60_000);
+        evalRaw("localStorage.removeItem('" + SHARED_SETTINGS_KEY + "'); localStorage.setItem('" + HOSTS_KEY + "','[]');"
+                + " localStorage.removeItem('ps.lastFolder.gw-dev'); localStorage.removeItem('ps.lastFolder.gw-missing'); 'empty'");
+        tapDomCenter("[data-testid=server-google-login]");
+        awaitJsTrue("!!document.querySelector('[data-testid=vault-unlock-gate]')", 60_000);
+        watchKeyPicker();
+        // Autofocus opens the Android IME after the unlock DOM mounts. Observe
+        // the native transition end before taking coordinates for either case.
+        awaitImeSettled(true);
+    }
+
+    private void awaitImeSettled(boolean visible) throws Exception {
+        long deadline = SystemClock.uptimeMillis() + WAIT_TIMEOUT_MILLIS;
+        AtomicReference<Boolean> settled = new AtomicReference<>(false);
+        while (SystemClock.uptimeMillis() < deadline) {
+            scenario.onActivity(activity -> {
+                WebView webView = findWebView(activity.getWindow().getDecorView());
+                WindowInsets insets = webView.getRootWindowInsets();
+                settled.set(insets != null && insets.isVisible(WindowInsets.Type.ime()) == visible
+                        && imeAnimations.isEmpty() && imeAnimationEnds > 0);
+            });
+            if (settled.get()) return;
+            Thread.sleep(100); // Poll observed platform state; never infer settling from elapsed time.
+        }
+        throw new AssertionError("native IME did not finish its visibility transition: " + visible);
+    }
+
+    private void watchKeyPicker() throws Exception {
+        evalRaw("window.__psSawKeyPicker = false; window.__psMaxSheets = 1;"
+                + "new MutationObserver(() => { if (document.querySelector('" + KEY_PICKER + "')) window.__psSawKeyPicker = true;"
+                + " window.__psMaxSheets = Math.max(window.__psMaxSheets, document.querySelectorAll('" + UNLOCK + "').length); })"
+                + ".observe(document.body, {childList: true, subtree: true}); 'watching'");
     }
 
     /** A fresh document, as a new launch: the vault state lives in memory only. */
@@ -245,7 +292,7 @@ public final class SharedVaultDockerJourneyTest {
         String stale = "relaunch-" + SystemClock.uptimeMillis();
         evalRaw("window.__pocketshellStaleDocument = " + JSONObject.quote(stale) + "; location.replace('/'); 'reload'");
         awaitJsTrue("window.__pocketshellStaleDocument !== " + JSONObject.quote(stale)
-                + " && document.readyState === 'complete' && !!document.querySelector('.picker .header-actions')", 45_000);
+                + " && document.readyState === 'complete' && !!document.querySelector('[data-testid=trusted-servers]')", 45_000);
         // Record any key picker that ever mounts in this document.
         evalRaw("window.__psSawKeyPicker = !!document.querySelector('" + KEY_PICKER + "');"
                 + "window.__psMaxSheets = document.querySelectorAll('" + UNLOCK + "').length;"
@@ -255,27 +302,31 @@ public final class SharedVaultDockerJourneyTest {
     }
 
     private void awaitAccountHostListed() throws Exception {
-        awaitJsTrue("[...document.querySelectorAll('.picker .group-label')].some((n) => n.textContent.trim() === 'From your account')"
-                + " && [...document.querySelectorAll('.picker .host-name')].some((n) => n.textContent.trim() === " + JSONObject.quote(alias) + ")",
-                UNLOCK_TIMEOUT_MILLIS);
+        awaitJsTrue("[...document.querySelectorAll('[data-testid=trusted-server-connect]:not([disabled])')].some((n) => n.textContent.trim() === "
+                + JSONObject.quote(alias) + ")", UNLOCK_TIMEOUT_MILLIS);
     }
 
     private void connectAccountHost() throws Exception {
-        String row = "[...document.querySelectorAll('.picker .host-item')].find((item) => item.querySelector('.host-name')?.textContent.trim() === "
-                + JSONObject.quote(alias) + ")";
-        evalRaw("(() => { const row = " + row + "; row.querySelector('.host-row').dataset.vaultJourney = 'target'; return 'marked'; })()");
-        tapDomCenter("[data-vault-journey=target]");
-        // First contact with the fixture: trust its key once (the vault decides the credential, not the host key).
+        String phase = deviceKeyPrefs().exists() && hasRecord(deviceKeyPrefs()) ? "remember" : "type";
+        String fingerprint = harness.authorizeVault("vault-" + phase + "-authorize");
+        harness.installDialRecorder();
+        int mark = harness.controller(new JSONObject().put("op", "mark")).getInt("mark");
+        tapDomCenter("[data-testid=trusted-server-connect]");
+        awaitJsTrue("[...document.querySelectorAll('.xterm-rows')].some(n => n.offsetParent !== null && n.innerText.includes('$'))", UNLOCK_TIMEOUT_MILLIS);
+        assertFalse("the authenticated descriptor needs no manual trust", "true".equals(evalRaw("!!document.querySelector('[data-testid=host-key-trust-gate]')")));
+        assertTrue("the host independently accepted only the decrypted vault credential",
+                GatewayDockerJourneyTest.acceptedFingerprints(harness.sshdSince(mark, "vault-" + phase + "-connect")).contains(fingerprint));
+        String file = "gwlane-vault-" + phase + "-" + harness.run + ".txt";
+        harness.typeCommand("echo VAULT42_" + phase + "_" + harness.run + " > ~/" + file);
+        String content = "";
         long deadline = SystemClock.uptimeMillis() + WAIT_TIMEOUT_MILLIS;
         while (SystemClock.uptimeMillis() < deadline) {
-            if ("true".equals(evalRaw(CONNECTED))) break;
-            if ("true".equals(evalRaw("!!document.querySelector('[data-testid=trust-host-key-once]')"))) {
-                tapDomCenter("[data-testid=trust-host-key-once]");
-            }
-            assertEquals("no key picker while connecting", "false", evalRaw("!!document.querySelector('" + KEY_PICKER + "')"));
-            Thread.sleep(150);
+            content = harness.hostFile(file, "vault-" + phase + "-io").trim();
+            if (!content.isEmpty()) break;
+            Thread.sleep(200);
         }
-        awaitJsTrue(CONNECTED, WAIT_TIMEOUT_MILLIS);
+        assertEquals("the real remote shell executed the run-unique command", "VAULT42_" + phase + "_" + harness.run, content);
+        harness.assertEveryDialWentThroughTheGateway(harness.nativeDials());
     }
 
     // ---- oracles ----------------------------------------------------------------
@@ -340,75 +391,6 @@ public final class SharedVaultDockerJourneyTest {
         assertTrue("the remembered record is stored", sealed.exists() && hasRecord(sealed));
     }
 
-    // ---- fake edges ----------------------------------------------------------
-
-    /** Google's account chooser: a scripted ID token for one account. */
-    static final class FakeGoogle implements GoogleSyncSession.SignInProvider {
-        final String token;
-
-        FakeGoogle() {
-            long exp = System.currentTimeMillis() / 1000L + 3600L;
-            String payload = b64url("{\"sub\":\"journey-sub-w4\",\"email\":\"" + EMAIL + "\",\"exp\":" + exp + "}");
-            token = b64url("{\"alg\":\"RS256\",\"typ\":\"JWT\"}") + "." + payload + "." + TOKEN_SIGNATURE;
-        }
-
-        @Override
-        public String obtainIdToken(boolean interactiveRequest) throws SyncAuthException {
-            return token;
-        }
-
-        @Override
-        public void clearCredentialState() {
-            // The scripted chooser holds no state.
-        }
-
-        private static String b64url(String json) {
-            return Base64.getUrlEncoder().withoutPadding().encodeToString(json.getBytes(StandardCharsets.UTF_8));
-        }
-    }
-
-    /**
-     * The sync API with the account the web wrote: `main`, `vault` and the
-     * `vk-*` blobs, versioned. Phase 2 is not deployed (every `/vault/*`
-     * route is a 404), the case production runs today.
-     */
-    final class FakeSyncBackend implements GoogleSyncSession.Transport {
-        final Map<String, JSONObject> slots = new HashMap<>();
-        final List<String> reads = Collections.synchronizedList(new ArrayList<>());
-        final List<String> puts = Collections.synchronizedList(new ArrayList<>());
-
-        FakeSyncBackend(JSONObject seeded) throws Exception {
-            for (Iterator<String> keys = seeded.keys(); keys.hasNext(); ) {
-                String slot = keys.next();
-                slots.put(slot, seeded.getJSONObject(slot));
-            }
-        }
-
-        @Override
-        public synchronized GoogleSyncSession.Response send(String method, String url, Map<String, String> headers, String body) {
-            String path = url.replaceFirst("^https://[^/]+", "");
-            if (!("Bearer " + google.token).equals(headers.get("Authorization"))) {
-                return new GoogleSyncSession.Response(401, "{\"message\":\"Unauthorized\"}");
-            }
-            if (path.startsWith("/vault/")) return new GoogleSyncSession.Response(404, "{\"message\":\"Not Found\"}");
-            if (!path.startsWith("/settings/")) return new GoogleSyncSession.Response(404, "{\"message\":\"no route\"}");
-            String slot = path.substring("/settings/".length());
-            try {
-                if ("GET".equals(method)) {
-                    reads.add(path);
-                    JSONObject stored = slots.get(slot);
-                    if (stored == null) return new GoogleSyncSession.Response(404, "{\"message\":\"not found\"}");
-                    return new GoogleSyncSession.Response(200, new JSONObject().put("slot", slot)
-                            .put("version", stored.getInt("version")).put("data", stored.getString("data")).toString());
-                }
-                puts.add(path);
-                return new GoogleSyncSession.Response(403, "{\"message\":\"the journey account is read-only\"}");
-            } catch (Exception error) {
-                return new GoogleSyncSession.Response(400, "{\"message\":\"bad request\"}");
-            }
-        }
-    }
-
     // ---- WebView plumbing (same idiom as SharedAccountPickerJourneyTest) -----
 
     private void setValue(String selector, String value) throws Exception {
@@ -451,6 +433,30 @@ public final class SharedVaultDockerJourneyTest {
         });
         float[] xy = screen.get();
         PhysicalTap.tap(xy[0], xy[1]);
+    }
+
+    /** A wrapped terminal buffer is not a viewport-sized screenshot marker. */
+    private void captureTerminalScreenshot(String name) throws Exception {
+        try {
+            awaitJsTrue("(() => {const rect=n=>{const r=n.getBoundingClientRect();return {left:r.left,right:r.right,top:r.top,bottom:r.bottom,width:r.width,height:r.height};};"
+                    + "const vv=visualViewport;const viewport={left:vv?.offsetLeft??0,top:vv?.offsetTop??0,width:vv?.width??innerWidth,height:vv?.height??innerHeight};"
+                    + "const panes=[...document.querySelectorAll('.terminal-slot')];"
+                    + "const active=panes.filter(n=>n.offsetParent!==null && rect(n).width>0 && rect(n).height>0);"
+                    + "window.__vaultTerminalGeometry={viewport,activePaneCount:active.length,panes:panes.map(n=>({...rect(n),visible:n.offsetParent!==null}))};"
+                    + "if(active.length!==1)return false;const pane=active[0];const container=pane.querySelector('.xterm-rows');"
+                    + "const rows=container?[...container.children]:[];window.__vaultTerminalGeometry.container=container?rect(container):null;"
+                    + "window.__vaultTerminalGeometry.rows=rows.map(n=>({...rect(n),receipt:n.textContent.includes('VAULT42')}));"
+                    + "const row=rows.find(n=>{const r=rect(n);const hit=document.elementFromPoint((r.left+r.right)/2,(r.top+r.bottom)/2);"
+                    + "return n.offsetParent!==null && getComputedStyle(n).visibility==='visible' && n.textContent.includes('VAULT42')"
+                    + " && r.width>0 && r.height>0 && r.top>=viewport.top && r.bottom<=viewport.top+viewport.height"
+                    + " && r.left>=viewport.left && r.right<=viewport.left+viewport.width && !!hit && pane.contains(hit);});"
+                    + "if(!row)return false;row.dataset.vaultTerminalReceipt='active';return true;})()");
+            // The short visible receipt tolerates soft wrapping; connectAccountHost
+            // separately verified the full run-unique command on the real host.
+            captureScreenshot(name, "[data-vault-terminal-receipt=active]");
+        } finally {
+            Log.i(TAG, "VAULT_TERMINAL_GEOMETRY " + evalString("JSON.stringify(window.__vaultTerminalGeometry ?? null)"));
+        }
     }
 
     private void captureScreenshot(String name, String markerSelector) throws Exception {

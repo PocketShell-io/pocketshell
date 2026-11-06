@@ -99,7 +99,7 @@ COPY tests/docker/fixture-pins.txt /opt/pocketshell-fixture/pins.txt
 # interpreter.
 #
 # WHERE the `a` binary lands is load-bearing; being on PATH is NOT enough.
-# `pocketshell.aplexer::_bundled_bin_dirs` resolves `a` next to
+# `pocketshell.runtime.aplexer::_bundled_bin_dirs` resolves `a` next to
 # `sys.executable` and nowhere else — the PATH lookup is a D22 hard cut
 # (#2543). With `a` only on PATH the real CLI reports no aplexer rows and exit
 # 0: a fixture that is silently green-and-empty,

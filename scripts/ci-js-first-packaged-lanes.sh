@@ -216,9 +216,9 @@ fi
 
 # The account key vault (key-vault W4): a web-saved vault key dialled from
 # memory after one passphrase, no key picker; remember on this device. Reuses
-# the shared-app lane's isolated fixture (it only reads it).
+# the validated shared-app pool identity; its actual dials use a separate real gateway.
 if scripts/connected-js-account-vault-docker.sh \
-  --suffix i2855ci \
+  --suffix ikvgwlane \
   --port 2243 \
   --container pocketshell-test-agents-2243 \
   --run-id "vaultw4-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \

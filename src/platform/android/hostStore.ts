@@ -24,6 +24,8 @@ export interface SavedHost {
   /** The Android key vault handle this host authenticates with (#2926). */
   keyHandleId: string;
   gateway?: GatewayTransportTarget;
+  gatewayAuth?: 'managed';
+  trustedVault?: { accountId: string; vaultId: string; epoch: number; keyId: string; revision: number };
 }
 
 export interface StringStorage {
@@ -62,6 +64,7 @@ function toEntry(host: Omit<SavedHost, 'keyHandleId'>): HostEntry {
     remoteForwards: [],
     fromConfig: false,
     ...(host.gateway ? { gateway: { ...host.gateway } } : {}),
+    ...(host.gatewayAuth ? { gatewayAuth: host.gatewayAuth } : {}),
   };
 }
 
@@ -113,6 +116,7 @@ export class AndroidHostStore {
       user: host.user.trim(),
       keyHandleId: host.keyHandleId,
       ...(host.gateway ? { gateway: { ...normalizeGatewayTarget(host.gateway)! } } : {}),
+      ...(host.trustedVault ? { gatewayAuth: 'managed' as const, trustedVault: { ...host.trustedVault } } : {}),
     };
     // A host of the same name is replaced where it stands, never duplicated.
     const saved = this.readSaved();

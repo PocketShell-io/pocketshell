@@ -177,7 +177,7 @@ LANES = (
         result_checker="scripts/check-js-account-picker-results.py",
         methods=frozenset(
             {
-                "sharedPickerListsAccountHostsAfterSignInAndUnlockFromTheHeaderButton",
+                "sharedTrustedPickerNeverAdoptsUntrustedAccountRowsAfterSignInOrSettingsSync",
                 "legacyHomeListsAccountHostsAgainAfterRestartOnceUnlocked",
             }
         ),
@@ -192,7 +192,7 @@ LANES = (
                 "refusesPinMismatchUnverifiedTokenUnknownAndOfflineDevicesBeforeAnyLogin",
                 "dialsTheEnrolledHostThroughTheGatewayListsAttachesTypesResizesAndReconnects",
                 "dialsTheGatewayHostWithTheAccountVaultKeyAfterOneUnlockAndNoKeyPicker",
-                "discoversPairsAndConnectsDeviceThroughTheNormalPickerAndRunsTerminalCommand",
+                "connectsTrustedVaultServerWithoutManualPairingAndCreatesHomeTerminal",
             }
         ),
     ),

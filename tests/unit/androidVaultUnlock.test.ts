@@ -217,13 +217,30 @@ describe('Android key vault unlock, remember, account IO and core adapter (key-v
   });
 
   it('never writes the vault from the phone', async () => {
-    const google = new Google(() => ({ status: 200, body: '{}' }));
+    const google = new Google(() => ({ status: 200, body: '{"slots":[]}' }));
     const transport = createVaultSlotTransport(google);
     expect(await transport.push('vault', '{}', 1)).toEqual({ kind: 'error', message: ANDROID_VAULT_READ_ONLY });
     await expect(transport.delete('vk-x')).rejects.toThrow(ANDROID_VAULT_READ_ONLY);
     expect(await transport.list()).toEqual([]);
     expect(await createVaultServerVerifier(google).setVerifier({ auth: AUTH, epoch: 1 })).toEqual({ kind: 'unavailable' });
-    expect(google.requests).toEqual([]);
+    expect(google.requests).toEqual([{ method: 'GET', endpoint: 'settings' }]);
+  });
+
+  it('lists versioned vault slot metadata only through the fixed native settings endpoint', async () => {
+    const rows = [{ slot: 'th-' + 'A'.repeat(22), version: 4, size: 512, updatedAt: '2026-11-05T00:00:00.000Z' }];
+    const google = new Google(() => ({ status: 200, body: JSON.stringify({ slots: rows }) }));
+    expect(await createVaultSlotTransport(google).list()).toEqual([{ slot: rows[0].slot, version: 4 }]);
+    expect(google.requests).toEqual([{ method: 'GET', endpoint: 'settings' }]);
+  });
+
+  it('rejects duplicate malformed and unauthorized vault directories instead of treating them as empty', async () => {
+    const row = { slot: 'vault', version: 1, size: 512, updatedAt: '2026-11-05T00:00:00.000Z' };
+    for (const slots of [[row, row], [{ ...row, slot: '../token' }], [{ ...row, version: -1 }], [{ ...row, updatedAt: 'yesterday' }], ['vault']]) {
+      const google = new Google(() => ({ status: 200, body: JSON.stringify({ slots }) }));
+      await expect(createVaultSlotTransport(google).list()).rejects.toThrow(/invalid vault directory/);
+    }
+    const unauthorized = new Google(() => ({ status: 403, body: '{}' }));
+    await expect(createVaultSlotTransport(unauthorized).list()).rejects.toThrow(/HTTP 403/);
   });
 
   it('a vault the server hides until a verify (gated mode) still counts as a vault, never as "no vault"', async () => {

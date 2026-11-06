@@ -110,16 +110,15 @@ public final class SshCapabilityPluginGatewayTokenTest {
     }
 
     @Test public void noBridgeMethodCanYieldAToken() {
-        // GoogleSync's bridge is unchanged by the gateway work (no new
-        // method, so nothing new reaches JS from the Google session) ...
-        assertEquals(Set.of("status", "signIn", "signOut", "request"), pluginMethods(GoogleSyncPlugin.class));
+        // GoogleSync exposes the verified public account identity, never its token.
+        assertEquals(Set.of("status", "signIn", "signOut", "request", "accountId"), pluginMethods(GoogleSyncPlugin.class));
         // ... the pairing/directory bridge exposes public metadata, never tokens ...
-        assertEquals(Set.of("list", "pair", "remove", "devices", "serverUrl"), pluginMethods(GatewayPairingPlugin.class));
+        assertEquals(Set.of("list", "pair", "remove", "devices", "serverUrl", "installTrustedHost", "trustedRevisions", "saveTrustedRevision"), pluginMethods(GatewayPairingPlugin.class));
         // ... and the SSH plugin's bridge surface is pinned, so a future
         // method that could hand back a token cannot appear unnoticed.
         assertEquals(Set.of("transportCapabilities", "connect", "cancelOperation", "getConnectionState",
                 "closeConnection", "scheduleClose", "cancelScheduledClose", "exec", "openPty", "readPty",
-                "writePty", "resizePty", "closePty", "sftpList", "sftpRead", "sftpWrite", "sftpWriteIfUnchanged",
+                "writePty", "resizePty", "closePty", "sftpList", "sftpRealPath", "sftpRead", "sftpWrite", "sftpWriteIfUnchanged",
                 "sftpMkdir", "sftpRename", "sftpDelete", "openPortForward", "closePortForward", "resourceSnapshot"),
                 pluginMethods(SshCapabilityPlugin.class));
         // ... and the capability report is a flag, nothing more.

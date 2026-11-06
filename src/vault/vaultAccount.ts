@@ -7,7 +7,7 @@
  *  - slots: `vault` (the plaintext header JSON) and `vk-<keyId>` (one sealed
  *    blob each) are read raw: unlike the `main` host list they are not
  *    passphrase envelopes. Android never writes the vault (keys are uploaded on
- *    the web only), so `push` and `delete` refuse and `list` is empty;
+ *    the web only), so `push` and `delete` refuse; `list` reads bounded slot metadata through native GET /settings;
  *  - the server check: `GET /vault/status` and `POST /vault/verify` (native
  *    allowlists exactly those two). Not deployed yet, so a missing route reads
  *    as `unavailable` and core falls back to the client-side check value: an
@@ -51,7 +51,20 @@ export function createVaultSlotTransport(native: GoogleSyncNative): VaultSlotTra
     delete: async () => {
       throw new Error(ANDROID_VAULT_READ_ONLY);
     },
-    list: async () => [],
+    async list() {
+      const response = await native.request({ method: 'GET', endpoint: 'settings' });
+      if (response.status !== 200) throw new Error(`The sync service returned HTTP ${response.status} for the vault directory.`);
+      const body = parseJson(response.body);
+      if (!isRecord(body) || !Array.isArray(body.slots) || body.slots.length > 1024) throw new Error('The sync service returned an invalid vault directory.');
+      const seen = new Set<string>();
+      return body.slots.map((row: unknown) => {
+        if (!isRecord(row) || typeof row.slot !== 'string' || !/^[A-Za-z0-9_-]{1,64}$/.test(row.slot)
+          || !isCount(row.version) || !isCount(row.size) || typeof row.updatedAt !== 'string'
+          || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(row.updatedAt) || !Number.isFinite(Date.parse(row.updatedAt)) || seen.has(row.slot)) throw new Error('The sync service returned an invalid vault directory.');
+        seen.add(row.slot);
+        return { slot: row.slot, version: row.version };
+      });
+    },
   };
 }
 

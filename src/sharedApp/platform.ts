@@ -18,7 +18,8 @@ import type { ConnectionJournalEntry } from '@/platform/android/connectionHub';
 import { createLocalTrustStore } from '@/platform/android/trustStore';
 import { ADD_HOST_ROUTE, openAccountRoute, openAddHostRoute } from './router';
 import { createAccountHostKeyPrompt } from './accountHostKey';
-import { googleSync } from '@/native/googleSync';
+import { createAndroidTrustedHosts } from '@/platform/android/trustedHosts';
+import { googleSync, verifiedGoogleAccountId } from '@/native/googleSync';
 import { vaultNative } from '@/native/vaultNative';
 import { openExternalUrl } from '@/platform/androidAppInfo';
 import { createAndroidVault } from '@/vault/androidVault';
@@ -90,7 +91,12 @@ const vaultStore = createAndroidVaultStore(googleSync);
  * it?" sending the user to the web's reset. Installed by main.ts next to
  * provideApi.
  */
+const trustedHosts = createAndroidTrustedHosts({ store: vaultStore, accountId: verifiedGoogleAccountId,
+  native: nativeGatewayPairing, hosts: androidHosts });
 export const keyVaultPlatform: KeyVaultPlatform = {
+  accountId: verifiedGoogleAccountId,
+  installTrustedHost: trustedHosts.install,
+  trustedHostRevisions: trustedHosts.revisions,
   store: vaultStore,
   remember: createAndroidRememberApi(vaultNative, vaultScope),
   resetUrl: VAULT_RESET_URL,
@@ -101,6 +107,7 @@ export const androidVault = createAndroidVault({
   core: createStoreVaultCore(vaultStore),
   native: vaultNative,
   scope: vaultScope,
+  accountId: verifiedGoogleAccountId,
   askUnlock: (hostLabel) => requestVaultUnlock('connect', hostLabel),
   onUnlocked: async (syncPassphrase) => {
     if (!syncPassphrase) return;
@@ -138,7 +145,7 @@ export const androidPlatform = createAndroidPlatform({
   openAddHost: openAddHostRoute,
   accountHosts: createAccountHostKeys({ accountHosts: () => syncApi.accountHosts(), ask: accountHostKeyPrompt.ask }),
   gatewayTransport: async () => (await nativeTransports).gatewayTransport,
-  gatewayPairings,
+  gatewayPairings: { ...gatewayPairings, validateTrusted: trustedHosts.validatePairing },
   gateway: createAndroidGatewayDirectory({ native: nativeGatewayPairing, account: googleSync, keys: sshKeyVault, hosts: androidHosts }),
   vault: androidVault,
 });

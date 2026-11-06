@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import json
+import re
 import struct
 import sys
 import tempfile
@@ -161,6 +163,68 @@ def check(results_dir: Path, screenshots_dir: Path, redaction: Path) -> str:
     return f"PASS: {len(executed)} vault journey tests passed, {len(SCREENSHOTS)} screenshots, logcat clean"
 
 
+def check_host(host_dir: Path) -> None:
+    """The controller and sshd are independent of the WebView's connection UI."""
+    try:
+        hello = json.loads((host_dir / "hello.json").read_text())
+        key = (host_dir / "host-key.pub").read_text().strip()
+        pinned = json.loads((host_dir / "pinned-key.json").read_text())
+        entries = [json.loads(line) for line in (host_dir / "controller-journal.jsonl").read_text().splitlines() if line.strip()]
+    except (OSError, ValueError) as exc:
+        raise CheckFailure(f"missing or invalid same-run gateway host evidence: {exc}") from exc
+    if not key or hello.get("hostKeyLine") != key or pinned.get("hostKeyLine") != key or pinned.get("deviceId") != hello.get("deviceId"):
+        raise CheckFailure("trusted descriptor pin does not match the enrolled host's own SSH key")
+    if not re.fullmatch(r"wss://localhost:[0-9]+", hello.get("serverUrl", "")):
+        raise CheckFailure("vault fixture is not reached through its TLS gateway")
+    for phase in ("type", "remember"):
+        def replies(op, suffix):
+            return [e["reply"] for e in entries if e["request"].get("op") == op
+                    and e["request"].get("phase") == f"vault-{phase}-{suffix}" and e["reply"].get("ok")]
+        fingerprints = {r["fingerprint"] for r in replies("authorize", "authorize")}
+        logins = replies("sshd-since", "connect")
+        if len(fingerprints) != 1 or not logins or not any({a["fingerprint"] for a in r["accepted"]} == fingerprints for r in logins):
+            raise CheckFailure(f"the host did not accept the vault credential for {phase}")
+        if any({a["fingerprint"] for a in r["accepted"]} - fingerprints for r in logins):
+            raise CheckFailure(f"foreign credential accepted during {phase}")
+        def valid_file(reply):
+            match = re.fullmatch(rf"gwlane-vault-{phase}-([A-Za-z0-9_-]+)\.txt", reply.get("name", ""))
+            return match and reply.get("content", "").strip() == f"VAULT42_{phase}_{match.group(1)}"
+        if not any(valid_file(r) for r in replies("host-file", "io")):
+            raise CheckFailure(f"no independent run-unique terminal output for {phase}")
+    text = (host_dir / "gateway.log").read_text() if (host_dir / "gateway.log").is_file() else ""
+    if text.count(f"client session open device={hello['deviceId']} ") < 2:
+        raise CheckFailure("gateway did not observe both vault logins")
+
+
+def host_self_test() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        hello = {"deviceId":"vault-test", "serverUrl":"wss://localhost:3288", "hostKeyLine":"ssh-ed25519 test"}
+        (root / "hello.json").write_text(json.dumps(hello))
+        (root / "host-key.pub").write_text(hello["hostKeyLine"])
+        (root / "pinned-key.json").write_text(json.dumps(hello))
+        (root / "gateway.log").write_text("client session open device=vault-test account=x\n" * 2)
+        entries = []
+        for phase in ("type", "remember"):
+            for op, suffix, reply in [("authorize","authorize",{"fingerprint":"SHA256:fixture"}),
+                    ("sshd-since","connect",{"accepted":[{"fingerprint":"SHA256:fixture"}]}),
+                    ("host-file","io",{"name":f"gwlane-vault-{phase}-long-run-123.txt", "content":f"VAULT42_{phase}_long-run-123\n"})]:
+                entries.append({"request":{"op":op,"phase":f"vault-{phase}-{suffix}"},"reply":{"ok":True,**reply}})
+        journal = root / "controller-journal.jsonl"
+        def write(rows): journal.write_text("".join(json.dumps(e) + "\n" for e in rows))
+        write(entries); check_host(root)
+        for index in range(len(entries)):
+            write(entries[:index] + entries[index+1:])
+            try: check_host(root)
+            except CheckFailure: pass
+            else: raise AssertionError(f"missing host phase {index} was accepted")
+        for index, field, value in [(1,"accepted",[{"fingerprint":"foreign"}]), (2,"content","VAULT42_type_foreign-run"), (5,"name","gwlane-vault-remember-foreign.txt")]:
+            changed = json.loads(json.dumps(entries)); changed[index]["reply"][field] = value; write(changed)
+            try: check_host(root)
+            except CheckFailure: pass
+            else: raise AssertionError(f"corrupted host oracle {field} was accepted")
+
+
 def self_test() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -265,16 +329,19 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--self-test", action="store_true")
     parser.add_argument("--results-dir", type=Path)
+    parser.add_argument("--host-dir", type=Path)
     parser.add_argument("--screenshots-dir", type=Path)
     parser.add_argument("--logcat-redaction", type=Path)
     args = parser.parse_args()
     if args.self_test:
         self_test()
+        host_self_test()
         print("PASS: account key-vault result checker self-test")
         return 0
-    if not (args.results_dir and args.screenshots_dir and args.logcat_redaction):
+    if not (args.results_dir and args.screenshots_dir and args.logcat_redaction and args.host_dir):
         parser.error("--results-dir, --screenshots-dir and --logcat-redaction are required")
     try:
+        check_host(args.host_dir)
         print(check(args.results_dir, args.screenshots_dir, args.logcat_redaction))
     except CheckFailure as failure:
         print(f"FAIL: {failure}", file=sys.stderr)

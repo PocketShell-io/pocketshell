@@ -408,6 +408,7 @@ jobs:
           run_check "Shared app" scripts/check-js-shared-app-results.py \
             --results-dir android/app/build/outputs/js-shared-app-results
           run_check "Account key vault" scripts/check-js-account-vault-results.py \
+            --host-dir "android/app/build/outputs/js-account-vault/vaultw4-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/host" \
             --results-dir "android/app/build/outputs/js-account-vault/vaultw4-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/instrumentation-results" \
             --screenshots-dir "android/app/build/outputs/js-account-vault/vaultw4-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/device-screenshots" \
             --logcat-redaction "android/app/build/outputs/js-account-vault/vaultw4-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/logcat-redaction.txt"

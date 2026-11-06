@@ -156,3 +156,29 @@ empty list and silently replace the account. The shared vector fixture at
 cross-client contract for serialization, unknown fields, selection deletion,
 auto-selection, and strict parsing. Its `fixtureSchemaVersion` is test
 metadata and is not sent to the backend.
+
+## Trusted servers on Android
+
+The shared Android picker uses the account vault's authenticated trusted-host
+records for its normal server list. Google sign-in is followed by one vault
+unlock. Legacy settings host rows and local phone keys do not establish trust
+for this list. Explicit settings sync remains available separately.
+
+The native `GoogleSync.accountId` verifies `/me` through the backend authorizer
+and returns only `google:<sub>`. The Google bearer stays native. Native
+`GET /settings` returns bounded slot metadata to core's vault transport; the
+vault decrypts and validates the `th-*` descriptor, managed key binding, current
+vault ID/epoch and revision before a row can connect.
+
+Android persists descriptor revision floors in Keystore-encrypted preferences,
+scoped by account, vault and target slot and excluded from backup/transfer.
+A trusted pairing stores the exact SSH host key and a vault key ID independently
+of local phone key UUIDs. Each held native key is bound to its account, vault,
+epoch and key ID. Explicit dials revalidate the descriptor; native reconnects
+also refuse pairings older than an observed protected revision floor. Locked,
+missing, revoked, tampered or mismatched trust never falls back to a phone key.
+
+After connection, core resumes an existing workspace or opens a home shell.
+Android resolves the directory through SFTP and creates the real session through
+the existing connection controller and host CLI. This uses the same native
+SSH transport and pin checks as an existing session.

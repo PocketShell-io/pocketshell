@@ -18,6 +18,7 @@ Operations:
   authorize      append the phone's public key line to the host user's
                  authorized_keys (what the user does on the host); returns its
                  SHA256 fingerprint
+  home-sessions  independent live HOME session inventory (never creates one)
   mark           a position in the host sshd log
   sshd-since     what sshd logged after a mark: bridged connections, every
                  userauth line, and the fingerprints it accepted
@@ -186,6 +187,13 @@ class Fixture:
             if HOST_FILE.match(name) is None:
                 raise ValueError("host-file reads ~/gwlane-*.txt only")
             return {"name": name, "content": self.host_exec(f"cat {name} 2>/dev/null || true")}
+        if op == "home-sessions":
+            payload = json.loads(self.host_exec("pocketshell sessions list --json"))
+            if payload.get("schema") != 3 or payload.get("errors") != [] or not isinstance(payload.get("sessions"), list):
+                raise ValueError("host session inventory failed closed")
+            home = self.host_exec("printf '%s' \"$HOME\"").strip()
+            rows = [row for row in payload["sessions"] if row.get("workspace") == home and row.get("alive") is True]
+            return {"home": home, "sessions": rows, "count": len(rows)}
         if op == "presence":
             return {"online": self.online()}
         raise ValueError(f"unknown op {op!r}")

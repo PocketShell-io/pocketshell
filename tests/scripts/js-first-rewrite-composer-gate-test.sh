@@ -289,6 +289,16 @@ def require_gateway_action(action: str) -> None:
     build = _yaml_step(action, "    - name: Build the gateway binaries and the test-CA APK\n", "    ")
     if "scripts/connected-js-gateway-docker.sh --suffix i3086gwlane --gateway-src .ci/pocketshell-gateway --prepare-only" not in build:
         raise AssertionError("the action must prepare the dispatcher's i3086gwlane build from the vendored source")
+    vault_marker = "    - name: Prepare independent account vault gateway APK and fixtures\n"
+    if action.count(vault_marker) != 1:
+        raise AssertionError("the action must prepare the independent account-vault gateway exactly once")
+    vault_build = _yaml_step(action, vault_marker, "    ")
+    vault_command = "scripts/connected-js-account-vault-docker.sh --suffix ikvgwlane --gateway-src .ci/pocketshell-gateway --prepare-only"
+    if vault_build.count(vault_command) != 1:
+        raise AssertionError("the action must prepare the dispatcher's ikvgwlane build from the hash-verified gateway source")
+    if not action.index("    - name: Extract the pinned vendored gateway source\n") < action.index(vault_marker):
+        raise AssertionError("the vendored source must be verified before the account-vault gateway builds")
+
     if "go-version-file: .ci/pocketshell-gateway/go.mod" not in action:
         raise AssertionError("the action must set up Go from the vendored gateway source")
 
@@ -332,6 +342,12 @@ for workflow_name, text in gateway_workflows.items():
 
 _extract_name = "    - name: Extract the pinned vendored gateway source\n"
 for label, damaged in (
+    ("account-vault preparation removed", gateway_action.replace(
+        _yaml_step(gateway_action, "    - name: Prepare independent account vault gateway APK and fixtures\n", "    "), "", 1)),
+    ("account-vault stale package suffix", gateway_action.replace(
+        "connected-js-account-vault-docker.sh --suffix ikvgwlane", "connected-js-account-vault-docker.sh --suffix i2855ci", 1)),
+    ("account-vault wrong source", gateway_action.replace(
+        "connected-js-account-vault-docker.sh --suffix ikvgwlane --gateway-src .ci/pocketshell-gateway", "connected-js-account-vault-docker.sh --suffix ikvgwlane --gateway-src unverified", 1)),
     ("secret input reintroduced", gateway_action.replace("runs:\n  using: composite\n",
         "runs:\n  using: composite\ninputs:\n  read-token:\n    required: true\n", 1)),
     ("private checkout reintroduced", gateway_action.replace("    - name: Set up Go for the gateway lane\n",
@@ -989,7 +1005,7 @@ def exercise_packaged_lanes(label: str, *, preflight: int = 0, smoke: int = 0, l
             raise AssertionError(f"{label}: account-picker lane arguments/status were not preserved: {trace_lines[11]!r}")
         if trace_lines[12] != f"gateway\t{gateway}\t--suffix i3086gwlane --run-id gw3086-run-1 --test-only":
             raise AssertionError(f"{label}: gateway lane arguments/status were not preserved: {trace_lines[12]!r}")
-        expected_vault_args = "--suffix i2855ci --port 2243 --container pocketshell-test-agents-2243 --run-id vaultw4-run-1 --test-only"
+        expected_vault_args = "--suffix ikvgwlane --port 2243 --container pocketshell-test-agents-2243 --run-id vaultw4-run-1 --test-only"
         if trace_lines[14] != f"account-vault\t{account_vault}\t{expected_vault_args}":
             raise AssertionError(f"{label}: account-vault lane arguments/status were not preserved: {trace_lines[14]!r}")
         expected_upgrade_args = "--port 2244 --container pocketshell-test-agents-2244 --run-id up2926-run-1"

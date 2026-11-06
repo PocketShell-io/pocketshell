@@ -22,7 +22,7 @@ export type GoogleSyncRequest =
   | { method: 'GET'; slot?: string }
   | { method: 'PUT'; slot: string; body: string }
   /** The key vault's server check (key-vault W2 phase 2); 404/503 = not deployed. */
-  | { method: 'GET'; endpoint: 'vault/status' }
+  | { method: 'GET'; endpoint: 'settings' | 'vault/status' }
   | { method: 'POST'; endpoint: 'vault/verify'; body: string };
 
 /** The narrow capability the sync adapter needs; tests supply a fake. */
@@ -45,6 +45,7 @@ export const GOOGLE_SYNC_ERROR_CODES = [
 ] as const;
 
 type NativeGoogleSyncPlugin = Plugin & {
+  accountId(): Promise<unknown>;
   status(): Promise<unknown>;
   signIn(): Promise<unknown>;
   signOut(): Promise<unknown>;
@@ -81,6 +82,15 @@ export function createGoogleSyncNative(plugin: NativeGoogleSyncPlugin): GoogleSy
   };
 }
 
-export const googleSync: GoogleSyncNative = createGoogleSyncNative(
-  registerPlugin<NativeGoogleSyncPlugin>('GoogleSync'),
-);
+const nativeGoogleSyncPlugin = registerPlugin<NativeGoogleSyncPlugin>('GoogleSync');
+export const googleSync: GoogleSyncNative = createGoogleSyncNative(nativeGoogleSyncPlugin);
+
+/** Native verifies the subject through the backend authorizer. No JWT or email-derived identity. */
+export async function verifiedGoogleAccountId(): Promise<string | null> {
+  if (!(await googleSync.status()).signedIn) return null;
+  const reply = await nativeGoogleSyncPlugin.accountId();
+  if (!isRecord(reply) || typeof reply.accountId !== 'string' || !/^google:[0-9A-Za-z_-]{1,128}$/.test(reply.accountId)) {
+    throw new Error('The signed-in account could not be verified.');
+  }
+  return reply.accountId;
+}

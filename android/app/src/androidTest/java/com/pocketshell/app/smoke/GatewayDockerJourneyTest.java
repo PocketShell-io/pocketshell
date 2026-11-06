@@ -30,6 +30,8 @@ import org.json.JSONTokener;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
+import org.junit.FixMethodOrder;
+import org.junit.runners.MethodSorters;
 import org.junit.runner.RunWith;
 
 import java.io.BufferedReader;
@@ -60,29 +62,16 @@ import javax.crypto.spec.PBEKeySpec;
 import javax.crypto.spec.SecretKeySpec;
 
 /**
- * pocketshell#3086 slice 3: the packaged app dials a host registered on the
- * REAL PocketShell gateway, end to end, on the emulator.
- *
- * <p>Route: the shared app's host picker → core's ConnectionController → the
- * native SshCapability plugin → native broker exchange → wss:// to the
- * gateway (a TLS front with the run's test CA, through {@code adb reverse}) →
- * the real gateway → the host's enrolled pocketshell-link agent → the host's
- * own sshd on loopback. The emulator has no route to that sshd at all.
- *
- * <p>Fake edges, both installed through {@link GoogleSyncEnvironment} like the
- * account lanes: Google's account chooser, and the sync API — whose
- * {@code POST /gateway/token} signs a broker-shaped RS256 routing token with
- * the run's throwaway broker key, so the gateway verifies it exactly as it
- * verifies the real broker's. Everything between is production code.
- *
- * <p>Host-side truth comes from the runner's controller
- * (scripts/gateway-lane-fixture.py) over a socket at 10.0.2.2: it authorizes
- * the phone's key the way a user does on the host, reads the host sshd's log
- * and files, and stops/starts the host agent. scripts/connected-js-gateway-docker.sh
- * runs this class; scripts/check-js-gateway-results.py checks its JUnit report
- * and the controller's journal.
+ * Packaged trusted-vault journeys through the real TLS gateway, enrolled agent,
+ * private sshd, CLI, aplexer and PTY. Only Google and the native sync API edge
+ * are faked; account slots are authenticated core-generated encrypted records.
+ * The visible Google/unlock/server controls drive every normal connection.
+ * The host-side controller records independent pin, login, session and file
+ * evidence. NAME_ASCENDING deliberately runs the fresh-HOME creation case first
+ * against a new per-run Docker host; both before/after inventories are checked.
  */
 @RunWith(AndroidJUnit4.class)
+@FixMethodOrder(MethodSorters.NAME_ASCENDING)
 public final class GatewayDockerJourneyTest {
     private static final String TAG = "PocketshellGatewayLane";
     private static final long JS_TIMEOUT_SECONDS = 15;
@@ -99,11 +88,13 @@ public final class GatewayDockerJourneyTest {
             "[...document.querySelectorAll('.xterm')].find((n)=>n.offsetParent!==null)?.querySelector('.xterm-helper-textarea')";
     private static final String PICKER_ERROR = "(document.querySelector('.picker p.error')?.textContent ?? '').trim()";
 
-    private ActivityScenario<MainActivity> scenario;
-    private JSONObject hello;
+    ActivityScenario<MainActivity> scenario;
+    JSONObject hello;
     private FakeGoogle google;
-    private FakeSyncBackend backend;
-    private String run;
+    FakeSyncBackend backend;
+    String run;
+    private String phoneFingerprint;
+    private final JSONArray previousDials = new JSONArray();
 
     @Before
     public void installFakeEdges() throws Exception {
@@ -115,7 +106,8 @@ public final class GatewayDockerJourneyTest {
         backend = new FakeSyncBackend();
         backend.seed(encrypt(accountHosts().toString()));
         GoogleSyncEnvironment.installForTesting(activity -> google, backend);
-        targetContext().deleteSharedPreferences(AUTH_PREFS);
+        for (String prefs : new String[]{AUTH_PREFS, "pocketshell-gateway-pairings", "pocketshell-trusted-host-revisions", "pocketshell_vault_device_v1"})
+            targetContext().deleteSharedPreferences(prefs);
     }
 
     @After
@@ -149,12 +141,12 @@ public final class GatewayDockerJourneyTest {
      */
     @Test
     public void refusesPinMismatchUnverifiedTokenUnknownAndOfflineDevicesBeforeAnyLogin() throws Exception {
+        selectVariant("active");
         launchSignedInAndUnlocked();
-        String handle = generateAuthorizedPhoneKey();
+        authorizeVault("authorize");
 
         // 1. 4401: the gateway cannot verify the routing token. First, so this
         // activity's native token cache holds no valid token to reuse.
-        pair(hello.getString("deviceId"), hello.getString("hostKeyLine"), handle);
         backend.signWithWrongKey = true;
         int mark = controller(new JSONObject().put("op", "mark")).getInt("mark");
         String error = dialExpectingError(DEVICE_HOST);
@@ -163,11 +155,11 @@ public final class GatewayDockerJourneyTest {
         assertEquals("a refused token never reaches sshd: " + unauthorized, 0, unauthorized.getInt("connections"));
         backend.signWithWrongKey = false;
 
-        // 2. Pin mismatch: paired with a key that is not the host's.
-        pair(hello.getString("deviceId"), hello.getString("wrongHostKeyLine"), handle);
+        // 2. Valid authenticated descriptor carrying a pin that is not the host's.
+        restartWithVariant("wrongPin");
         mark = controller(new JSONObject().put("op", "mark")).getInt("mark");
         error = dialExpectingError(DEVICE_HOST);
-        assertTrue("a pin mismatch names the pairing: " + error,
+        assertTrue("a pin mismatch names the authenticated trust refusal: " + error,
                 error.startsWith("The host's SSH key does not match the key this phone paired for that device."));
         assertFalse("a gateway dial never offers a trust prompt", exists("[data-testid=host-key-trust-gate]"));
         JSONObject mismatch = sshdSince(mark, "pin-mismatch");
@@ -175,17 +167,19 @@ public final class GatewayDockerJourneyTest {
                 mismatch.getInt("connections") >= 1);
         assertEquals("a pin mismatch makes ZERO userauth attempts: " + mismatch, 0, mismatch.getJSONArray("userauth").length());
         screenshot("pin-mismatch");
+        assertInstalledTrustedRevision(2);
 
-        // The correct pin from here on: the line the host's enrolled agent prints.
-        pair(hello.getString("deviceId"), hello.getString("hostKeyLine"), handle);
+        // The next isolated descriptor contains the unknown enrolled route.
 
         // 3. 4404: a device the gateway has never enrolled.
-        pair(hello.getString("missingDeviceId"), hello.getString("hostKeyLine"), handle);
+        restartWithVariant("missing");
         mark = controller(new JSONObject().put("op", "mark")).getInt("mark");
         error = dialExpectingError(MISSING_HOST);
         assertEquals("an unknown device is not registered", "That host is not registered on the gateway.", error);
         JSONObject notFound = sshdSince(mark, "not-found-4404");
         assertEquals(0, notFound.getInt("connections"));
+
+        restartWithVariant("restoredPin");
 
         // 4. 4503: the enrolled device's agent is offline (the gateway's own presence says so).
         assertFalse(controller(new JSONObject().put("op", "agent-stop").put("phase", "offline")).optBoolean("online", true));
@@ -195,6 +189,7 @@ public final class GatewayDockerJourneyTest {
                 "The host is not connected to the gateway right now — check that its agent is running.", error);
         assertFalse("offline is not a sign-in failure: " + error, error.toLowerCase(java.util.Locale.ROOT).contains("sign"));
         screenshot("device-offline");
+        assertInstalledTrustedRevision(3);
         JSONObject offline = sshdSince(mark, "offline-4503");
         assertEquals(0, offline.getInt("connections"));
         assertTrue(controller(new JSONObject().put("op", "agent-start").put("phase", "online-again")).optBoolean("online"));
@@ -217,8 +212,7 @@ public final class GatewayDockerJourneyTest {
     @Test
     public void dialsTheEnrolledHostThroughTheGatewayListsAttachesTypesResizesAndReconnects() throws Exception {
         launchSignedInAndUnlocked();
-        String handle = generateAuthorizedPhoneKey();
-        pair(hello.getString("deviceId"), hello.getString("hostKeyLine"), handle);
+        authorizeVault("authorize");
 
         int mark = controller(new JSONObject().put("op", "mark")).getInt("mark");
         tapHost(DEVICE_HOST);
@@ -226,10 +220,11 @@ public final class GatewayDockerJourneyTest {
         assertEquals("the gateway dial connects", "", evalString(PICKER_ERROR));
         assertFalse("no trust prompt for a pinned gateway host", exists("[data-testid=host-key-trust-gate]"));
         JSONObject login = sshdSince(mark, "connect");
-        assertTrue("the host accepted the phone's own key over the gateway: " + login,
+        assertTrue("the host accepted the decrypted vault key over the gateway: " + login,
                 acceptedFingerprints(login).contains(phoneFingerprint));
 
         // The host's aplexer sessions, listed through the gateway.
+        if (exists("button[title=\"Show session panel\"]")) click("button[title=\"Show session panel\"]");
         String folder = hello.getString("sessionFolder");
         awaitJsTrue("[...document.querySelectorAll('.dir-header')].some((n)=>n.textContent.includes(" + JSONObject.quote(folder) + "))");
         evalString("(() => {const row=[...document.querySelectorAll('.dir-header')].find((n)=>n.textContent.includes("
@@ -239,7 +234,7 @@ public final class GatewayDockerJourneyTest {
         // Terminal I/O: the shell runs what was typed; the host keeps its own copy.
         String io = "gwlane-io-" + run + ".txt";
         typeCommand("echo GWLANE_$((6*7))_" + run + " | tee ~/" + io);
-        awaitJsTrue(VISIBLE_TERMINAL + ".includes('GWLANE_42_" + run + "')");
+        awaitJsTrue(VISIBLE_TERMINAL + ".includes('GWLANE_42')");
         assertEquals("GWLANE_42_" + run, hostFile(io, "io").trim());
         screenshot("terminal-io");
 
@@ -293,7 +288,7 @@ public final class GatewayDockerJourneyTest {
         assertEquals("typing works again after the gateway reconnect", "GWLANE_BACK_42_" + run, content);
         screenshot("after-reconnect");
         JSONObject relogin = sshdSince(mark, "reconnect");
-        assertTrue("the reconnect logged in again with the phone's key, through the gateway: " + relogin,
+        assertTrue("the reconnect logged in again with the vault key, through the gateway: " + relogin,
                 acceptedFingerprints(relogin).contains(phoneFingerprint));
 
         JSONArray dials = nativeDials();
@@ -305,54 +300,16 @@ public final class GatewayDockerJourneyTest {
                 .put("rows", new JSONArray().put(hostRowsBefore).put(hostRowsAfter)));
     }
 
-    /**
-     * Key-vault W4: the maintainer's gateway report — signed in, the vault
-     * passphrase typed, and the gateway dial still asked for a key. The
-     * account vault (built by core's KeyVaultStore on the host) binds this
-     * gateway host to a throwaway key that ONLY the host authorizes; the
-     * phone's pairing key is deliberately not authorized. One vault unlock
-     * lists the account (the vault carries the sync passphrase), and the dial
-     * goes through the gateway with the vault key as an ephemeral native
-     * handle: no key picker, the pairing's pin enforced, nothing written.
-     */
+    /** One visible vault unlock decrypts the managed credential and pin; no manual key or pairing form. */
     @Test
     public void dialsTheGatewayHostWithTheAccountVaultKeyAfterOneUnlockAndNoKeyPicker() throws Exception {
-        JSONObject fixture = new JSONObject(shell("cat " + requiredArgument("vaultFixture")));
-        assertTrue("the runner staged a vault for the gateway host", fixture.getString("alias").equals(DEVICE_HOST));
-        backend.vaultSlots = fixture.getJSONObject("slots");
-        JSONObject vaultKey = controller(new JSONObject().put("op", "authorize")
-                .put("publicKey", fixture.getString("publicKey")).put("phase", "vault-authorize"));
-        String vaultFingerprint = vaultKey.getString("fingerprint");
-
-        scenario = ActivityScenario.launch(SharedShellLaunch.intent());
-        awaitJsTrue("!!document.querySelector('.picker .header-actions')", 60_000);
-        evalRaw("localStorage.removeItem('" + SHARED_SETTINGS_KEY + "'); localStorage.setItem('" + HOSTS_KEY + "', '[]'); 'ok'");
-        click(".picker .header-actions .account-action");
-        awaitJsTrue("!!document.querySelector('[data-testid=android-account] .account-login .account-primary:not([disabled])')");
-        click("[data-testid=android-account] .account-login .account-primary");
-        awaitJsTrue("document.querySelector('[data-testid=android-account] .account-identity')?.textContent.includes("
-                + JSONObject.quote(hello.getString("email")) + ") === true");
-        // A new launch: the signed-in account's vault asks once, on the shared sheet.
-        String stale = "vault-" + SystemClock.uptimeMillis();
-        evalRaw("window.__pocketshellStaleDocument = " + JSONObject.quote(stale) + "; location.replace('/'); 'reload'");
-        awaitJsTrue("window.__pocketshellStaleDocument !== " + JSONObject.quote(stale)
-                + " && document.readyState === 'complete' && !!document.querySelector('[data-testid=vault-unlock-gate]')", 60_000);
-        assertEquals("one unlock sheet, never two", "1", evalRaw("document.querySelectorAll('[data-testid=vault-unlock-gate]').length"));
-        installDialRecorder();
+        selectVariant("active");
+        launchSignedInAndUnlocked();
+        String vaultFingerprint = authorizeVault("vault-authorize");
         evalRaw("window.__psSawKeyPicker = false; new MutationObserver(() => {"
                 + " if (document.querySelector('[data-testid=account-host-key-gate]')) window.__psSawKeyPicker = true; })"
                 + ".observe(document.body, {childList: true, subtree: true}); 'watching'");
-        setValue("[data-testid=vault-unlock-passphrase]", "pocketshell-vault-test-passphrase gateway");
-        click("[data-testid=vault-unlock-submit]");
-        awaitJsTrue("!document.querySelector('[data-testid=vault-unlock-gate]')", 120_000);
-        // The vault's sync passphrase unlocked the account: its gateway hosts are listed.
-        awaitJsTrue("[...document.querySelectorAll('.picker .host-name')].map((n)=>n.textContent.trim()).includes("
-                + JSONObject.quote(DEVICE_HOST) + ")", 120_000);
         screenshot("vault-unlocked-gateway-hosts");
-
-        // The pairing names the device and its pin; its own key is NOT on the host.
-        String pairingKey = generatePhoneKey(false);
-        pair(hello.getString("deviceId"), hello.getString("hostKeyLine"), pairingKey);
 
         int mark = controller(new JSONObject().put("op", "mark")).getInt("mark");
         tapHost(DEVICE_HOST);
@@ -382,151 +339,157 @@ public final class GatewayDockerJourneyTest {
 
     // ---- the journey's steps -------------------------------------------------
 
-    /**
-     * The installed app's gateway capability, not a seeded account host or
-     * a direct pairing call: discover the real device, fill the shared form,
-     * save it, and connect through the picker's ordinary dial path.
-     */
+    /** Fresh authenticated vault descriptors drive the real picker, pairing, home-shell create and terminal. */
     @Test
-    public void discoversPairsAndConnectsDeviceThroughTheNormalPickerAndRunsTerminalCommand() throws Exception {
-        // No account host can provide the device row or the transport marker.
+    public void connectsTrustedVaultServerWithoutManualPairingAndCreatesHomeTerminal() throws Exception {
+        // This alphabetically first method is the fresh-HOME production case.
+        assertEquals("the fixture did not pre-create a HOME shell", 0,
+                controller(new JSONObject().put("op", "home-sessions").put("phase", "trusted-before")).getInt("count"));
+        JSONObject fixture = new JSONObject(shell("cat " + requiredArgument("vaultFixture")));
+        backend.vaultSlots = new JSONObject(fixture.getJSONObject("slots").toString());
+        String trustedSlot = null;
+        java.util.Iterator<String> slotNames = backend.vaultSlots.keys();
+        while (slotNames.hasNext()) { String slot = slotNames.next(); if (slot.startsWith("th-")) trustedSlot = slot; }
+        assertNotNull("the runner staged a real encrypted trusted descriptor", trustedSlot);
+        JSONObject stagedSlots = backend.vaultSlots;
+        JSONObject descriptorSlot = backend.vaultSlots.getJSONObject(trustedSlot);
+        String originalDescriptor = descriptorSlot.getString("data");
+        JSONObject corrupted = new JSONObject(originalDescriptor);
+        String ciphertext = corrupted.getString("ct");
+        corrupted.put("ct", (ciphertext.startsWith("A") ? "B" : "A") + ciphertext.substring(1));
+        descriptorSlot.put("data", corrupted.toString());
         backend.seed(encrypt(new JSONObject().put("hosts", new JSONArray()).toString()));
+        JSONObject authorized = controller(new JSONObject().put("op", "authorize")
+                .put("publicKey", fixture.getString("publicKey")).put("phase", "trusted-authorize"));
+        selectVariant("beforeRegistration");
         scenario = ActivityScenario.launch(SharedShellLaunch.intent());
-        awaitJsTrue("!!document.querySelector('.picker .header-actions')", 60_000);
-        String stale = "picker-" + SystemClock.uptimeMillis();
-        evalRaw("window.__pocketshellStaleDocument=" + JSONObject.quote(stale) + ";"
-                + "localStorage.removeItem('" + SHARED_SETTINGS_KEY + "');"
-                + "localStorage.setItem('" + HOSTS_KEY + "','[]');location.reload();'reload'");
-        awaitJsTrue("window.__pocketshellStaleDocument!==" + JSONObject.quote(stale)
-                + " && document.readyState==='complete' && !!document.querySelector('.picker .header-actions')", 60_000);
+        awaitJsTrue("!!document.querySelector('[data-testid=server-google-login]')", 60_000);
+        evalRaw("localStorage.setItem('" + HOSTS_KEY + "','[]'); localStorage.removeItem('ps.lastFolder.gw-dev'); localStorage.removeItem('ps.lastFolder.gw-missing'); 'empty'");
+        click("[data-testid=server-google-login]");
+        awaitJsTrue("!!document.querySelector('[data-testid=vault-unlock-gate]')", 60_000);
+        setValue("[data-testid=vault-unlock-passphrase]", "pocketshell-vault-test-passphrase gateway");
+        click("[data-testid=vault-unlock-submit]");
+        awaitJsTrue("!document.querySelector('[data-testid=vault-unlock-gate]') && !document.querySelector('[data-testid=trusted-server-connect]') && !!document.querySelector('.trusted-servers .btn-ghost')", 120_000);
+        // A second client registers after this phone unlocked an older index.
+        // Refresh must fetch the authenticated header/index before discovering it.
+        backend.vaultSlots = stagedSlots;
+        int beforeRegistration = backend.trustedReads;
+        click(".trusted-servers .btn-ghost");
+        awaitTrustedReadAfter(beforeRegistration);
+        awaitJsTrue("!!document.querySelector('.trusted-servers [role=alert]') && !document.querySelector('[data-testid=trusted-server-connect]')", 120_000);
+        screenshot("trusted-vault-tampered");
+        JSONObject foreign = new JSONObject(originalDescriptor).put("accountId", "google:foreign-subject");
+        descriptorSlot.put("data", foreign.toString());
+        int beforeForeign = backend.trustedReads;
+        click(".trusted-servers .btn-ghost");
+        awaitTrustedReadAfter(beforeForeign);
+        awaitJsTrue("!!document.querySelector('.trusted-servers [role=alert]') && !document.querySelector('[data-testid=trusted-server-connect]')", 120_000);
+        screenshot("trusted-vault-foreign");
+        descriptorSlot.put("data", originalDescriptor);
+        int beforeValid = backend.trustedReads;
+        click(".trusted-servers .btn-ghost");
+        awaitTrustedReadAfter(beforeValid);
+        awaitJsTrue("!!document.querySelector('[data-testid=trusted-server-connect]:not([disabled])')", 120_000);
+        assertEquals("cloud descriptor discovery saves no phone host row", "[]", evalString("localStorage.getItem('" + HOSTS_KEY + "')"));
         installDialRecorder();
-        click(".picker .header-actions .account-action");
-        awaitJsTrue("!!document.querySelector('[data-testid=android-account] .account-login .account-primary:not([disabled])')");
-        click("[data-testid=android-account] .account-login .account-primary");
-        awaitJsTrue("document.querySelector('[data-testid=android-account] .account-identity')?.textContent.includes("
-                + JSONObject.quote(hello.getString("email")) + ")===true");
-        click("[data-testid=android-account-back]");
-
-        String handle = generatePhoneKey(true, "picker-authorize");
-        // Removing androidPlatform.api.gateway must fail here: no fake
-        // store row, account host, pairing helper or replacement API is used.
-        awaitJsTrue("!!document.querySelector('[data-testid=gateway-devices-reload]')");
-        click("[data-testid=gateway-devices-reload]");
-        String device = "[data-testid=gateway-device][data-device-id=\"" + hello.getString("deviceId") + "\"]";
-        awaitJsTrue("document.querySelector(" + JSONObject.quote(device) + ")?.dataset.status==='online'", 60_000);
-        assertEquals("nothing is saved before the user adds the discovered device", "[]", evalString("localStorage.getItem('" + HOSTS_KEY + "')"));
-        screenshot("picker-discovered-device");
-        click(device + " [data-testid=gateway-device-add]");
-        awaitJsTrue("document.querySelector('[data-testid=gateway-add-device]')?.dataset.keysLoaded==='true'");
-        assertEquals("the real device id is prefilled", hello.getString("deviceId"), evalString("document.querySelector('[data-testid=gateway-add-device-id]').value"));
-        assertEquals("the advisory host key is never accepted as a pin", "", evalString("document.querySelector('[data-testid=gateway-add-pin]').value"));
-        setValue("[data-testid=gateway-add-name]", "picker-device");
-        setValue("[data-testid=gateway-add-user]", hello.getString("user"));
-        setValue("[data-testid=gateway-add-pin]", hello.getString("hostKeyLine"));
-        setValue("[data-testid=gateway-add-key]", handle);
-        awaitJsTrue("document.querySelector('[data-testid=gateway-add-save]')?.disabled===false");
-        click("[data-testid=gateway-add-save]");
-        awaitJsTrue("document.querySelector('[data-testid=gateway-add-saved]')?.textContent.includes('picker-device')===true");
-        JSONObject saved = new JSONArray(evalString("localStorage.getItem('" + HOSTS_KEY + "')")).getJSONObject(0);
-        assertEquals("the saved route comes from the form", hello.getString("deviceId"), saved.getJSONObject("gateway").getString("deviceId"));
-        assertEquals(hello.getString("serverUrl"), saved.getJSONObject("gateway").getString("serverUrl"));
-        assertEquals("the selected existing phone key was saved", handle, saved.getString("keyHandleId"));
+        screenshot("trusted-vault-servers");
         int mark = controller(new JSONObject().put("op", "mark")).getInt("mark");
-        click("[data-testid=gateway-add-connect]");
-        awaitJsTrue("!!document.querySelector('button[title=\"Back to hosts\"]') || " + PICKER_ERROR + "!==''", 120_000);
-        assertEquals("the normal UI connects the saved gateway device", "", evalString(PICKER_ERROR));
-        JSONObject login = sshdSince(mark, "picker-connect");
-        assertTrue("the host accepted the key chosen in the form", acceptedFingerprints(login).contains(phoneFingerprint));
-        String folder = hello.getString("sessionFolder");
-        awaitJsTrue("[...document.querySelectorAll('.dir-header')].some(n=>n.textContent.includes(" + JSONObject.quote(folder) + "))");
-        evalString("(()=>{[...document.querySelectorAll('.dir-header')].find(n=>n.textContent.includes(" + JSONObject.quote(folder) + ")).click();return 'clicked';})()");
-        awaitJsTrue(VISIBLE_TERMINAL + ".includes('$')");
-        String marker = "GWLANE_PICKER_42_" + run;
-        String file = "gwlane-picker-io-" + run + ".txt";
-        typeCommand("echo GWLANE_PICKER_$((6*7))_" + run + " | tee ~/" + file);
-        awaitJsTrue(VISIBLE_TERMINAL + ".includes(" + JSONObject.quote(marker) + ")");
-        assertEquals("the Docker host independently read the phone command's exact output", marker, hostFile(file, "picker-io").trim());
+        click("[data-testid=trusted-server-connect]");
+        awaitJsTrue(VISIBLE_TERMINAL + ".includes('$')", 120_000);
+        assertEquals("normal server tap created exactly one HOME shell", 1,
+                controller(new JSONObject().put("op", "home-sessions").put("phase", "trusted-after")).getInt("count"));
+        assertFalse("no manual key chooser", exists("[data-testid=account-host-key-gate]"));
+        assertFalse("no host pin prompt", exists("[data-testid=host-key-trust-gate]"));
+        assertTrue("native SSH authenticated with the vault key", acceptedFingerprints(sshdSince(mark, "trusted-connect"))
+                .contains(authorized.getString("fingerprint")));
+        String file = "gwlane-trusted-io-" + run + ".txt";
+        // Force the same narrow terminal that soft-wrapped a long CI run id in #3106.
+        // The visible receipt is deliberately short; the independent host oracle
+        // verifies the full run-unique payload and that the new shell's cwd is HOME.
+        setWebViewWidthFraction(0.55f);
+        try {
+            awaitJsTrue("document.querySelector('.xterm-screen')?.getBoundingClientRect().width < 350");
+            typeCommand("echo GWTRUST42_" + run + " | tee ./" + file);
+            awaitJsTrue(VISIBLE_TERMINAL + ".includes('GWTRUST42')");
+            assertEquals("GWTRUST42_" + run, hostFile(file, "trusted-io").trim());
+            screenshot("trusted-vault-terminal");
+        } finally { setWebViewWidthFraction(1f); }
         assertEveryDialWentThroughTheGateway(nativeDials());
+        assertEquals("no cloud writes from the phone", 0, backend.writes);
         assertNoRoutingTokenEscaped();
-        screenshot("picker-terminal-io");
-        Log.i(TAG, "GATEWAY_PICKER " + new JSONObject().put("device", hello.getString("deviceId"))
-                .put("phoneFingerprint", phoneFingerprint).put("hostFile", file));
     }
 
-    private String phoneFingerprint;
+    private void awaitTrustedReadAfter(int previous) throws Exception {
+        long deadline = SystemClock.uptimeMillis() + WAIT_TIMEOUT_MILLIS;
+        while (backend.trustedReads <= previous && SystemClock.uptimeMillis() < deadline) Thread.sleep(50);
+        assertTrue("the new encrypted descriptor was fetched through native /settings", backend.trustedReads > previous);
+    }
 
-    /** The shared app, signed in with the fake Google account and unlocked, listing the account's gateway hosts. */
-    private void launchSignedInAndUnlocked() throws Exception {
+    JSONObject fixture() throws Exception {
+        return new JSONObject(shell("cat " + requiredArgument("vaultFixture")));
+    }
+
+    void selectVariant(String variant) throws Exception {
+        backend.vaultSlots = new JSONObject(fixture().getJSONObject("variants").getJSONObject(variant).toString());
+    }
+
+    String authorizeVault(String phase) throws Exception {
+        phoneFingerprint = controller(new JSONObject().put("op", "authorize")
+                .put("publicKey", fixture().getString("publicKey")).put("phase", phase)).getString("fingerprint");
+        return phoneFingerprint;
+    }
+
+    void launchSignedInLocked() throws Exception {
         scenario = ActivityScenario.launch(SharedShellLaunch.intent());
-        awaitJsTrue("!!document.querySelector('.picker .header-actions')", 60_000);
-        String staleDocument = "reload-" + SystemClock.uptimeMillis();
-        evalRaw("window.__pocketshellStaleDocument = " + JSONObject.quote(staleDocument) + ";"
-                + "localStorage.removeItem('" + SHARED_SETTINGS_KEY + "');"
-                + "localStorage.setItem('" + HOSTS_KEY + "', '[]');"
-                + "location.reload(); 'reload'");
-        awaitJsTrue("window.__pocketshellStaleDocument !== " + JSONObject.quote(staleDocument)
-                + " && document.readyState === 'complete' && !!document.querySelector('.picker .header-actions')", 60_000);
+        awaitJsTrue("!!document.querySelector('[data-testid=server-google-login]')", 60_000);
+        evalRaw("localStorage.removeItem('" + SHARED_SETTINGS_KEY + "'); localStorage.setItem('" + HOSTS_KEY + "','[]'); localStorage.removeItem('ps.lastFolder.gw-dev'); localStorage.removeItem('ps.lastFolder.gw-missing'); 'empty'");
+        click("[data-testid=server-google-login]");
+        awaitJsTrue("!!document.querySelector('[data-testid=vault-unlock-gate]')", 60_000);
+    }
+
+    /** Only the Google provider and sync API are fake: normal visible sign-in and vault unlock. */
+    void launchSignedInAndUnlocked() throws Exception {
+        if (backend.vaultSlots == null) selectVariant("active");
+        launchSignedInLocked();
+        setValue("[data-testid=vault-unlock-passphrase]", "pocketshell-vault-test-passphrase gateway");
+        click("[data-testid=vault-unlock-submit]");
+        awaitJsTrue("!!document.querySelector('[data-testid=trusted-server-connect]:not([disabled])')", 120_000);
         installDialRecorder();
-
-        click(".picker .header-actions .account-action");
-        awaitJsTrue("!!document.querySelector('[data-testid=android-account] .account-login .account-primary:not([disabled])')");
-        click("[data-testid=android-account] .account-login .account-primary");
-        awaitJsTrue("document.querySelector('[data-testid=android-account] .account-identity')?.textContent.includes("
-                + JSONObject.quote(hello.getString("email")) + ") === true");
-        click("[data-testid=android-account-back]");
-        awaitJsTrue("!!document.querySelector('.picker .locked-note')");
-        click(".picker .locked-note .btn-ghost");
-        awaitJsTrue("!!document.querySelector('[data-testid=android-account] .passphrase-field input:not([disabled])')");
-        setValue("[data-testid=android-account] .passphrase-field input", PASSPHRASE);
-        click("[data-testid=android-account] .host-heading .btn-ghost");
-        awaitJsTrue("(document.querySelector('[data-testid=android-account] .account-message')?.textContent ?? '').includes('2 synced hosts')", 120_000);
-        click("[data-testid=android-account-back]");
-        awaitJsTrue("[...document.querySelectorAll('.picker .host-name')].map((n)=>n.textContent.trim()).includes(" + JSONObject.quote(DEVICE_HOST) + ")");
     }
 
-    /** A key generated in the phone's vault; its public line goes on the host like a user pastes it there. */
-    private String generateAuthorizedPhoneKey() throws Exception {
-        return generatePhoneKey(true);
+    /** Relaunch refusal cases with normal authentication; protected trust floors remain intact. */
+    private void restartWithVariant(String variant) throws Exception {
+        JSONArray recent = new JSONArray(evalString("JSON.stringify(window.__gwDials ?? [])"));
+        for (int i = 0; i < recent.length(); i++) previousDials.put(recent.get(i));
+        scenario.close(); scenario = null;
+        for (String prefs : new String[]{AUTH_PREFS, "pocketshell_vault_device_v1"})
+            targetContext().deleteSharedPreferences(prefs);
+        selectVariant(variant);
+        launchSignedInAndUnlocked();
     }
 
-    private String generatePhoneKey(boolean authorizeOnHost) throws Exception {
-        return generatePhoneKey(authorizeOnHost, "authorize");
-    }
-
-    private String generatePhoneKey(boolean authorizeOnHost, String phase) throws Exception {
-        evalString("(() => {window.__gwKey=null; const vault=window.Capacitor.Plugins.SshKeyVault;"
-                + "(async()=>{try{const meta=await vault.generateKey({label:'Gateway lane phone key',algorithm:'Ed25519'});"
-                + "const pub=await vault.publicKey({handleId:meta.handleId});"
-                + "window.__gwKey={handleId:meta.handleId,fingerprint:meta.fingerprintSha256,publicKey:pub.publicKey};}"
-                + "catch(e){window.__gwKey={error:String(e?.message??e)};}})(); return 'started';})()");
-        awaitJsTrue("window.__gwKey !== null");
-        JSONObject key = new JSONObject(evalString("JSON.stringify(window.__gwKey)"));
-        assertFalse("the vault generated a key: " + key, key.has("error"));
-        String publicLine = key.getString("publicKey");
-        assertFalse("only the public line leaves the vault", publicLine.contains("PRIVATE"));
-        if (!authorizeOnHost) return key.getString("handleId");
-        JSONObject authorized = controller(new JSONObject().put("op", "authorize").put("publicKey", publicLine).put("phase", phase));
-        assertEquals("the host stores exactly the phone's key", key.getString("fingerprint"), authorized.getString("fingerprint"));
-        phoneFingerprint = key.getString("fingerprint");
-        return key.getString("handleId");
-    }
-
-    /** The user's pairing action: the host-key line the host printed, the device and the phone key. */
-    private void pair(String deviceId, String hostKeyLine, String handle) throws Exception {
-        evalString("(() => {window.__gwPair=null;"
-                + "window.Capacitor.Plugins.GatewayPairing.pair({requestId:'gwlane-pair-'+Date.now(),"
-                + "expectedAccountEmail:" + JSONObject.quote(hello.getString("email"))
-                + ",serverUrl:" + JSONObject.quote(hello.getString("serverUrl"))
-                + ",deviceId:" + JSONObject.quote(deviceId)
-                + ",hostKey:" + JSONObject.quote(hostKeyLine)
-                + ",keyHandleId:" + JSONObject.quote(handle) + "})"
-                + ".then((r)=>{window.__gwPair={ok:true,reply:r};},(e)=>{window.__gwPair={ok:false,code:e?.code,message:String(e?.message??e)};});"
-                + "return 'started';})()");
-        awaitJsTrue("window.__gwPair !== null");
-        JSONObject result = new JSONObject(evalString("JSON.stringify(window.__gwPair)"));
-        assertTrue("pairing saved: " + result, result.getBoolean("ok"));
-        String reply = result.getJSONObject("reply").toString();
-        assertFalse("the pairing reply never carries the account subject", reply.contains(hello.getString("sub")));
+    /** Read only public native pairing/floor metadata; never install, remove or reset trust here. */
+    private void assertInstalledTrustedRevision(int expected) throws Exception {
+        String slot = null;
+        java.util.Iterator<String> names = backend.vaultSlots.keys();
+        while (names.hasNext()) {
+            String name = names.next();
+            if (name.startsWith("th-") && new JSONObject(backend.vaultSlots.getJSONObject(name).getString("data"))
+                    .getString("deviceId").equals(hello.getString("deviceId"))) slot = name;
+        }
+        assertNotNull("the primary descriptor slot exists", slot);
+        evalRaw("(() => {window.__gwTrustRead=null; const plugin=window.Capacitor.Plugins.GatewayPairing;"
+                + "(async()=>{try{const rows=await plugin.list({requestId:'gwlane-read-trust'});"
+                + "const row=rows.pairings.find(r=>r.deviceId===" + JSONObject.quote(hello.getString("deviceId")) + ");"
+                + "const result=await plugin.trustedRevisions({accountId:" + JSONObject.quote("google:" + hello.getString("sub"))
+                + ",vaultId:row.vaultId});window.__gwTrustRead={revision:row.trustedRevision,floor:result.floors["
+                + JSONObject.quote(slot) + "]};}catch(e){window.__gwTrustRead={error:String(e?.message??e)};}})();return 'reading';})()");
+        awaitJsTrue("window.__gwTrustRead !== null");
+        JSONObject state = new JSONObject(evalString("JSON.stringify(window.__gwTrustRead)"));
+        assertFalse("native trust metadata is readable: " + state, state.has("error"));
+        assertEquals("the native pairing retains its authenticated revision", expected, state.getInt("revision"));
+        assertEquals("the native rollback floor remains enforced", expected, state.getInt("floor"));
+        Log.i(TAG, "TRUSTED_REVISION " + state);
     }
 
     /** Tap an account host and return the picker's error (the dial must fail). */
@@ -540,13 +503,13 @@ public final class GatewayDockerJourneyTest {
         return error;
     }
 
-    private void tapHost(String name) throws Exception {
-        evalString("(() => {const row=[...document.querySelectorAll('.picker .host-row')].find((n)=>"
-                + "n.querySelector('.host-name')?.textContent.trim()===" + JSONObject.quote(name) + ");"
-                + "if(!row) throw new Error('no host row " + name + "'); row.click(); return 'ok';})()");
+    void tapHost(String name) throws Exception {
+        evalRaw("(() => {const button=[...document.querySelectorAll('[data-testid=trusted-server-connect]')].find((n)=>"
+                + "n.textContent.includes(" + JSONObject.quote(name) + "));"
+                + "if(!button) throw new Error('no trusted server'); button.click(); return 'ok';})()");
     }
 
-    private void typeCommand(String command) throws Exception {
+    void typeCommand(String command) throws Exception {
         scenario.onActivity(activity -> activity.getBridge().getWebView().requestFocus());
         String result = evalString("JSON.stringify((() => {"
                 + "const textarea=" + VISIBLE_TEXTAREA + ";"
@@ -556,7 +519,7 @@ public final class GatewayDockerJourneyTest {
                 + "window.__gwKeyUps=[]; textarea.addEventListener('keyup',(e)=>window.__gwKeyUps.push(e.key),{once:true});"
                 + "return {focused:document.activeElement===textarea};})())");
         assertTrue("the terminal holds focus for typing: " + result, new JSONObject(result).getBoolean("focused"));
-        awaitJsTrue(VISIBLE_TERMINAL + ".replace(/\\n/g,'').includes(" + JSONObject.quote(command.substring(0, Math.min(24, command.length()))) + ")");
+        awaitJsTrue(VISIBLE_TERMINAL + ".includes(" + JSONObject.quote(command.substring(0, Math.min(8, command.length()))) + ")");
         InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_ENTER);
         awaitJsTrue("(window.__gwKeyUps ?? []).includes('Enter')");
     }
@@ -595,8 +558,21 @@ public final class GatewayDockerJourneyTest {
         throw new AssertionError("the host never wrote its terminal size to " + file + ": " + content);
     }
 
-    private String hostFile(String name, String phase) throws Exception {
+    String hostFile(String name, String phase) throws Exception {
         return controller(new JSONObject().put("op", "host-file").put("name", name).put("phase", phase)).getString("content");
+    }
+
+    private void setWebViewWidthFraction(float fraction) throws Exception {
+        CountDownLatch done = new CountDownLatch(1);
+        scenario.onActivity(activity -> {
+            WebView webView = activity.getBridge().getWebView();
+            ViewGroup.LayoutParams params = webView.getLayoutParams();
+            View parent = (View) webView.getParent();
+            params.width = fraction >= 1f ? ViewGroup.LayoutParams.MATCH_PARENT : Math.round(parent.getWidth() * fraction);
+            webView.setLayoutParams(params);
+            done.countDown();
+        });
+        assertTrue(done.await(5, TimeUnit.SECONDS));
     }
 
     private void setWebViewHeightFraction(float fraction) throws Exception {
@@ -618,11 +594,11 @@ public final class GatewayDockerJourneyTest {
 
     private static final String VISIBLE_TEXTAREA_SELECTOR = ".xterm .xterm-helper-textarea";
 
-    private JSONObject sshdSince(int mark, String phase) throws Exception {
+    JSONObject sshdSince(int mark, String phase) throws Exception {
         return controller(new JSONObject().put("op", "sshd-since").put("mark", mark).put("phase", phase));
     }
 
-    private static List<String> acceptedFingerprints(JSONObject sshd) throws Exception {
+    static List<String> acceptedFingerprints(JSONObject sshd) throws Exception {
         List<String> out = new ArrayList<>();
         JSONArray accepted = sshd.getJSONArray("accepted");
         for (int i = 0; i < accepted.length(); i++) out.add(accepted.getJSONObject(i).getString("fingerprint"));
@@ -630,7 +606,7 @@ public final class GatewayDockerJourneyTest {
     }
 
     /** Every native connect() the app made, with what it asked for (failed dials included). */
-    private void installDialRecorder() throws Exception {
+    void installDialRecorder() throws Exception {
         assertEquals("installed", evalString("(() => {window.__gwDials=[];"
                 + "const nativePromise=window.Capacitor.nativePromise.bind(window.Capacitor);"
                 + "window.Capacitor.nativePromise=(plugin,method,options)=>{"
@@ -641,12 +617,15 @@ public final class GatewayDockerJourneyTest {
                 + "return nativePromise(plugin,method,options);}; return 'installed';})()"));
     }
 
-    private JSONArray nativeDials() throws Exception {
-        return new JSONArray(evalString("JSON.stringify(window.__gwDials ?? [])"));
+    JSONArray nativeDials() throws Exception {
+        JSONArray result = new JSONArray(previousDials.toString());
+        JSONArray current = new JSONArray(evalString("JSON.stringify(window.__gwDials ?? [])"));
+        for (int i = 0; i < current.length(); i++) result.put(current.get(i));
+        return result;
     }
 
     /** D28: no gateway host is ever dialled as plain SSH. */
-    private void assertEveryDialWentThroughTheGateway(JSONArray dials) throws Exception {
+    void assertEveryDialWentThroughTheGateway(JSONArray dials) throws Exception {
         assertTrue("the recorder saw native dials", dials.length() > 0);
         for (int i = 0; i < dials.length(); i++) {
             JSONObject dial = dials.getJSONObject(i);
@@ -747,6 +726,8 @@ public final class GatewayDockerJourneyTest {
         /** Key-vault W4: the account's `vault` / `vk-*` slots, when the journey has a vault. */
         JSONObject vaultSlots;
         int writes;
+        volatile int trustedReads;
+        final List<String> reads = Collections.synchronizedList(new ArrayList<>());
 
         FakeSyncBackend() throws Exception {
             byte[] der = Base64.getDecoder().decode(requiredArgument("gatewayBrokerKeyPkcs8Base64"));
@@ -764,10 +745,26 @@ public final class GatewayDockerJourneyTest {
         @Override
         public synchronized GoogleSyncSession.Response send(String method, String url, Map<String, String> headers, String body) {
             String path = url.replaceFirst("^https://[^/]+", "");
+            if ("GET".equals(method)) reads.add(path);
             if (!("Bearer " + google.token).equals(headers.get("Authorization"))) {
                 return new GoogleSyncSession.Response(401, "{\"message\":\"Unauthorized\"}");
             }
             try {
+                if ("GET".equals(method) && "/me".equals(path)) return new GoogleSyncSession.Response(200,
+                        new JSONObject().put("sub", hello.getString("sub")).put("email", hello.getString("email")).toString());
+                if ("GET".equals(method) && "/settings".equals(path)) {
+                    JSONArray slots = new JSONArray();
+                    if (vaultSlots != null) {
+                        java.util.Iterator<String> keys = vaultSlots.keys();
+                        while (keys.hasNext()) {
+                            String key = keys.next();
+                            JSONObject row = vaultSlots.getJSONObject(key);
+                            slots.put(new JSONObject().put("slot", key).put("version", row.getInt("version"))
+                                    .put("size", row.getString("data").length()).put("updatedAt", "2026-11-05T00:00:00.000Z"));
+                        }
+                    }
+                    return new GoogleSyncSession.Response(200, new JSONObject().put("slots", slots).toString());
+                }
                 if ("POST".equals(method) && "/gateway/token".equals(path)) {
                     if (body != null && !body.isEmpty()) return new GoogleSyncSession.Response(400, "{\"error\":\"bad_request\"}");
                     long now = System.currentTimeMillis() / 1000L;
@@ -783,6 +780,7 @@ public final class GatewayDockerJourneyTest {
                 if ("GET".equals(method) && path.startsWith("/settings/") && vaultSlots != null
                         && vaultSlots.has(path.substring("/settings/".length())) && !"/settings/main".equals(path)) {
                     String slot = path.substring("/settings/".length());
+                    if (slot.startsWith("th-")) trustedReads++;
                     JSONObject stored = vaultSlots.getJSONObject(slot);
                     return new GoogleSyncSession.Response(200, new JSONObject().put("slot", slot)
                             .put("version", stored.getInt("version")).put("data", stored.getString("data")).toString());
@@ -810,7 +808,7 @@ public final class GatewayDockerJourneyTest {
 
     // ---- the runner's host controller ------------------------------------------
 
-    private JSONObject controller(JSONObject request) throws Exception {
+    JSONObject controller(JSONObject request) throws Exception {
         int port = Integer.parseInt(requiredArgument("gatewayControllerPort"));
         try (Socket socket = new Socket()) {
             socket.connect(new InetSocketAddress("10.0.2.2", port), 10_000);
@@ -851,11 +849,11 @@ public final class GatewayDockerJourneyTest {
                 + "node.click(); return 'clicked';})()");
     }
 
-    private void awaitJsTrue(String expression) throws Exception {
+    void awaitJsTrue(String expression) throws Exception {
         awaitJsTrue(expression, WAIT_TIMEOUT_MILLIS);
     }
 
-    private void awaitJsTrue(String expression, long timeoutMillis) throws Exception {
+    void awaitJsTrue(String expression, long timeoutMillis) throws Exception {
         long deadline = SystemClock.uptimeMillis() + timeoutMillis;
         String last = "<not evaluated>";
         while (SystemClock.uptimeMillis() < deadline) {
@@ -873,7 +871,7 @@ public final class GatewayDockerJourneyTest {
         return decoded == null || decoded == JSONObject.NULL ? null : decoded.toString();
     }
 
-    private String evalRaw(String expression) throws Exception {
+    String evalRaw(String expression) throws Exception {
         CountDownLatch latch = new CountDownLatch(1);
         AtomicReference<String> result = new AtomicReference<>();
         scenario.onActivity(activity -> {

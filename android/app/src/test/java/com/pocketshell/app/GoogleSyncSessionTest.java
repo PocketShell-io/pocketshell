@@ -43,6 +43,19 @@ public final class GoogleSyncSessionTest {
         session = new GoogleSyncSession(store, signIn, transport, API + "/", () -> now);
     }
 
+    @Test public void accountIdRequiresBackendVerifiedMatchingSubjectAndSettingsListKeepsBearerNative() throws Exception {
+        store.value = token("sub-1", "phone@example.com", NOW + 3600, "IDENTITY");
+        transport.responses.add(new GoogleSyncSession.Response(200, "{\"sub\":\"sub-1\"}"));
+        assertEquals("google:sub-1", session.verifiedAccountId());
+        assertEquals(API + "/me", transport.requests.get(0).url);
+        transport.responses.add(new GoogleSyncSession.Response(200, "{\"slots\":[]}"));
+        assertEquals(200, session.listSettings().status);
+        assertEquals(API + "/settings", transport.requests.get(1).url);
+        assertEquals("Bearer " + store.value, transport.requests.get(1).headers.get("Authorization"));
+        transport.responses.add(new GoogleSyncSession.Response(200, "{\"sub\":\"other\"}"));
+        try { session.verifiedAccountId(); fail("foreign subject"); } catch (SyncAuthException expected) { assertEquals(SyncAuthException.NOT_SIGNED_IN, expected.code); }
+    }
+
     @Test public void signedOutReportsSignedOutAndSendsNothing() throws Exception {
         assertFalse(session.status().signedIn);
         try {

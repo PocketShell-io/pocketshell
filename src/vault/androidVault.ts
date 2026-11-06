@@ -57,7 +57,7 @@ export interface VaultCore {
 
 /** The native halves: `SshKeyVault` vault-key handles and `VaultDeviceKey` remember storage. */
 export interface VaultNative {
-  holdVaultKey(options: { privateKeyPem: string }): Promise<{ handleId: string; algorithm: string; fingerprintSha256: string }>;
+  holdVaultKey(options: { privateKeyPem: string; accountId?: string; vaultId?: string; epoch?: number; keyId?: string }): Promise<{ handleId: string; algorithm: string; fingerprintSha256: string }>;
   releaseVaultKeys(options?: { handleIds?: string[] }): Promise<{ released: number }>;
   remember(options: { scope: string; record: string }): Promise<unknown>;
   recall(options: { scope: string }): Promise<{ record: string | null }>;
@@ -84,6 +84,7 @@ export interface AndroidVaultDeps {
   native: VaultNative;
   /** The signed-in account (its e-mail), the scope of a remembered record; null when signed out. */
   scope(): Promise<string | null>;
+  accountId?(): Promise<string | null>;
   /** Show the shared unlock sheet; true once the vault is unlocked, false when the user closed it. */
   askUnlock(hostLabel: string): Promise<boolean>;
   /** Called with the index's sync passphrase after every unlock (contract #2: one passphrase). */
@@ -167,11 +168,14 @@ export function createAndroidVault(deps: AndroidVaultDeps) {
     state.status = 'signed-out';
   }
 
-  async function handleFor(keyId: string, pem: string): Promise<string> {
+  async function handleFor(keyId: string, pem: string, vault: UnlockedVault): Promise<string> {
     let pending = handles.get(keyId);
     if (!pending) {
       const at = generation;
-      pending = deps.native.holdVaultKey({ privateKeyPem: pem }).then(async (held) => {
+      const accountId = await deps.accountId?.();
+      pending = deps.native.holdVaultKey({ privateKeyPem: pem,
+        ...(accountId?.startsWith('google:') ? { accountId, vaultId: vault.vaultId, epoch: vault.epoch, keyId } : {}),
+      }).then(async (held) => {
         if (at !== generation) {
           // The vault locked while native was holding it: never keep it.
           await deps.native.releaseVaultKeys({ handleIds: [held.handleId] }).catch(() => undefined);
@@ -222,7 +226,7 @@ export function createAndroidVault(deps: AndroidVaultDeps) {
     if (secret.kind === 'password') {
       return { kind: 'credential', credential: { kind: 'password', password: secret.password }, secret: 'password', gatewayAuth: binding.gatewayAuth };
     }
-    const handleId = await handleFor(binding.keyId, secret.pem);
+    const handleId = await handleFor(binding.keyId, secret.pem, vault);
     return { kind: 'credential', credential: { kind: 'key-handle', handleId }, secret: 'key', gatewayAuth: binding.gatewayAuth };
   }
 

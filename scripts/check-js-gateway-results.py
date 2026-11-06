@@ -7,8 +7,8 @@ runner's host-side evidence (scripts/gateway-lane-fixture.py's journal and
 the Docker logs, all written by the host, never by the app) shows what the
 journey claims:
 
-  - the enrolled pin the phone paired with is the host's own key file;
-  - the phone's key was authorized on the host, and sshd accepted exactly that
+  - the enrolled pin the vault authenticated is the host's own key file;
+  - the vault key was authorized on the host, and sshd accepted exactly that
     key through the gateway, for the first dial and again after the reconnect;
   - the pin mismatch reached sshd and made ZERO userauth attempts;
   - the 4401, 4404 and 4503 refusals never reached sshd at all, and the
@@ -38,10 +38,10 @@ REQUIRED_METHODS = frozenset(
         "refusesPinMismatchUnverifiedTokenUnknownAndOfflineDevicesBeforeAnyLogin",
         "dialsTheEnrolledHostThroughTheGatewayListsAttachesTypesResizesAndReconnects",
         "dialsTheGatewayHostWithTheAccountVaultKeyAfterOneUnlockAndNoKeyPicker",
-        "discoversPairsAndConnectsDeviceThroughTheNormalPickerAndRunsTerminalCommand",
+        "connectsTrustedVaultServerWithoutManualPairingAndCreatesHomeTerminal",
     }
 )
-SELF_TEST_CASES = 14
+SELF_TEST_CASES = 16
 
 
 class GateFailure(ValueError):
@@ -114,8 +114,8 @@ def validate_host(host_dir: Path) -> dict:
 
     entries = _journal(host_dir)
     authorized = {r["fingerprint"] for r in _phase(entries, "authorize", "authorize")}
-    if len(authorized) != 2:
-        raise GateFailure(f"expected one fresh phone key per test, authorized {authorized}")
+    if len(authorized) != 1:
+        raise GateFailure(f"expected the one authoritative vault credential, authorized {authorized}")
 
     def accepted(reply: dict) -> set[str]:
         return {a["fingerprint"] for a in reply["accepted"]}
@@ -135,15 +135,15 @@ def validate_host(host_dir: Path) -> dict:
     for phase in ("connect", "reconnect"):
         replies = _phase(entries, "sshd-since", phase)
         if not any(accepted(reply) & authorized for reply in replies):
-            raise GateFailure(f"sshd never accepted the phone's key for the {phase}")
+            raise GateFailure(f"sshd never accepted the vault key for the {phase}")
         foreign = set().union(*(accepted(reply) for reply in replies)) - authorized
         if foreign:
-            raise GateFailure(f"sshd accepted keys that are not the phone's during {phase}: {foreign}")
+            raise GateFailure(f"sshd accepted keys that are not the vault's during {phase}: {foreign}")
     _phase(entries, "drop", "reconnect")
-    # Key-vault W4: the vault dial logged in with the vault's key and nothing else.
+    # Every positive managed route authenticates with the authoritative vault key.
     vault_keys = {r["fingerprint"] for r in _phase(entries, "authorize", "vault-authorize")}
-    if len(vault_keys) != 1 or vault_keys & authorized:
-        raise GateFailure(f"expected one vault key distinct from the phone keys, authorized {vault_keys}")
+    if vault_keys != authorized:
+        raise GateFailure(f"expected the same vault credential for each trusted server journey, authorized {vault_keys}")
     vault_replies = _phase(entries, "sshd-since", "vault-connect")
     if not any(accepted(reply) & vault_keys for reply in vault_replies):
         raise GateFailure("sshd never accepted the vault key for the gateway vault dial")
@@ -151,21 +151,25 @@ def validate_host(host_dir: Path) -> dict:
     if vault_foreign:
         raise GateFailure(f"the gateway vault dial logged in with keys that are not the vault's: {vault_foreign}")
 
-    # The normal discovery/add/save/connect UI has its own independently
-    # authorized phone key and host-side login, not another happy-path proxy.
-    picker_keys = {r["fingerprint"] for r in _phase(entries, "authorize", "picker-authorize")}
-    if len(picker_keys) != 1 or picker_keys & (authorized | vault_keys):
-        raise GateFailure("the normal picker journey did not authorize its own distinct phone key")
-    picker_logins = _phase(entries, "sshd-since", "picker-connect")
-    if not any(accepted(reply) == picker_keys for reply in picker_logins):
-        raise GateFailure("sshd never accepted the normal picker's selected phone key")
-    if set().union(*(accepted(reply) for reply in picker_logins)) - picker_keys:
-        raise GateFailure("the normal picker dial authenticated with a different key")
-    picker_files = _phase(entries, "host-file", "picker-io")
-    if not any(str(reply.get("name", "")).startswith("gwlane-picker-io-")
-               and re.fullmatch(r"GWLANE_PICKER_42_\S+", str(reply.get("content", "")).strip())
-               for reply in picker_files):
-        raise GateFailure("the Docker host never recorded the normal picker's terminal command")
+    before = _phase(entries, "home-sessions", "trusted-before")
+    after = _phase(entries, "home-sessions", "trusted-after")
+    if not before or any(r.get("count") != 0 or r.get("sessions") != [] for r in before):
+        raise GateFailure("normal trusted-server case started with a pre-created HOME shell")
+    if not after or not any(r.get("count") == 1 and len(r.get("sessions", [])) == 1 for r in after):
+        raise GateFailure("normal server tap did not create its HOME shell")
+
+    trusted_keys = {r["fingerprint"] for r in _phase(entries, "authorize", "trusted-authorize")}
+    if trusted_keys != vault_keys:
+        raise GateFailure("the trusted-server flow did not authorize the vault credential")
+    trusted_logins = _phase(entries, "sshd-since", "trusted-connect")
+    if not any(accepted(reply) == trusted_keys for reply in trusted_logins):
+        raise GateFailure("sshd never accepted the trusted descriptor vault key")
+    trusted_files = _phase(entries, "host-file", "trusted-io")
+    def matching_trusted_file(reply):
+        name = re.fullmatch(r"gwlane-trusted-io-([A-Za-z0-9_-]+)\.txt", str(reply.get("name", "")))
+        return name is not None and str(reply.get("content", "")).strip() == f"GWTRUST42_{name.group(1)}"
+    if not any(matching_trusted_file(reply) for reply in trusted_files):
+        raise GateFailure("the Docker host never recorded the trusted server terminal command")
 
     files = {
         reply["name"]: reply["content"].strip()
@@ -232,7 +236,7 @@ def _write_host(directory: Path, **overrides) -> None:
     (directory / "host.log").write_text(
         "Received disconnect from 127.0.0.1 port 45784:9: Could not verify `ssh-ed25519` host key with fingerprint "
         "`13:f9` for `gw-dev.gateway` on port 22 [preauth]\n")
-    fp1, fp2, fpv, fpp = ("SHA256:" + c * 43 for c in ("a", "b", "v", "p"))
+    fp1 = fp2 = fpv = "SHA256:" + "v" * 43
 
     def entry(op, phase=None, **reply):
         request = {"op": op}
@@ -259,14 +263,16 @@ def _write_host(directory: Path, **overrides) -> None:
         entry("authorize", "vault-authorize", fingerprint=fpv),
         entry("sshd-since", "vault-connect", connections=1, userauth=["Accepted"],
               accepted=[{"fingerprint": overrides.get("vault_fp", fpv)}]),
-        entry("authorize", "picker-authorize", fingerprint=fpp),
-        entry("sshd-since", "picker-connect", connections=1, userauth=["Accepted"],
-              accepted=[{"fingerprint": overrides.get("picker_fp", fpp)}]),
-        {"request": {"op": "host-file", "name": "gwlane-picker-io-r.txt", "phase": "picker-io"},
-         "reply": {"ok": True, "name": "gwlane-picker-io-r.txt", "content": overrides.get("picker_content", "GWLANE_PICKER_42_r\n")}},
+        entry("home-sessions", "trusted-before", count=overrides.get("home_before", 0), sessions=[]),
+        entry("home-sessions", "trusted-after", count=overrides.get("home_after", 1), sessions=[{"workspace":"/home/testuser","alive":True}]),
+        entry("authorize", "trusted-authorize", fingerprint=fpv),
+        entry("sshd-since", "trusted-connect", connections=1, userauth=["Accepted"],
+              accepted=[{"fingerprint": overrides.get("trusted_fp", fpv)}]),
+        {"request": {"op": "host-file", "name": "gwlane-trusted-io-r.txt", "phase": "trusted-io"},
+         "reply": {"ok": True, "name": "gwlane-trusted-io-r.txt", "content": overrides.get("trusted_content", "GWTRUST42_r\n")}},
     ]
-    if overrides.get("missing_picker_file"):
-        entries = [e for e in entries if e["request"].get("phase") != "picker-io"]
+    if overrides.get("missing_trusted_file"):
+        entries = [e for e in entries if e["request"].get("phase") != "trusted-io"]
     (directory / "controller-journal.jsonl").write_text("".join(json.dumps(e) + "\n" for e in entries))
 
 
@@ -308,9 +314,11 @@ def self_test() -> int:
     expect_fail("foreign key on reconnect", host={"reconnect_fp": "SHA256:" + "c" * 43})
     expect_fail("gateway logged too few sessions", host={"sessions": 2})
     expect_fail("vault dial logged in with the phone key", host={"vault_fp": "SHA256:" + "b" * 43})
-    expect_fail("picker dial logged in with another key", host={"picker_fp": "SHA256:" + "b" * 43})
-    expect_fail("picker terminal oracle missing", host={"missing_picker_file": True})
-    expect_fail("picker terminal output wrong", host={"picker_content": "wrong output\n"})
+    expect_fail("trusted dial uses another key", host={"trusted_fp": "SHA256:" + "b" * 43})
+    expect_fail("trusted terminal oracle missing", host={"missing_trusted_file": True})
+    expect_fail("trusted terminal output wrong", host={"trusted_content": "GWTRUST42_foreign-run\n"})
+    expect_fail("precreated HOME shell", host={"home_before": 1})
+    expect_fail("no HOME shell created", host={"home_after": 0})
     if cases != SELF_TEST_CASES:
         raise AssertionError(f"ran {cases} self-test cases, expected {SELF_TEST_CASES}")
     print(f"PASS: gateway result checker self-test ({cases} cases)")

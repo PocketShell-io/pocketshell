@@ -934,7 +934,9 @@
         "the remember record carries vaultId, epoch, DEK and AUTH (decision #6), round-trips, and wipes the bytes",
         "a remembered record that no longer opens the vault reads as stale; a rate-limited one is kept",
         "the adapter follows the store: current while unlocked, lock through it, presence follows probe",
-        "accepts only ephemeral handles and never echoes key material"
+        "accepts only ephemeral handles and never echoes key material",
+        "lists versioned vault slot metadata only through the fixed native settings endpoint",
+        "rejects duplicate malformed and unauthorized vault directories instead of treating them as empty"
       ]
     },
     "tests/unit/connectedAppBarHost.test.ts": {
@@ -990,6 +992,26 @@
         "does not save a host if native pairing refuses it",
         "does not replace an existing host with a gateway device of the same name",
         "never turns a malformed stored gateway marker into an ordinary host"
+      ]
+    },
+    "tests/unit/androidTrustedHosts.test.ts": {
+      "suite": "Android account vault trusted server installation",
+      "tests": [
+        "installs a validated vault reference and managed route without a local phone key",
+        "compares authenticated descriptor fields independently of JSON property order",
+        "refuses a different account before native installation or host save",
+        "refuses locked replaced and stale epoch vaults",
+        "refuses missing invalid rollback or revoked descriptors without phone key fallback",
+        "refuses unbound mismatched and non-managed vault credentials",
+        "rechecks account after native work and preserves no saved row on an account switch",
+        "loads protected revision floors and supplies them to authenticated descriptor verification"
+      ]
+    },
+    "tests/unit/androidFreshShell.test.ts": {
+      "suite": "Android fresh server terminal adapters",
+      "tests": [
+        "creates an ordinary home shell from a canonical POSIX or Windows SFTP directory through the controller",
+        "reuses an existing ordinary shell and never creates one after canonicalization fails"
       ]
     }
   }

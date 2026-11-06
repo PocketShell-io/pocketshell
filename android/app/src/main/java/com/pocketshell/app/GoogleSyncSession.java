@@ -99,6 +99,27 @@ public final class GoogleSyncSession {
         return token.subject;
     }
 
+    /** Verify this native Google subject with the fixed backend authorizer before exposing public identity. */
+    synchronized String verifiedAccountId() throws SyncAuthException {
+        String before = currentAccountSubject();
+        Response response = request("GET", null, null);
+        String verifiedSubject;
+        try { verifiedSubject = new org.json.JSONObject(response.body).getString("sub"); }
+        catch (Exception invalid) { throw new SyncAuthException(SyncAuthException.NOT_SIGNED_IN, "Account verification failed."); }
+        if (response.status != 200 || !before.equals(verifiedSubject) || !before.equals(currentAccountSubject())) {
+            throw new SyncAuthException(SyncAuthException.NOT_SIGNED_IN, "Sign in to verify your account.");
+        }
+        if (!before.matches("[0-9A-Za-z_-]{1,128}")) throw invalid();
+        return "google:" + before;
+    }
+
+    synchronized Response listSettings() throws SyncAuthException {
+        GoogleIdToken token = usableToken();
+        Response response = send("GET", "/settings", null, token);
+        if (response.status == 401) response = send("GET", "/settings", null, renew(token));
+        return response;
+    }
+
     /**
      * The dedicated gateway broker exchange: one empty-body POST
      * {@code /gateway/token} at the configured sync API base, carrying the

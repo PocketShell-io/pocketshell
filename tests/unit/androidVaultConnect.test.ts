@@ -359,7 +359,7 @@ describe('Android dials account and gateway hosts with the account key vault (ke
     expect(synced).toEqual(['sync words']);
     // The decrypted key reached native exactly once, as the web uploaded it.
     expect(vaultNative.held).toHaveLength(1);
-    expect(vaultNative.held[0]).toContain(pem.split('\n')[1]);
+    expect(vaultNative.held[0]).toContain(pem.split(/\r?\n/)[1]);
     expect(native.connects[0]!.credential).toEqual({ kind: 'key-handle', handleId: 'ephemeral-1' });
     expect(phone.writes).toEqual([]);
     await vault.lock();
