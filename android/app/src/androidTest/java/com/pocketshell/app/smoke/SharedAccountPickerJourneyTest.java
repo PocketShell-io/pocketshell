@@ -144,7 +144,8 @@ public final class SharedAccountPickerJourneyTest {
                 .put(savedHost("phone-box", "192.168.1.9", 2200, "me"))
                 .put(savedHost("hetzner", "hetzner.phone.lan", 22, "alexey")));
         awaitJsTrue("!!document.querySelector('[data-testid=trusted-servers]')"
-                + " && !!document.querySelector('[data-testid=server-google-login]') && !document.querySelector('.picker .host-list')");
+                + " && !!document.querySelector('[data-testid=server-google-login]')");
+        assertOnlySavedLocalPickerRows();
         assertAccountButtonIsTouchSized();
         captureScreenshot("shared-picker-signed-out.png", "[data-testid=trusted-servers]");
         tapDomCenter(".picker .header-actions .account-action");
@@ -157,7 +158,8 @@ public final class SharedAccountPickerJourneyTest {
         awaitJsTrue("!!document.querySelector('[data-testid=vault-unlock-gate]')");
         captureScreenshot("shared-picker-signed-in-locked.png", "[data-testid=vault-unlock-gate]");
         dismissVaultUnlockAndAwaitPicker();
-        awaitJsTrue("!!document.querySelector('[data-testid=server-vault-unlock]') && !document.querySelector('.picker .host-list')");
+        awaitJsTrue("!!document.querySelector('[data-testid=server-vault-unlock]')");
+        assertOnlySavedLocalPickerRows();
         // Settings decrypt never grants authenticated server trust.
         tapDomCenter(".picker .header-actions .account-action");
         awaitJsTrue("!!document.querySelector('[data-testid=android-account] .passphrase-field input:not([disabled])')");
@@ -169,7 +171,8 @@ public final class SharedAccountPickerJourneyTest {
         backToPicker();
         awaitJsTrue("!!document.querySelector('[data-testid=vault-unlock-gate]')");
         dismissVaultUnlockAndAwaitPicker();
-        awaitJsTrue("!document.querySelector('.picker .host-list') && !document.querySelector('[data-testid=trusted-server-connect]')"
+        assertOnlySavedLocalPickerRows();
+        awaitJsTrue("!document.querySelector('[data-testid=trusted-server-connect]')"
                 + " && !document.querySelector('[data-testid=account-host-key-gate]')");
         assertNoTokenInWebView("after settings decrypt");
         assertEquals("the decrypted settings copy never reaches storage", "null", evalRaw("localStorage.getItem('" + ACCOUNT_HOSTS_KEY + "')"));
@@ -198,7 +201,8 @@ public final class SharedAccountPickerJourneyTest {
         backToPicker();
         awaitJsTrue("!!document.querySelector('[data-testid=vault-unlock-gate]')");
         dismissVaultUnlockAndAwaitPicker();
-        awaitJsTrue("!document.querySelector('.picker .host-list') && !document.querySelector('[data-testid=trusted-server-connect]')"
+        assertOnlySavedLocalPickerRows();
+        awaitJsTrue("!document.querySelector('[data-testid=trusted-server-connect]')"
                 + " && !document.querySelector('[data-testid=account-host-key-gate]')");
         assertNoTokenInLogcat();
         Log.i(TAG, "SHARED_PICKER " + new JSONObject()
@@ -248,6 +252,20 @@ public final class SharedAccountPickerJourneyTest {
         assertFalse("no decrypted account address in WebView storage",
                 evalString("JSON.stringify(Object.entries(localStorage))").contains("höfn.internal"));
         assertNoTokenInLogcat();
+    }
+
+    /** Local saved rows remain usable; account decryption grants no row or address authority. */
+    private void assertOnlySavedLocalPickerRows() throws Exception {
+        String rows = "JSON.stringify([...document.querySelectorAll('.picker .host-row')].map((row) => "
+                + "row.querySelector('.host-name').textContent.trim() + '=' + "
+                + "row.querySelector('[data-testid=host-detail]').textContent.trim()).sort())";
+        String expected = new JSONArray().put("hetzner=alexey@hetzner.phone.lan:22")
+                .put("phone-box=me@192.168.1.9:2200").toString();
+        awaitJsTrue(rows + " === " + JSONObject.quote(expected));
+        String screen = evalString("document.querySelector('.picker').textContent");
+        assertFalse("the account-only host is never a picker row", screen.contains("bäckerei"));
+        assertFalse("the account-only address is never exposed", screen.contains("höfn.internal"));
+        assertFalse("a same-name account row never replaces the saved local address", screen.contains("135.181.114.209"));
     }
 
     // ---- journey steps ------------------------------------------------------
