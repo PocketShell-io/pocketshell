@@ -14,7 +14,7 @@
  *
  * mock journeys: legacy shell (host form → host-key trust → sessions →
  * terminal echo → composer send → settings/usage → Android back) and the
- * shared app (?shell=shared: host → trust → session → terminal echo), plus a
+ * shared app (?shell=shared: Google → vault unlock → trusted server → terminal echo), plus a
  * Vite HMR update without a page reload.
  *
  * live journey: the legacy shell against the real host — it creates a fresh
@@ -326,17 +326,22 @@ async function mockJourneys(browser, base, smoke) {
   const shared = await browser.newContext(PHONE);
   const sharedPage = smoke.watch(await shared.newPage(), 'shared');
   await smoke.open(sharedPage, `${base}/?shell=shared`);
-  await smoke.step('shared: the seeded mock host is listed and asks for host-key trust', async () => {
-    await visibleText(sharedPage, 'mock-devbox').click({ timeout: 30_000 });
-    await sharedPage.waitForSelector('[data-testid="trust-host-key"]', { timeout: 20_000 });
-    if (!(await sharedPage.locator('body').innerText()).includes(mockHostFingerprint())) {
-      throw new Error('the shared trust prompt does not show the mock host fingerprint');
+  await smoke.step('shared: Google sign-in and vault unlock reveal the authenticated mock server', async () => {
+    await sharedPage.getByTestId('server-google-login').click();
+    await sharedPage.getByTestId('vault-unlock-passphrase').fill('dev passphrase');
+    await sharedPage.getByTestId('vault-unlock-submit').click();
+    await sharedPage.getByTestId('trusted-server-connect').filter({ hasText: 'mock-devbox' }).waitFor({ timeout: 30_000 });
+    await shot(sharedPage, smoke, 'shared-01-trusted-server');
+    await sharedPage.getByTestId('trusted-server-connect').filter({ hasText: 'mock-devbox' }).click();
+    try {
+      await sharedPage.locator('.xterm:visible').first().waitFor({ timeout: 30_000 });
+    } catch (error) {
+      await shot(sharedPage, smoke, 'shared-connect-failure');
+      throw new Error(`${error.message}\nShared screen: ${await sharedPage.locator('body').innerText()}`);
     }
-    await shot(sharedPage, smoke, 'shared-01-trust');
-    await sharedPage.click('[data-testid="trust-host-key"]');
+    if (await sharedPage.getByTestId('trust-host-key').isVisible()) throw new Error('Trusted vault pin unexpectedly asked for TOFU');
   });
-  await smoke.step('shared: the session tree opens a terminal that echoes typed input', async () => {
-    await visibleText(sharedPage, 'codex-review').click({ timeout: 20_000 });
+  await smoke.step('shared: the trusted server workspace terminal echoes typed input', async () => {
     await sharedPage.locator('.xterm:visible').first().waitFor({ timeout: 15_000 });
     await typeInTerminal(sharedPage, `echo shared-${marker}`);
     await waitForTerminalLine(sharedPage, `shared-${marker}`);

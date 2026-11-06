@@ -126,6 +126,9 @@ describe('browser dev mock host', () => {
     expect(listing.entries.map((entry) => entry.name)).toEqual(['server.py', 'todo.md']);
     const todo = listing.entries[1];
     expect(decode((await call('sftpRead', { ...ref, requestId: 'r', path: `${root}/todo.md`, rootPath: root, maxBytes: 6 }) as { dataBase64: string }).dataBase64)).toBe('# TODO');
+    await expect(call('sftpRealPath', { ...ref, requestId: 'canonical', path: '~/git/pocketshell/..' })).resolves.toMatchObject({ ...ref, path: `${MOCK_HOME}/git`, isDirectory: true });
+    await expect(call('sftpRealPath', { ...ref, requestId: 'missing', path: '~/missing' })).rejects.toMatchObject({ code: 'SFTP_NOT_FOUND' });
+    await expect(call('sftpRealPath', { ...ref, generationId: 'stale', requestId: 'stale', path: '~' })).rejects.toMatchObject({ code: 'CONNECTION_NOT_FOUND' });
     await expect(call('sftpList', { ...ref, requestId: 'l', path: MOCK_HOME, rootPath: root })).rejects.toMatchObject({ code: 'SFTP_OUTSIDE_ROOT' });
     await expect(call('sftpWrite', { ...ref, requestId: 'w', path: `${root}/todo.md`, rootPath: root, createOnly: true, dataBase64: encode('x') })).rejects.toMatchObject({ code: 'SFTP_FILE_EXISTS' });
     const expectedMetadata = { isDirectory: false, sizeBytes: todo.sizeBytes, modifiedEpochMs: todo.modifiedEpochMs };

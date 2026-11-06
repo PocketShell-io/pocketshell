@@ -8,7 +8,7 @@ import { DevPluginError } from './nativeBridge';
 import type { SeedHost } from './liveBridge';
 import { MOCK_SEED_KEY } from './keyVaultPlugin';
 import { base64ToBytes, bytesToBase64, randomId } from './bytes';
-import { MockHost, MockShell, normalizePath, shellWords } from './mockHost';
+import { MockHost, MockShell, MOCK_HOME, normalizePath, shellWords } from './mockHost';
 
 export const MOCK_SEED_HOST: SeedHost = {
   name: 'mock-devbox',
@@ -320,6 +320,15 @@ export function createMockSshPlugin(options: MockSshOptions): MockSshPlugin {
       const pty = ptys.get(String(request.channelId));
       if (pty && pty.connection.connectionId === request.connectionId) closePty(pty);
       return { requestId: request.requestId };
+    },
+    async sftpRealPath(request) {
+      const connection = requireConnection(request);
+      connection.sftp = true;
+      const input = requireString(request, 'path');
+      const path = normalizePath(input === '~' || input === '.' ? MOCK_HOME : input.startsWith('~/') ? `${MOCK_HOME}/${input.slice(2)}` : input);
+      const file = host.files.get(path);
+      if (!file) fail('SFTP_NOT_FOUND', 'The SFTP path does not exist.');
+      return { requestId: request.requestId, ...ref(connection), path, isDirectory: file.kind === 'directory' };
     },
     async sftpList(request) {
       const connection = requireConnection(request);

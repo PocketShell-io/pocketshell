@@ -35,6 +35,7 @@ import {
 } from './liveBridge';
 import { createMockSshPlugin, MOCK_SEED_HOST } from './mockSsh';
 import { createGoogleSyncPlugin } from './googleSyncPlugin';
+import { createTrustedMockAccount } from './trustedAccount';
 import { createDevToolbar } from './toolbar';
 import { seedSavedHosts } from './seedHosts';
 import { traceSshPlugin } from './trace';
@@ -102,6 +103,8 @@ function install(): void {
 
   if (params.get('devTrace') === '1') sshPlugin = traceSshPlugin(sshPlugin);
 
+  const googlePlugin = createGoogleSyncPlugin();
+  const trustedMock = config.mode === 'mock' ? createTrustedMockAccount(googlePlugin, sshPlugin, vaultPlugin) : null;
   bridge = createFakeNativeBridge({
     BridgeReady: createBridgeReadyPlugin(),
     DurableStorage: createDurableStoragePlugin(window.localStorage),
@@ -113,7 +116,8 @@ function install(): void {
     NativeCrashReports: crashes.plugin,
     SshKeyVault: vaultPlugin,
     SshCapability: sshPlugin,
-    GoogleSync: createGoogleSyncPlugin(),
+    GoogleSync: googlePlugin,
+    ...(trustedMock ? { GatewayPairing: trustedMock.gateway, VaultDeviceKey: trustedMock.device } : {}),
   });
   installFakeNativeBridge(window as unknown as Parameters<typeof installFakeNativeBridge>[0], bridge);
   (window as unknown as Record<string, unknown>).PocketShellDurableStorage = durableStorageWriter;
