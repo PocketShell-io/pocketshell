@@ -7,6 +7,7 @@ import com.getcapacitor.PluginMethod;
 import com.getcapacitor.annotation.CapacitorPlugin;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
 
 /**
  * Google sign-in and authenticated sync transport for the WebView
@@ -39,9 +40,22 @@ public final class GoogleSyncPlugin extends Plugin {
         worker.shutdown();
     }
 
+    /**
+     * Runs a plugin call on the worker. A call that arrives after the plugin was
+     * destroyed (a dying WebView racing the activity teardown) is rejected rather
+     * than letting RejectedExecutionException crash the whole process.
+     */
+    private void submit(PluginCall call, Runnable task) {
+        try {
+            worker.execute(task);
+        } catch (RejectedExecutionException destroyed) {
+            call.reject("Plugin was destroyed before the call could run");
+        }
+    }
+
     @PluginMethod
     public void status(PluginCall call) {
-        worker.execute(() -> {
+        submit(call, () -> {
             try {
                 call.resolve(statusJson(session.status()));
             } catch (SyncAuthException error) {
@@ -52,7 +66,7 @@ public final class GoogleSyncPlugin extends Plugin {
 
     @PluginMethod
     public void signIn(PluginCall call) {
-        worker.execute(() -> {
+        submit(call, () -> {
             try {
                 call.resolve(statusJson(session.signIn()));
             } catch (SyncAuthException error) {
@@ -63,7 +77,7 @@ public final class GoogleSyncPlugin extends Plugin {
 
     @PluginMethod
     public void signOut(PluginCall call) {
-        worker.execute(() -> {
+        submit(call, () -> {
             try {
                 try {
                     session.signOut();
@@ -91,7 +105,7 @@ public final class GoogleSyncPlugin extends Plugin {
         String slot = call.getString("slot");
         String body = call.getString("body");
         String endpoint = call.getString("endpoint");
-        worker.execute(() -> {
+        submit(call, () -> {
             try {
                 GoogleSyncSession.Response response = endpoint != null
                         ? session.requestVault(method, endpoint, body)
