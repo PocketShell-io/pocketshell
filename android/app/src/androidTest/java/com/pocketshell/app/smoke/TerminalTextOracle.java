@@ -30,10 +30,15 @@ final class TerminalTextOracle {
         // from buffer lines with real isWrapped joins — then fall back to the
         // physical rows, whose cell splits stay authoritative for redrawn
         // regions that overwrite lines without an isWrapped flag.
+        // A short marker split across rows that carry no isWrapped flag (the
+        // terminal widened by a column after the host printed it, run
+        // 42498434190: 37->38 cols, marker on screen but never matched) is
+        // also accepted with row breaks removed; markers are unique tokens.
         return "(() => {const grid=JSON.parse(window.__ps2857TerminalBufferState || '{}');"
                 + "if (!(grid.cols > 0)) return false;"
                 + "const marker=" + JSONObject.quote(marker) + ";"
-                + "if (typeof grid.visibleText === 'string' && grid.visibleText.includes(marker))"
+                + "if (typeof grid.visibleText === 'string' && (grid.visibleText.includes(marker)"
+                + " || grid.visibleText.replace(/\\n/g,'').includes(marker)))"
                 + "{window.__ps2857TerminalMatchPath='buffer-visible';return true;}"
                 + "const rows=[...document.querySelectorAll('.xterm-rows')].find(n=>n.offsetParent!==null);"
                 + "const screen=rows?.closest('.xterm-screen')?.getBoundingClientRect();"
