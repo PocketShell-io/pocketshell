@@ -202,11 +202,12 @@ public final class J23InlineDictationJourney {
         JSONObject composerKeyboardGrid = runtimeGrid(composerKeyboard);
         assertEquals("the typed prompt draft must be visible before opening keys", preservedDraft,
                 evalString("document.querySelector('[data-testid=prompt-draft]')?.value ?? ''"));
-        tapDomCenter("[data-testid=composer-open-keys]");
-        awaitJsTrue("!document.querySelector('[data-testid=prompt-composer]')"
+        String composerKeysOpenExpr = "!document.querySelector('[data-testid=prompt-composer]')"
                 + " && !!document.querySelector('[data-testid=mobile-hotkeys-sheet]')"
                 + " && document.querySelector('[data-testid=mobile-hotkeys]')?.dataset.paletteOpen === 'true'"
-                + " && document.querySelector('.app-shell')?.dataset.keyboardVisible === 'true'");
+                + " && document.querySelector('.app-shell')?.dataset.keyboardVisible === 'true'";
+        tapDomCenterUntil("[data-testid=composer-open-keys]", composerKeysOpenExpr);
+        awaitJsTrue(composerKeysOpenExpr);
         awaitImeVisible(true);
         awaitTerminalResizeIdle();
         JSONObject composerKeys = captureGeometry("composer-to-keys-ime-open");
@@ -1289,7 +1290,8 @@ public final class J23InlineDictationJourney {
         captureScreenshot("fastkeys-prompt-dictation-recording.png");
 
         Log.i("PS2897Prompt", "checkpoint before tapping explicit Stop");
-        tapDomCenter("[data-testid=composer-recording-stop]");
+        tapDomCenterUntil("[data-testid=composer-recording-stop]",
+                "document.querySelector('[data-testid=prompt-composer]')?.dataset.dictationState === 'transcribing'");
         Log.i("PS2897Prompt", "checkpoint Stop tap returned; waiting for Transcribing");
         awaitJsTrue("document.querySelector('[data-testid=prompt-composer]')?.dataset.dictationState === 'transcribing'");
         Log.i("PS2897Prompt", "checkpoint DOM reached Transcribing; checking native stop count");
@@ -3827,6 +3829,29 @@ public final class J23InlineDictationJourney {
         float[] screen = screenPoint((float) point.getDouble("x"), (float) point.getDouble("y"));
         PhysicalTap.tap(screen[0], screen[1]);
         SystemClock.sleep(100);
+    }
+
+    /**
+     * Tap, then confirm the tap took effect. A starved hosted emulator can drop
+     * or never process a single injected touch (JS full suite 42596671823: the
+     * Prompt Stop tap returned, frames ran 500-1000ms with InputEventId=0, and
+     * the DOM never left "recording" for 45s). Re-tap only while the target
+     * still exists and the expected state has not appeared, so a tap that did
+     * land is never repeated. Use for idempotent controls (Stop, open sheet).
+     */
+    private void tapDomCenterUntil(String selector, String expectedJs) throws Exception {
+        final int attempts = 3;
+        for (int attempt = 1; attempt <= attempts; attempt++) {
+            if ("true".equals(evalRaw(expectedJs))) return;
+            if (!"true".equals(evalRaw("!!document.querySelector(" + JSONObject.quote(selector) + ")"))) return;
+            if (attempt > 1) Log.w("PS2897Prompt", "tap on " + selector + " had no effect; retry " + attempt + "/" + attempts);
+            tapDomCenter(selector);
+            long deadline = SystemClock.uptimeMillis() + 5_000;
+            while (SystemClock.uptimeMillis() < deadline) {
+                if ("true".equals(evalRaw(expectedJs))) return;
+                Thread.sleep(60);
+            }
+        }
     }
 
     private void tapDisabledDomCenter(String selector) throws Exception {
