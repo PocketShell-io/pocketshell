@@ -157,6 +157,39 @@ cross-client contract for serialization, unknown fields, selection deletion,
 auto-selection, and strict parsing. Its `fixtureSchemaVersion` is test
 metadata and is not sent to the backend.
 
+## Vault passphrase in Google Password Manager (Android)
+
+Account-vault creation offers a strong generated passphrase and, once the vault exists, an explicit
+"Save to Google Password Manager" step. Unlock offers "Use passphrase from Google Password Manager".
+Manual entry and every existing vault keep working unchanged; the provider is optional.
+
+- **Generation.** Both new-passphrase fields keep `autocomplete="new-password"` so the system
+  autofill service can suggest a strong password. That suggestion is not dependable inside a
+  WebView, so the shared setup form also has a "Generate a strong passphrase" button
+  (`generateVaultPassphrase` in core: WebCrypto, 25 symbols, ~124 bits, rejection-sampled). It
+  fills both fields at once and reveals them so the user can check the value.
+- **Save.** After a successful create, the setup sheet stays open (the passphrase is held only in
+  the controller's memory) until the user taps Save or Skip. Save goes through
+  `VaultPasswordPlugin` -> Credential Manager `CreatePasswordRequest`; the system sheet is the
+  consent. Cancelled, provider-unavailable and failed outcomes leave the vault created and let the
+  user retry or skip. The held passphrase is dropped on Continue/Skip/Cancel.
+- **Retrieve.** `GetPasswordOption` filtered to this account's credential id; the chosen
+  passphrase unlocks through the normal `vault.unlock` path.
+- **Accounts.** The credential's user id is `pocketshell-vault-` + the first 8 bytes of
+  SHA-256(verified issuer+subject id): one saved passphrase per account, no email or subject shown
+  to the provider. A credential for another account is rejected (`otherAccount`), and so is one
+  fetched while the active account changed under the system sheet.
+- **Never.** The passphrase is not logged, put in a request to PocketShell or the sync service,
+  or placed on the general clipboard. It crosses the bridge only to the provider (save) or back
+  from it (retrieve), and is removed from the plugin call data once read.
+- **Tests.** Core `packages/ui/tests/vault/vaultUi.test.ts`, `tests/unit/vaultPassword.test.ts`,
+  and `VaultPasswordOutcomesTest` use synthetic accounts and passphrases only.
+- **Provider limitations.** Credential Manager saves into whichever provider the phone has set as
+  its password manager; "Google Password Manager" is the label used for the default Google provider.
+  The save sheet, the later account chooser and "Not now" behaviour are the provider's own and can
+  differ by Play services version. Emulator images without a signed-in Google account cannot
+  complete a real save/retrieve; record that run as "provider unavailable" rather than a pass.
+
 ## Trusted servers on Android
 
 The shared Android picker uses the account vault's authenticated trusted-host

@@ -44,6 +44,7 @@ REQUIRED_CLASSES=(
   com.pocketshell.app.SshCapabilityPluginGatewayTokenTest
   com.pocketshell.app.SshCapabilityPluginGatewayVaultKeyTest
   com.pocketshell.app.VaultDeviceKeyStoreTest
+  com.pocketshell.app.VaultPasswordOutcomesTest
 )
 RESULTS_DIR="$ROOT_DIR/android/app/build/test-results/testDebugUnitTest"
 

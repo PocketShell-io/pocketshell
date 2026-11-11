@@ -21,6 +21,7 @@ import { createAccountHostKeyPrompt } from './accountHostKey';
 import { createAndroidTrustedHosts } from '@/platform/android/trustedHosts';
 import { googleSync, verifiedGoogleAccountId } from '@/native/googleSync';
 import { vaultNative } from '@/native/vaultNative';
+import { createVaultPasswordManager, vaultPassword } from '@/native/vaultPassword';
 import { openExternalUrl } from '@/platform/androidAppInfo';
 import { createAndroidVault } from '@/vault/androidVault';
 import { requestVaultUnlock, useKeyVault, type KeyVaultPlatform } from '@ui/app/keyVault';
@@ -99,6 +100,7 @@ const trustedHosts = createAndroidTrustedHosts({ store: vaultStore, accountId: v
 export const keyVaultPlatform: KeyVaultPlatform = {
   accountId: verifiedGoogleAccountId,
   canCreate: true,
+  passwordManager: createVaultPasswordManager(vaultPassword, verifiedGoogleAccountId),
   onLock: () => androidVault.lock(),
   cancelAccountPreparation: () => {vaultPreparation++;},
   async prepareAccount() {

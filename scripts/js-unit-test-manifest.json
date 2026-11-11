@@ -1068,6 +1068,15 @@
         "real Google auth loss while native hold is pending completes cleanup with final wipe failure false",
         "real Google auth loss while native hold is pending completes cleanup with final wipe failure true"
       ]
+    },
+    "tests/unit/vaultPassword.test.ts": {
+      "suite": "Google Password Manager bridge for the vault passphrase",
+      "tests": [
+        "saves under the verified account id and reports each provider outcome",
+        "fails closed when signed out and never calls the provider",
+        "retrieves only for the current account and types every non-ok outcome",
+        "refuses a passphrase fetched while the account switched under the system sheet"
+      ]
     }
   }
 }
