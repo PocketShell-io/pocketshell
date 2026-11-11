@@ -300,6 +300,18 @@ export function createAndroidPlatform(deps: AndroidApiDeps): AndroidPlatform {
    * the phone). Either way it then resolves like any other phone host.
    */
   async function resolveTarget(payload: Parameters<PocketShellApi['ssh']['connect']>[0]) {
+    if (payload.accountDirect) {
+      const host = await deps.accountHosts?.find(payload);
+      if (!host || host.name !== payload.hostAlias || host.hostname !== payload.host
+        || host.port !== payload.port || host.user !== payload.user || host.local === true
+        || payload.local === true || ['gateway', 'gatewayAuth', 'link', 'trustedVault'].some(
+          marker => Object.hasOwn(host, marker) || Object.hasOwn(payload, marker))) {
+        throw new Error('The synced SSH host changed. Reload your account and try again.');
+      }
+      const target = await vaultTarget(host, payload);
+      if (!target) throw new Error(vaultUnboundMessage(host.name));
+      return target;
+    }
     // A saved gateway route remains authoritative even if an older caller
     // sends only the host alias. Losing its marker must never become direct SSH.
     if (!hasGatewayMarker(payload)) {
@@ -433,6 +445,7 @@ export function createAndroidPlatform(deps: AndroidApiDeps): AndroidPlatform {
 
     hosts: {
       provenance: 'local',
+      accountDirect: true,
       groupLabel: 'On this phone',
       sourceName: 'saved hosts',
       emptyHint: 'No hosts saved on this phone yet.',
