@@ -103,6 +103,10 @@ services:
   host:
     <<: *test-labels
     image: pocketshell-test:agents
+    # The host has no delegated user systemd. Normal CLI creates retain their
+    # production memory request under this stronger, real kernel cgroup bound.
+    mem_limit: 384m
+    memswap_limit: 384m
     pull_policy: never
     environment:
       POCKETSHELL_AGENT_FIXTURE_VERSION: ${POCKETSHELL_AGENT_FIXTURE_VERSION:-}
@@ -110,6 +114,19 @@ services:
     # from"), so the runner can prove a pin mismatch reached sshd and still
     # made zero userauth attempts. The image's own entrypoint then runs.
     entrypoint: ["/bin/sh", "-c", "printf '\\nLogLevel VERBOSE\\n' >> /etc/ssh/sshd_config && exec /usr/local/bin/pocketshell-agent-entrypoint"]
+
+  # Independent direct SSH destination for the account-only host journey.
+  # The Gateway host above deliberately retains NO published SSH route.
+  direct-host:
+    <<: *test-labels
+    image: pocketshell-test:agents
+    pull_policy: never
+    mem_limit: 384m
+    memswap_limit: 384m
+    environment:
+      POCKETSHELL_AGENT_FIXTURE_VERSION: ${POCKETSHELL_AGENT_FIXTURE_VERSION:-}
+    ports:
+      - "127.0.0.1::22"
 
   agent:
     <<: [*gwlane-base, *test-labels]

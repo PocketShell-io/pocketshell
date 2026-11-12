@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { HostEntry } from '@pocketshell/core';
 import {
   createGoogleSyncNative,
@@ -257,4 +257,78 @@ describe('Android settings sync adapter', () => {
     await expect(native.signIn()).rejects.toThrow('Google sign-in returned an unexpected status.');
     await expect(native.request({ method: 'GET', slot: 'main' })).rejects.toThrow('invalid response');
   });
+  it('notifies confirmed native auth loss once and permits normal sign-in without sign-out', async () => {
+    let signedIn = true;
+    const rejected = { code: 'NOT_SIGNED_IN', message: 'Sign in with Google first.' };
+    const plugin = { status: async () => ({ signedIn, email: signedIn ? 'a@b.c' : null, packageName: 'p' }),
+      signIn: vi.fn(async () => { signedIn = true; return plugin.status(); }), signOut: vi.fn(),
+      request: async () => { signedIn = false; throw rejected; } };
+    const native = createGoogleSyncNative(plugin as never);
+    const lost = vi.fn(async () => { expect((await native.status()).signedIn).toBe(false); });
+    native.onAuthLost!(lost);
+    await expect(native.request({ method: 'GET' })).rejects.toBe(rejected);
+    await expect(native.request({ method: 'GET' })).rejects.toBe(rejected);
+    expect(lost).toHaveBeenCalledTimes(1);
+    expect((await native.signIn()).signedIn).toBe(true);
+    expect(plugin.signOut).not.toHaveBeenCalled();
+    await expect(native.request({ method: 'GET' })).rejects.toBe(rejected);
+    expect(lost).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps network cancellation successful requests and wrong-passphrase responses out of auth loss', async () => {
+    let result: unknown = { status: 200, body: '{}' };
+    const native = createGoogleSyncNative({ request: async () => {
+      if ('code' in (result as object)) throw result; return result;
+    } } as never);
+    const lost = vi.fn(); native.onAuthLost!(lost);
+    await expect(native.request({ method: 'GET' })).resolves.toEqual(result);
+    for (const code of ['SYNC_NETWORK_FAILED', 'SIGN_IN_CANCELLED', 'SIGN_IN_FAILED']) {
+      result = { code }; await expect(native.request({ method: 'GET' })).rejects.toBe(result);
+    }
+    result = { status: 401, body: '{"error":"wrong_passphrase"}' };
+    await expect(native.request({ method: 'POST', endpoint: 'vault/verify', body: '{}' })).resolves.toEqual(result);
+    expect(lost).not.toHaveBeenCalled();
+  });
+
+  it('rejects late successes from the lost generation without invalidating a fresh login', async () => {
+    let resolve!: (value: unknown) => void;
+    let reject!: (error: unknown) => void;
+    const pending = [new Promise(r => { resolve = r; }), new Promise((_, r) => { reject = r; })];
+    const plugin = { request: () => pending.shift(), signIn: async () => ({ signedIn: true, email: 'new@b.c', packageName: 'p' }) };
+    const native = createGoogleSyncNative(plugin as never);
+    const lost = vi.fn(); native.onAuthLost!(lost);
+    const old = native.request({ method: 'GET' });
+    const fail = native.request({ method: 'GET' });
+    const failed = expect(fail).rejects.toMatchObject({ code: 'NOT_SIGNED_IN' });
+    reject({ code: 'NOT_SIGNED_IN' }); await failed;
+    await native.signIn();
+    const stale = expect(old).rejects.toThrow('sign-in changed');
+    resolve({ status: 200, body: '{}' }); await stale;
+    expect(lost).toHaveBeenCalledTimes(1);
+  });
+
+  it('refuses old decrypted account results after auth loss and a different login', async () => {
+    const backend = new FakeSyncBackend();
+    await backend.seed(JSON.stringify({ hosts: [{ name: 'old-account', hostname: 'private.example' }] }));
+    const adapter = new AndroidSync({ native: backend, storage: new MemoryStorage(), localHosts: async () => [], kdfIterations: FAST });
+    const original = crypto.subtle.decrypt.bind(crypto.subtle);
+    let entered!: () => void, release!: () => void;
+    const atDecrypt = new Promise<void>(r => { entered = r; });
+    const held = new Promise<void>(r => { release = r; });
+    const spy = vi.spyOn(crypto.subtle, 'decrypt').mockImplementation(async (...args) => {
+      const plain = await original(...args); entered(); await held; return plain;
+    });
+    const old = adapter.api().pull('main', PASSPHRASE);
+    try {
+      await atDecrypt;
+      adapter.clearAccountCache();
+      backend.email = 'different@example.test';
+      await adapter.signIn();
+      const rejected = expect(old).rejects.toThrow('Google account changed');
+      release(); await rejected;
+      expect(adapter.accountHosts()).toBeNull();
+      expect((await adapter.status()).email).toBe('different@example.test');
+    } finally { release(); spy.mockRestore(); await old.catch(() => undefined); }
+  });
+
 });

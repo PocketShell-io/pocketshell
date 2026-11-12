@@ -13,18 +13,19 @@
 #     trigger row, so a bump force-fulls the suite.
 #   * APLEXER_PIN — the aplexer GitHub release the `a`/`aplexer` binaries are
 #     downloaded from. `a` must sit next to /usr/bin/python3
-#     (`pocketshell.aplexer::_bundled_bin_dirs` resolves it there and nowhere
+#     (`pocketshell.runtime.aplexer::_bundled_bin_dirs` resolves it there and nowhere
 #     else — the PATH lookup is a D22 hard cut, #2543), so the binaries stay
 #     release-asset downloads rather than whatever the wheel happens to place
 #     on PATH. Keep this in lock-step with the pin inside the pocketshell
 #     wheel's own dependencies (aplexer>=0.1.19,<0.2 there, F5 one-version-per-host).
 #     F5: 0.1.5 -> 0.1.19 (first release with the full Hub/PocketShell consumer
-#     surface). POCKETSHELL_PIN stays at 0.5.8 until the CLI re-releases with
-#     the new aplexer range; the fixture binaries (0.1.19) are what the
-#     contract tests pin, not the wheel-bundled copy.
+#     surface). PocketShell 0.5.13 is the published CLI with bounded-cgroup
+#     inheritance for normal Docker host session creation. The fixture
+#     binaries remain pinned to 0.1.19 and their real lifecycle is checked
+#     through the current pocketshell.runtime.aplexer resolver.
 #
 # Both Dockerfiles parse this file at build time (never a --build-arg
 # default, never a hardcoded literal — that is the drift a fixture must not
 # have), and scripts/test-agents-fixture-aplexer.sh asserts they still do.
-POCKETSHELL_PIN=0.5.8
+POCKETSHELL_PIN=0.5.13
 APLEXER_PIN=0.1.19

@@ -324,8 +324,8 @@ export class AndroidConnectionHub {
    * connection (joining a ladder already running). True once the transport
    * and the attached session are back.
    */
-  async reconnect(connectionId: string): Promise<boolean> {
-    const result = await this.recordOf(connectionId).controller.reconnect();
+  async reconnect(connectionId: string, authorizedTarget?: SshHostTarget): Promise<boolean> {
+    const result = await this.recordOf(connectionId).controller.reconnect(authorizedTarget);
     return result.ok;
   }
 

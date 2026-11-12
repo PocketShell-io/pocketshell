@@ -26,15 +26,24 @@ final class EncryptedSyncTokenStore implements GoogleSyncSession.TokenStore {
     }
 
     private final Backing backing;
+    private final GoogleSyncSession.AuthenticationState authentication;
     private SharedPreferences preferences;
 
     EncryptedSyncTokenStore(Context context) {
-        this(new AndroidBacking(context.getApplicationContext()));
+        this(new AndroidBacking(context.getApplicationContext()),
+                GoogleSyncSession.AuthenticationState.forScope(EncryptedSyncTokenStore.class));
     }
 
     EncryptedSyncTokenStore(Backing backing) {
-        this.backing = backing;
+        this(backing, GoogleSyncSession.AuthenticationState.forScope(backing));
     }
+
+    private EncryptedSyncTokenStore(Backing backing, GoogleSyncSession.AuthenticationState authentication) {
+        this.backing = backing;
+        this.authentication = authentication;
+    }
+
+    @Override public GoogleSyncSession.AuthenticationState authenticationState() { return authentication; }
 
     /**
      * Read-only: with no record on disk this is "signed out" without opening

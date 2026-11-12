@@ -18,12 +18,13 @@ export interface GoogleSyncHttpResponse {
   body: string;
 }
 
-export type GoogleSyncRequest =
+export type GoogleSyncRequest = (
   | { method: 'GET'; slot?: string }
   | { method: 'PUT'; slot: string; body: string }
   /** The key vault's server check (key-vault W2 phase 2); 404/503 = not deployed. */
-  | { method: 'GET'; endpoint: 'vault/status' }
-  | { method: 'POST'; endpoint: 'vault/verify'; body: string };
+  | { method: 'GET'; endpoint: 'settings' | 'vault/status' }
+  | { method: 'POST'; endpoint: 'vault/verify' | 'vault/initialize'; body: string }
+) & { /** Native refuses a different current Google subject before sending. */ accountId?: string };
 
 /** The narrow capability the sync adapter needs; tests supply a fake. */
 export interface GoogleSyncNative {
@@ -31,6 +32,10 @@ export interface GoogleSyncNative {
   signIn(): Promise<GoogleSyncStatus>;
   signOut(): Promise<GoogleSyncStatus>;
   request(request: GoogleSyncRequest): Promise<GoogleSyncHttpResponse>;
+  /** Verified public account identity; no token crosses the boundary. */
+  accountId?(): Promise<unknown>;
+  /** Confirmed native auth loss; consumer cleanup is awaited before request rejection. */
+  onAuthLost?(listener: () => void | Promise<void>): () => void;
 }
 
 /** Stable native rejection codes (SyncAuthException.java). */
@@ -45,10 +50,11 @@ export const GOOGLE_SYNC_ERROR_CODES = [
 ] as const;
 
 type NativeGoogleSyncPlugin = Plugin & {
+  accountId(): Promise<unknown>;
   status(): Promise<unknown>;
   signIn(): Promise<unknown>;
   signOut(): Promise<unknown>;
-  request(options: { method: string; slot?: string; endpoint?: string; body?: string }): Promise<unknown>;
+  request(options: { method: string; slot?: string; endpoint?: string; body?: string; accountId?: string }): Promise<unknown>;
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -72,15 +78,84 @@ export function parseGoogleSyncResponse(value: unknown): GoogleSyncHttpResponse 
 }
 
 /** Wrap the registered Capacitor plugin with response validation. */
+export function isGoogleAuthLoss(error: unknown): boolean {
+  return isRecord(error) && error.code === 'NOT_SIGNED_IN';
+}
+
 export function createGoogleSyncNative(plugin: NativeGoogleSyncPlugin): GoogleSyncNative {
+  const listeners = new Set<() => void | Promise<void>>();
+  let generation = 0;
+  let loss: Promise<void> | null = null;
+  let authLost = false;
+  let observedSignedIn = false;
+  function changed(): Error { return new Error('Google sign-in changed while the request was running. Try again.'); }
+  function reportAuthLoss(): Promise<void> {
+    if (authLost) return loss ?? Promise.resolve();
+    // Fence old successes and mark the transition before consumer cleanup can re-enter status().
+    generation++;
+    authLost = true;
+    observedSignedIn = false;
+    loss = Promise.allSettled([...listeners].map(async listener => listener())).then(() => undefined);
+    return loss;
+  }
+  async function guarded<T>(operation: () => Promise<T>): Promise<T> {
+    const started = generation;
+    try {
+      const result = await operation();
+      if (started !== generation) throw changed();
+      return result;
+    } catch (error) {
+      if (started === generation && !authLost && isGoogleAuthLoss(error)) {
+        await reportAuthLoss();
+      } else if (isGoogleAuthLoss(error) && loss) {
+        await loss;
+      }
+      throw error;
+    }
+  }
   return {
-    status: async () => parseGoogleSyncStatus(await plugin.status()),
-    signIn: async () => parseGoogleSyncStatus(await plugin.signIn()),
-    signOut: async () => parseGoogleSyncStatus(await plugin.signOut()),
-    request: async (request) => parseGoogleSyncResponse(await plugin.request({ ...request })),
+    status: async () => {
+      const started = generation;
+      const result = await guarded(async () => parseGoogleSyncStatus(await plugin.status()));
+      if (started !== generation) throw changed();
+      if (observedSignedIn && !result.signedIn) {
+        // Another native plugin may have invalidated the shared credential record.
+        // Preserve status(false), while using exactly the same transient-only cleanup as NOT_SIGNED_IN.
+        const cleanupGeneration = authLost ? generation : generation + 1;
+        await reportAuthLoss();
+        if (cleanupGeneration !== generation) throw changed();
+      } else if (result.signedIn) observedSignedIn = true;
+      return result;
+    },
+    signIn: async () => {
+      // An explicit new login owns its generation; late old requests cannot sign it out.
+      const started = ++generation;
+      observedSignedIn = false;
+      await loss;
+      if (started !== generation) throw changed();
+      const result = parseGoogleSyncStatus(await plugin.signIn());
+      if (started !== generation) throw changed();
+      observedSignedIn = result.signedIn;
+      authLost = false;
+      loss = null;
+      return result;
+    },
+    signOut: async () => { generation++; observedSignedIn = false; loss = null; return parseGoogleSyncStatus(await plugin.signOut()); },
+    accountId: () => guarded(() => plugin.accountId()),
+    request: (request) => guarded(async () => parseGoogleSyncResponse(await plugin.request({ ...request }))),
+    onAuthLost: (listener) => { listeners.add(listener); return () => listeners.delete(listener); },
   };
 }
 
-export const googleSync: GoogleSyncNative = createGoogleSyncNative(
-  registerPlugin<NativeGoogleSyncPlugin>('GoogleSync'),
-);
+const nativeGoogleSyncPlugin = registerPlugin<NativeGoogleSyncPlugin>('GoogleSync');
+export const googleSync: GoogleSyncNative = createGoogleSyncNative(nativeGoogleSyncPlugin);
+
+/** Native verifies the subject through the backend authorizer. No JWT or email-derived identity. */
+export async function verifiedGoogleAccountId(): Promise<string | null> {
+  if (!(await googleSync.status()).signedIn) return null;
+  const reply = await googleSync.accountId!();
+  if (!isRecord(reply) || typeof reply.accountId !== 'string' || !/^google:[0-9A-Za-z_-]{1,128}$/.test(reply.accountId)) {
+    throw new Error('The signed-in account could not be verified.');
+  }
+  return reply.accountId;
+}

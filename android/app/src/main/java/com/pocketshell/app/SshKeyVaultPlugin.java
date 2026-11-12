@@ -154,6 +154,15 @@ public final class SshKeyVaultPlugin extends Plugin {
         pem = null;
         try {
             EphemeralCredentials.Held held = EphemeralCredentials.INSTANCE.hold(bytes);
+            if (request.has("accountId")) {
+                try {
+                    String accountId = request.getString("accountId");
+                    GatewaySyncSession account = new GatewaySyncSession(getContext(), this::getActivity);
+                    if (!("google:" + account.subject()).equals(accountId)) throw new IOException("The signed-in account changed.");
+                    EphemeralCredentials.INSTANCE.bind(held.handleId, accountId, request.getString("vaultId"), request.getLong("epoch"), request.getString("keyId"));
+                    if (!("google:" + account.subject()).equals(accountId)) throw new IOException("The signed-in account changed.");
+                } catch (Exception error) { EphemeralCredentials.INSTANCE.release(held.handleId); throw error; }
+            }
             call.resolve(new JSObject()
                 .put("handleId", held.handleId)
                 .put("algorithm", held.algorithm)

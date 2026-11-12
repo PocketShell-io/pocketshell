@@ -11,12 +11,14 @@ ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
 cd -- "$ROOT_DIR"
 
 REQUIRED_CLASSES=(
-  com.pocketshell.app.CompositeGoogleSignInTest
+  com.pocketshell.app.TrustedHostRevisionsTest
+  com.pocketshell.app.GoogleSyncEnvironmentTest
   com.pocketshell.app.CredentialHandleVaultTest
   com.pocketshell.app.DurableKeyValueStoreTest
   com.pocketshell.app.EncryptedSyncTokenStoreTest
   com.pocketshell.app.EphemeralCredentialsTest
   com.pocketshell.app.GatewayOriginAllowlistTest
+  com.pocketshell.app.GatewayDirectoryClientTest
   com.pocketshell.app.GatewayPairingPluginContractTest
   com.pocketshell.app.GatewayPairingStoreTest
   com.pocketshell.app.GatewayTargetPolicyTest
@@ -26,8 +28,6 @@ REQUIRED_CLASSES=(
   com.pocketshell.app.GoogleSyncSessionGatewayExchangeTest
   com.pocketshell.app.GoogleSyncSessionTest
   com.pocketshell.app.KeyHandleConnectFailuresTest
-  com.pocketshell.app.LoopbackPkceSignInTest
-  com.pocketshell.app.PkceRefreshTokenStoreTest
   com.pocketshell.app.SpeechAudioPresenceTest
   com.pocketshell.app.SpeechRecognitionOptionsTest
   com.pocketshell.app.SpeechRecognitionPluginTest

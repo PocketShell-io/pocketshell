@@ -11,7 +11,7 @@ import type { VaultNative } from '@/vault/androidVault';
  *    non-exportable Android Keystore key (VaultDeviceKeyPlugin.java).
  */
 type NativeVaultKeys = Plugin & {
-  holdVaultKey(options: { privateKeyPem: string }): Promise<unknown>;
+  holdVaultKey(options: Parameters<VaultNative['holdVaultKey']>[0]): Promise<unknown>;
   releaseVaultKeys(options: { handleIds?: string[] }): Promise<unknown>;
 };
 

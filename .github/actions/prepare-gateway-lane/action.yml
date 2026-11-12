@@ -53,3 +53,7 @@ runs:
     - name: Build the gateway binaries and the test-CA APK
       shell: bash
       run: scripts/connected-js-gateway-docker.sh --suffix i3086gwlane --gateway-src .ci/pocketshell-gateway --prepare-only
+
+    - name: Prepare independent account vault gateway APK and fixtures
+      shell: bash
+      run: scripts/connected-js-account-vault-docker.sh --suffix ikvgwlane --gateway-src .ci/pocketshell-gateway --prepare-only

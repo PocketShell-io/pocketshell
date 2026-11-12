@@ -7,6 +7,7 @@ import static org.junit.Assert.assertTrue;
 
 import android.content.ContentValues;
 import android.content.Context;
+import android.content.Intent;
 import android.graphics.Bitmap;
 import android.graphics.Rect;
 import android.net.Uri;
@@ -17,6 +18,8 @@ import android.provider.MediaStore;
 import android.util.Log;
 import android.view.KeyEvent;
 import android.view.View;
+import android.view.WindowInsets;
+import android.view.WindowInsetsAnimation;
 import android.webkit.WebView;
 
 import androidx.test.core.app.ActivityScenario;
@@ -103,6 +106,10 @@ public final class SharedAccountPickerJourneyTest {
     private ScreenshotGuard.Frame lastScreenshot;
     private FakeSyncBackend backend;
     private FakeGoogle google;
+    // Main-thread-only platform animation state: autofocus can move Cancel after DOM layout.
+    private final java.util.Set<WindowInsetsAnimation> imeAnimations = new java.util.HashSet<>();
+    private int imeAnimationEnds;
+
 
     @Before
     public void installFakeEdges() {
@@ -130,24 +137,25 @@ public final class SharedAccountPickerJourneyTest {
     }
 
     @Test
-    public void sharedPickerListsAccountHostsAfterSignInAndUnlockFromTheHeaderButton() throws Exception {
+    public void sharedTrustedPickerNeverAdoptsUntrustedAccountRowsAfterSignInOrSettingsSync() throws Exception {
         assertTrue("packaged account journey runs on API 35+", Build.VERSION.SDK_INT >= 35);
         backend.seed(encrypt(desktopAccount().toString()), 3);
-        // The phone has its own hetzner (as a migrated 0.5.x host would be): the
-        // account must keep it, with the desktop's fields, through a phone sync.
+        // A host-list envelope is not a key vault. Serve a genuine core-created
+        // vault for this existing-vault scenario, under the same verified account.
+        String fixturePath = InstrumentationRegistry.getArguments().getString("vaultFixture");
+        assertNotNull("the runner stages a real encrypted vault", fixturePath);
+        assertTrue("runner-staged vault path", fixturePath.matches("/data/local/tmp/pocketshell-picker-vault-[A-Za-z0-9_-]+\\.json"));
+        backend.vaultSlots = new JSONObject(shell("cat " + fixturePath)).getJSONObject("slots");
+        backend.vaultSlots.remove("main"); // Preserve the desktop host-list envelope seeded above.
+        assertTrue("a real vault header is required", backend.vaultSlots.has("vault"));
         launchSharedWithLocalHosts(new JSONArray()
                 .put(savedHost("phone-box", "192.168.1.9", 2200, "me"))
                 .put(savedHost("hetzner", "hetzner.phone.lan", 22, "alexey")));
-
-        // Signed out: one plain list and the account button in the header actions.
-        awaitJsTrue("document.querySelector('.picker .header-actions .account-action')?.textContent.includes('Sign in') === true"
-                + " && !document.querySelector('.picker .account-action.signed-in')"
-                + " && [...document.querySelectorAll('.picker .host-name')].map((n) => n.textContent.trim()).join(',') === 'phone-box,hetzner'"
-                + " && !document.querySelector('.picker .group-label')");
+        awaitJsTrue("!!document.querySelector('[data-testid=trusted-servers]')"
+                + " && !!document.querySelector('[data-testid=server-google-login]')");
+        assertOnlySavedLocalPickerRows();
         assertAccountButtonIsTouchSized();
-        captureScreenshot("shared-picker-signed-out.png", ".picker .account-action");
-
-        // The header button is the way in: Account & sync, then Google sign-in.
+        captureScreenshot("shared-picker-signed-out.png", "[data-testid=trusted-servers]");
         tapDomCenter(".picker .header-actions .account-action");
         awaitJsTrue("!!document.querySelector('[data-testid=android-account] .account-login .account-primary:not([disabled])')");
         tapDomCenter("[data-testid=android-account] .account-login .account-primary");
@@ -155,57 +163,29 @@ public final class SharedAccountPickerJourneyTest {
                 + JSONObject.quote(EMAIL) + ") === true");
         assertEquals("one interactive account chooser", 1, google.interactive.get());
         backToPicker();
-
-        // Signed in, still locked: the header shows the account, the list says how to reveal its hosts.
-        awaitJsTrue("document.querySelector('.picker .account-action.signed-in')?.textContent.includes(" + JSONObject.quote(EMAIL) + ") === true"
-                + " && !!document.querySelector('.picker .locked-note')");
-        captureScreenshot("shared-picker-signed-in-locked.png", ".picker .locked-note");
-
-        // Unlock with the passphrase (Check account): nothing is uploaded, and
-        // the phone's hetzner is kept for the account, not marked for removal.
-        tapDomCenter(".picker .locked-note .btn-ghost");
+        awaitJsTrue("!!document.querySelector('[data-testid=vault-unlock-gate]')");
+        captureVaultScreenshot("shared-picker-signed-in-locked.png");
+        dismissVaultUnlockAndAwaitPicker();
+        awaitJsTrue("!!document.querySelector('[data-testid=server-vault-unlock]')");
+        assertOnlySavedLocalPickerRows();
+        // Settings decrypt never grants authenticated server trust.
+        tapDomCenter(".picker .header-actions .account-action");
         awaitJsTrue("!!document.querySelector('[data-testid=android-account] .passphrase-field input:not([disabled])')");
         setValue("[data-testid=android-account] .passphrase-field input", PASSPHRASE);
         tapDomCenter("[data-testid=android-account] .host-heading .btn-ghost");
         awaitJsTrue("document.querySelector('[data-testid=android-account] .account-message')?.textContent.trim()"
                 + " === 'Your account has 2 synced hosts.'", SYNC_TIMEOUT_MILLIS);
-        String hetznerRow = "[...document.querySelectorAll('[data-testid=android-account] .account-host-row')]"
-                + ".find((row) => row.querySelector('.host-alias')?.textContent.trim() === 'hetzner')";
-        awaitJsTrue("(() => {const row = " + hetznerRow + "; return !!row && row.querySelector('input').checked"
-                + " && row.querySelector('.status-chip').textContent.trim() === 'In account';})()");
-        assertEquals("unlocking uploads nothing", 0, backend.puts.size());
+        assertEquals("decrypting settings uploads nothing", 0, backend.puts.size());
         backToPicker();
-
-        // Home now lists the account's hosts this phone does not have, beside the phone's own.
-        String rows = "[...document.querySelectorAll('.picker .host-list')].map((list) => [...list.querySelectorAll('.host-name')]"
-                + ".map((n) => n.textContent.trim()).join(',')).join('|')";
-        awaitJsTrue(rows + " === 'bäckerei|phone-box,hetzner'"
-                + " && [...document.querySelectorAll('.picker .group-label')].map((n) => n.textContent.trim()).join('|')"
-                + " === 'From your account|On this phone'"
-                + " && !document.querySelector('.picker .locked-note')");
-        assertTrue("the account rows show the account's address",
-                evalString("document.querySelector('.picker .host-list .host-detail')?.textContent.trim()").contains("root@höfn.internal:2222"));
-        assertNoTokenInWebView("after unlock");
-        assertEquals("the decrypted account copy never reaches WebView storage", "null",
-                evalRaw("localStorage.getItem('" + ACCOUNT_HOSTS_KEY + "')"));
-        assertFalse("no decrypted account address in WebView storage",
-                evalString("JSON.stringify(Object.entries(localStorage))").contains("höfn.internal"));
-        captureScreenshot("shared-picker-account-hosts.png", ".picker .group-label");
-        String accountRows = evalString("JSON.stringify([...document.querySelector('.picker .host-list')"
-                + ".querySelectorAll('.host-name')].map((n) => n.textContent.trim()))");
-
-        // An account host with no key on this phone asks for the phone's key.
-        tapDomCenter(".picker .host-list .host-item:nth-child(1) .host-row");
-        awaitJsTrue("document.querySelector('[data-testid=account-host-key] #account-host-key-title')?.textContent.trim()"
-                + " === 'Choose a key for bäckerei'"
-                + " && document.querySelector('[data-testid=account-host-key-reason]')?.dataset.reason === 'account'"
-                + " && document.querySelector('[data-testid=account-host-key-user]')?.value === 'root'");
-        captureScreenshot("shared-account-host-key-prompt.png", "[data-testid=account-host-key-connect]");
-        tapDomCenter("[data-testid=account-host-key-cancel]");
-        awaitJsTrue("!document.querySelector('[data-testid=account-host-key-gate]')"
-                + " && document.querySelector('.picker p.error')?.textContent.trim()"
-                + " === 'No SSH key was chosen for “bäckerei” on this phone, so nothing was dialled.'");
-
+        awaitJsTrue("!!document.querySelector('[data-testid=vault-unlock-gate]')");
+        dismissVaultUnlockAndAwaitPicker();
+        assertOnlySavedLocalPickerRows();
+        awaitJsTrue("!document.querySelector('[data-testid=trusted-server-connect]')"
+                + " && !document.querySelector('[data-testid=account-host-key-gate]')");
+        assertNoTokenInWebView("after settings decrypt");
+        assertEquals("the decrypted settings copy never reaches storage", "null", evalRaw("localStorage.getItem('" + ACCOUNT_HOSTS_KEY + "')"));
+        assertFalse("no decrypted account address at rest", evalString("JSON.stringify(Object.entries(localStorage))").contains("höfn.internal"));
+        captureScreenshot("shared-picker-account-hosts.png", "[data-testid=trusted-servers]");
         // One Sync now from the shared Account screen: the account keeps both
         // hosts, and hetzner keeps every field the desktop owns.
         tapDomCenter(".picker .header-actions .account-action");
@@ -226,16 +206,22 @@ public final class SharedAccountPickerJourneyTest {
         assertEquals("unknown fields survive", "opaque", hetzner.getJSONObject("futureDirective").getString("mode"));
         assertEquals("an account-only host is carried unchanged", "höfn.internal", byName(uploaded, "bäckerei").getString("hostname"));
         captureScreenshot("shared-account-synced.png", "[data-testid=android-account] .account-message");
+        backToPicker();
+        awaitJsTrue("!!document.querySelector('[data-testid=vault-unlock-gate]')");
+        dismissVaultUnlockAndAwaitPicker();
+        assertOnlySavedLocalPickerRows();
+        awaitJsTrue("!document.querySelector('[data-testid=trusted-server-connect]')"
+                + " && !document.querySelector('[data-testid=account-host-key-gate]')");
         assertNoTokenInLogcat();
         Log.i(TAG, "SHARED_PICKER " + new JSONObject()
                 .put("requests", backend.requests.size()).put("uploads", backend.puts.size())
-                .put("accountRows", new JSONArray(accountRows))
+                .put("accountRows", new JSONArray()).put("untrustedRowsHidden", true)
                 .put("syncedHosts", new JSONArray(uploadedNames))
                 .put("keptDesktopFields", true));
     }
 
     /**
-     * The legacy home (still the default shell) after an app restart: the
+     * The explicit legacy-shell account/settings capability after an app restart: the
      * decrypted account copy is in memory only (#3026), so the synced-host list
      * is gone until the passphrase unlocks it again, which the Account screen
      * says, and one "Show account hosts" brings it back without uploading.
@@ -276,10 +262,38 @@ public final class SharedAccountPickerJourneyTest {
         assertNoTokenInLogcat();
     }
 
+    /** Local saved rows remain usable; account decryption grants no row or address authority. */
+    private void assertOnlySavedLocalPickerRows() throws Exception {
+        String rows = "JSON.stringify([...document.querySelectorAll('.picker .host-row')].map((row) => "
+                + "row.querySelector('.host-name').textContent.trim() + '=' + "
+                + "row.querySelector('[data-testid=host-detail]').textContent.trim()).sort())";
+        String expected = new JSONArray().put("hetzner=alexey@hetzner.phone.lan:22")
+                .put("phone-box=me@192.168.1.9:2200").toString();
+        awaitJsTrue(rows + " === " + JSONObject.quote(expected));
+        String screen = evalString("document.querySelector('.picker').textContent");
+        assertFalse("the account-only host is never a picker row", screen.contains("bäckerei"));
+        assertFalse("the account-only address is never exposed", screen.contains("höfn.internal"));
+        assertFalse("a same-name account row never replaces the saved local address", screen.contains("135.181.114.209"));
+    }
+
     // ---- journey steps ------------------------------------------------------
 
     private void launchSharedWithLocalHosts(JSONArray hosts) throws Exception {
         scenario = ActivityScenario.launch(SharedShellLaunch.intent());
+        scenario.onActivity(activity -> findWebView(activity.getWindow().getDecorView())
+                .setWindowInsetsAnimationCallback(new WindowInsetsAnimation.Callback(
+                        WindowInsetsAnimation.Callback.DISPATCH_MODE_CONTINUE_ON_SUBTREE) {
+                    @Override public void onPrepare(WindowInsetsAnimation animation) {
+                        if ((animation.getTypeMask() & WindowInsets.Type.ime()) != 0) imeAnimations.add(animation);
+                    }
+                    @Override public WindowInsets onProgress(WindowInsets insets, List<WindowInsetsAnimation> running) { return insets; }
+                    @Override public void onEnd(WindowInsetsAnimation animation) {
+                        if ((animation.getTypeMask() & WindowInsets.Type.ime()) != 0) {
+                            imeAnimations.remove(animation);
+                            imeAnimationEnds++;
+                        }
+                    }
+                }));
         awaitJsTrue("!!document.querySelector('.picker .header-actions')", 45_000);
         String staleDocument = "reload-" + SystemClock.uptimeMillis();
         evalRaw("window.__pocketshellStaleDocument = " + JSONObject.quote(staleDocument) + ";"
@@ -291,7 +305,8 @@ public final class SharedAccountPickerJourneyTest {
     }
 
     private void launchLegacyWithLocalHosts(JSONArray hosts) throws Exception {
-        scenario = ActivityScenario.launch(MainActivity.class);
+        scenario = ActivityScenario.launch(new Intent(targetContext(), MainActivity.class)
+                .putExtra(MainActivity.EXTRA_SHELL, MainActivity.SHELL_LEGACY));
         awaitJsTrue("document.querySelector('[data-testid=build-status]')?.dataset.state === 'verified'", 45_000);
         String staleDocument = "reload-" + SystemClock.uptimeMillis();
         evalRaw("window.__pocketshellStaleDocument = " + JSONObject.quote(staleDocument) + ";"
@@ -327,6 +342,58 @@ public final class SharedAccountPickerJourneyTest {
         awaitRoute("settings");
         pressBack();
         awaitRoute("home");
+    }
+
+    /** The picker remains mounted behind the modal; row absence cannot prove dismissal. */
+    private String uncoveredPickerCondition() {
+        return "(() => {if(document.querySelector('[data-testid=vault-unlock-gate]'))return false;"
+                + "const button=document.querySelector('.picker .header-actions .account-action');"
+                + "if(!button || !document.querySelector('[data-testid=server-vault-unlock]'))return false;"
+                + "const r=button.getBoundingClientRect();const hit=document.elementFromPoint(r.left+r.width/2,r.top+r.height/2);"
+                + "return r.width>0 && r.height>0 && !!hit && (hit===button || button.contains(hit));})()";
+    }
+
+    private void awaitImeSettled(boolean visible) throws Exception {
+        long deadline = SystemClock.uptimeMillis() + WAIT_TIMEOUT_MILLIS;
+        AtomicReference<Boolean> settled = new AtomicReference<>(false);
+        while (SystemClock.uptimeMillis() < deadline) {
+            scenario.onActivity(activity -> {
+                WebView webView = findWebView(activity.getWindow().getDecorView());
+                WindowInsets insets = webView.getRootWindowInsets();
+                settled.set(insets != null && insets.isVisible(WindowInsets.Type.ime()) == visible
+                        && imeAnimations.isEmpty() && imeAnimationEnds > 0);
+            });
+            if (settled.get()) return;
+            Thread.sleep(100); // Poll observed platform state; never infer settling from elapsed time.
+        }
+        throw new AssertionError("native IME did not finish its visibility transition: " + visible);
+    }
+
+    private void dismissVaultUnlockAndAwaitPicker() throws Exception {
+        awaitJsTrue("!!document.querySelector('[data-testid=vault-unlock-gate]')");
+        // Live red control: mounted/hidden rows must not pass the new dismissal barrier.
+        assertEquals("a visible unlock sheet must block the picker", "false", evalRaw(uncoveredPickerCondition()));
+        evalRaw("(() => {const gate=document.querySelector('[data-testid=vault-unlock-gate]');"
+                + "const trace=window.__pickerDismissTrace={clicks:0,removed:false,reopened:false};"
+                + "gate.querySelector('[data-testid=vault-unlock-cancel]').addEventListener('click',()=>trace.clicks++,{once:true});"
+                + "window.__pickerDismissObserver?.disconnect();"
+                + "window.__pickerDismissObserver=new MutationObserver(()=>{"
+                + "if(!gate.isConnected)trace.removed=true;"
+                + "const current=document.querySelector('[data-testid=vault-unlock-gate]');"
+                + "if(current && current!==gate)trace.reopened=true;});"
+                + "window.__pickerDismissObserver.observe(document.body,{childList:true,subtree:true});return 'armed';})()");
+        // VaultUnlockForm autofocus opens the native IME asynchronously. A DOM-only
+        // existence/rect check can capture coordinates before the keyboard moves them.
+        awaitImeSettled(true);
+        tapDomCenter("[data-testid=vault-unlock-cancel]");
+        try {
+            awaitJsTrue(uncoveredPickerCondition());
+            assertEquals("Cancel must receive one actual click", "1", evalRaw("window.__pickerDismissTrace.clicks"));
+            awaitImeSettled(false);
+        } finally {
+            Log.i(TAG, "VAULT_DISMISS " + evalString("JSON.stringify(window.__pickerDismissTrace)"));
+            evalRaw("window.__pickerDismissObserver?.disconnect(); 'stopped'");
+        }
     }
 
     /**
@@ -479,6 +546,7 @@ public final class SharedAccountPickerJourneyTest {
         final List<Put> puts = Collections.synchronizedList(new ArrayList<>());
         private String data;
         private int version;
+        JSONObject vaultSlots = new JSONObject();
 
         synchronized void seed(String envelope, int atVersion) {
             data = envelope;
@@ -491,6 +559,18 @@ public final class SharedAccountPickerJourneyTest {
             boolean authorized = ("Bearer " + google.token).equals(headers.get("Authorization"));
             requests.add(new Request(method, path, authorized));
             if (!authorized) return new GoogleSyncSession.Response(401, "{\"message\":\"Unauthorized\"}");
+            if ("GET".equals(method) && "/me".equals(path)) return new GoogleSyncSession.Response(200,
+                    "{\"sub\":\"journey-sub-3020\",\"email\":\"" + EMAIL + "\"}");
+            if ("GET".equals(method) && "/settings".equals(path)) return new GoogleSyncSession.Response(200,
+                    "{\"slots\":[{\"slot\":\"main\",\"version\":" + version + ",\"size\":" + (data == null ? 0 : data.length()) + ",\"updatedAt\":\"2026-11-05T00:00:00.000Z\"}]}");
+            if ("GET".equals(method) && path.startsWith("/settings/") && vaultSlots.has(path.substring(10))) {
+                try {
+                    String slot = path.substring(10);
+                    JSONObject stored = vaultSlots.getJSONObject(slot);
+                    return new GoogleSyncSession.Response(200, new JSONObject().put("slot", slot)
+                            .put("version", stored.getInt("version")).put("data", stored.getString("data")).toString());
+                } catch (org.json.JSONException invalid) { throw new IllegalStateException(invalid); }
+            }
             if (!"/settings/main".equals(path)) return new GoogleSyncSession.Response(404, "{\"message\":\"no route\"}");
             try {
                 if ("GET".equals(method)) {
@@ -565,10 +645,333 @@ public final class SharedAccountPickerJourneyTest {
         PhysicalTap.tap(xy[0], xy[1]);
     }
 
+    /** Screenshot readiness targets controls, not the deliberately full-height modal scrim. */
+    private String vaultScreenshotGeometry() {
+        return "JSON.stringify((() => {"
+                + "const gates=document.querySelectorAll('[data-testid=vault-unlock-gate]');if(gates.length!==1)return null;const g=gates[0];"
+                + "const ids=['passphrase','type-every-time','remember','cancel','submit'];const boxes=[];"
+                + "const v=visualViewport;if(!v || !(v.scale>0) || !Number.isFinite(v.scale))return null;"
+                + "for(const id of ids){const all=g.querySelectorAll('[data-testid=vault-unlock-'+id+']');if(all.length!==1)return null;"
+                + "const input=all[0],n=(id==='remember'||id==='type-every-time')?input.closest('label'):input;"
+                + "if(!n)return null;for(let a=n;a;a=a.parentElement){const c=getComputedStyle(a);if(c.display==='none'||c.visibility!=='visible'||Number(c.opacity)===0)return null;}"
+                + "const s=getComputedStyle(n),r=n.getBoundingClientRect(),hit=document.elementFromPoint(r.left+r.width/2,r.top+r.height/2);"
+                + "const labelled=id==='passphrase'?Array.from(input.labels??[]).some(l=>l.textContent.trim().length>0):n.textContent.trim().length>0;"
+                + "if(!labelled || s.display==='none'||s.visibility!=='visible'||Number(s.opacity)===0 || r.width<=0||r.height<=0"
+                + "||r.left<v.offsetLeft||r.top<v.offsetTop||r.right>v.offsetLeft+v.width||r.bottom>v.offsetTop+v.height"
+                + "||!hit||!(n===hit||n.contains(hit)))return null;"
+                + "boxes.push([r.left,r.top,r.right,r.bottom]);}"
+                + "return {width:innerWidth,offsetLeft:v.offsetLeft,offsetTop:v.offsetTop,viewportScale:v.scale,boxes};})())";
+    }
+
+    private String vaultNativeGeometry;
+    private String vaultReadinessReason;
+
+    private static double vaultNativeCoordinate(double css, double offset, double pixelsPerCss, double viewportScale, int origin) {
+        return origin + (css - offset) * pixelsPerCss * viewportScale;
+    }
+
+    private final java.util.Set<Throwable> capturedVaultFailures =
+            java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+
+    private void preserveVaultFailure(String name, Throwable failure) {
+        // Nested cleanup and the outer screenshot barrier must retain the FIRST
+        // failed-state frame rather than overwrite it after restoring the viewport.
+        if (!capturedVaultFailures.add(failure)) return;
+        try { captureViewportFailure(name); }
+        catch (Throwable diagnosticFailure) { failure.addSuppressed(diagnosticFailure); }
+    }
+
+    private void captureVaultScreenshot(String name) throws Exception {
+        try {
+            awaitJsTrue("!!document.querySelector('[data-testid=vault-unlock-passphrase]')"
+                    + " && !!document.querySelector('[data-testid=vault-unlock-submit]')"
+                    + " && !!document.querySelector('[data-testid=vault-unlock-cancel]')"
+                    + " && !document.querySelector('[data-testid=vault-setup-cancel]')");
+            awaitImeSettled(true);
+            assertVaultScreenshotNegativeControls();
+            captureScreenshot(name, "[data-testid=vault-unlock-gate]");
+        } catch (AssertionError | Exception failure) {
+            preserveVaultFailure(name, failure);
+            throw failure;
+        }
+    }
+
+
+    private boolean vaultScreenshotReadyNow() throws Exception {
+        vaultNativeGeometry = null;
+        vaultReadinessReason = "DOM_GEOMETRY";
+        // Typed focus rejection is observed independently before DOM/IME checks: the
+        // native occluder control cannot pass merely because its IME also disappeared.
+        AtomicReference<Boolean> focused = new AtomicReference<>(false);
+        scenario.onActivity(activity -> focused.set(activity.hasWindowFocus()
+                && findWebView(activity.getWindow().getDecorView()).hasWindowFocus()));
+        if (!focused.get()) { vaultReadinessReason = "WINDOW_FOCUS"; return false; }
+        String encoded = evalString(vaultScreenshotGeometry());
+        if (encoded == null || "null".equals(encoded)) return false;
+        JSONObject geometry = new JSONObject(encoded);
+        AtomicReference<Boolean> ready = new AtomicReference<>(false);
+        scenario.onActivity(activity -> {
+            WebView view = findWebView(activity.getWindow().getDecorView());
+            WindowInsets insets = view.getRootWindowInsets();
+            if (!activity.hasWindowFocus() || !view.hasWindowFocus()) { vaultReadinessReason = "WINDOW_FOCUS"; return; }
+            vaultReadinessReason = "IME_OR_LAYOUT";
+            if (insets == null || !insets.isVisible(WindowInsets.Type.ime()) || !imeAnimations.isEmpty()
+                    || imeAnimationEnds == 0 || view.isLayoutRequested()) return;
+            vaultReadinessReason = "NATIVE_INTERSECTION";
+            Rect visible = new Rect(), window = new Rect();
+            if (!view.getGlobalVisibleRect(visible)) return;
+            view.getWindowVisibleDisplayFrame(window);
+            if (!visible.intersect(window)) return;
+            int[] location = new int[2];
+            view.getLocationOnScreen(location);
+            // WindowMetrics describes the full window even when adjustResize shrinks its content.
+            // Subtracting IME from an already resized decor height would double-subtract it.
+            int keyboardTop = activity.getWindowManager().getCurrentWindowMetrics().getBounds().bottom
+                    - insets.getInsets(WindowInsets.Type.ime()).bottom;
+            visible.bottom = Math.min(visible.bottom, keyboardTop);
+            try {
+                double scale = view.getWidth() / geometry.getDouble("width");
+                if (!(scale > 0) || visible.isEmpty()) return;
+                double viewportScale = geometry.getDouble("viewportScale");
+                double offsetLeft = geometry.getDouble("offsetLeft"), offsetTop = geometry.getDouble("offsetTop");
+                JSONArray boxes = geometry.getJSONArray("boxes");
+                for (int i = 0; i < boxes.length(); i++) {
+                    JSONArray box = boxes.getJSONArray(i);
+                    double left = vaultNativeCoordinate(box.getDouble(0), offsetLeft, scale, viewportScale, location[0]);
+                    double top = vaultNativeCoordinate(box.getDouble(1), offsetTop, scale, viewportScale, location[1]);
+                    double right = vaultNativeCoordinate(box.getDouble(2), offsetLeft, scale, viewportScale, location[0]);
+                    double bottom = vaultNativeCoordinate(box.getDouble(3), offsetTop, scale, viewportScale, location[1]);
+                    if (left < visible.left || top < visible.top || right > visible.right || bottom > visible.bottom) return;
+                }
+                vaultNativeGeometry = visible.flattenToString() + ":" + view.getWidth() + ":" + view.getHeight()
+                        + ":" + location[0] + ":" + location[1] + ":" + keyboardTop;
+                vaultReadinessReason = "READY";
+                ready.set(true);
+            } catch (org.json.JSONException invalid) { throw new IllegalStateException(invalid); }
+        });
+        return ready.get();
+    }
+
+    private void awaitVaultScreenshotReady() throws Exception {
+        awaitImeSettled(true);
+        long deadline = SystemClock.uptimeMillis() + WAIT_TIMEOUT_MILLIS;
+        String previous = null;
+        int stable = 0;
+        while (SystemClock.uptimeMillis() < deadline) {
+            String geometry = evalString(vaultScreenshotGeometry());
+            boolean ready = vaultScreenshotReadyNow();
+            String snapshot = geometry + ":" + vaultNativeGeometry;
+            if (ready && geometry != null && snapshot.equals(previous)) stable++;
+            else stable = 0;
+            if (stable >= 3) return;
+            previous = snapshot;
+            Thread.sleep(100);
+        }
+        throw new AssertionError("vault essential controls must be stable, labelled, hit-testable and wholly inside the native visible viewport with settled IME and window focus");
+    }
+
+    /** Actual native negative controls; always restore the owned WebView and window. */
+    private void assertVaultScreenshotNegativeControls() throws Exception {
+        awaitVaultScreenshotReady();
+        AtomicInteger originalHeight = new AtomicInteger();
+        Throwable clippingFailure = null;
+        try {
+            scenario.onActivity(activity -> {
+                WebView view = findWebView(activity.getWindow().getDecorView());
+                android.view.ViewGroup.LayoutParams params = view.getLayoutParams();
+                originalHeight.set(params.height);
+                params.height = 1;
+                view.setLayoutParams(params);
+            });
+            long deadline = SystemClock.uptimeMillis() + WAIT_TIMEOUT_MILLIS;
+            AtomicReference<Boolean> shortened = new AtomicReference<>(false);
+            while (!shortened.get() && SystemClock.uptimeMillis() < deadline) {
+                scenario.onActivity(activity -> shortened.set(findWebView(activity.getWindow().getDecorView()).getHeight() == 1));
+                Thread.sleep(50);
+            }
+            assertTrue("negative control must actually shorten native WebView", shortened.get());
+            assertFalse("clipped essential controls must reject screenshot readiness", vaultScreenshotReadyNow());
+            Log.i(TAG, "VAULT_SCREENSHOT_CLIPPED nativeHeight=1 reason=" + vaultReadinessReason + " geometry=" + evalString(vaultScreenshotGeometry()));
+        } catch (AssertionError | Exception failure) {
+            clippingFailure = failure;
+            preserveVaultFailure("shared-picker-signed-in-locked.png", failure);
+            throw failure;
+        } finally {
+            try { scenario.onActivity(activity -> {
+                WebView view = findWebView(activity.getWindow().getDecorView());
+                android.view.ViewGroup.LayoutParams params = view.getLayoutParams();
+                params.height = originalHeight.get();
+                view.setLayoutParams(params);
+            }); } catch (AssertionError | Exception failure) {
+                if (clippingFailure != null) clippingFailure.addSuppressed(failure);
+                else { preserveVaultFailure("shared-picker-signed-in-locked.png", failure); throw failure; }
+            }
+        }
+        tapDomCenter("[data-testid=vault-unlock-passphrase]");
+        awaitVaultScreenshotReady();
+        AtomicReference<android.app.Dialog> occluder = new AtomicReference<>();
+        Throwable occluderFailure = null;
+        try {
+            scenario.onActivity(activity -> {
+                android.app.Dialog dialog = new android.app.Dialog(activity);
+                dialog.setContentView(new View(activity));
+                occluder.set(dialog);
+                dialog.show();
+            });
+            InstrumentationRegistry.getInstrumentation().waitForIdleSync();
+            AtomicReference<Boolean> lostFocus = new AtomicReference<>(false);
+            long deadline = SystemClock.uptimeMillis() + WAIT_TIMEOUT_MILLIS;
+            while (!lostFocus.get() && SystemClock.uptimeMillis() < deadline) {
+                scenario.onActivity(activity -> lostFocus.set(!activity.hasWindowFocus()));
+                Thread.sleep(50);
+            }
+            assertTrue("native dialog must actually take window focus", lostFocus.get());
+            assertFalse("an occluding native window must reject screenshot readiness", vaultScreenshotReadyNow());
+            assertEquals("focus must be the specific rejecting gate", "WINDOW_FOCUS", vaultReadinessReason);
+            Log.i(TAG, "VAULT_SCREENSHOT_OCCLUDED activityFocus=false reason=" + vaultReadinessReason);
+        } catch (AssertionError | Exception failure) {
+            occluderFailure = failure;
+            preserveVaultFailure("shared-picker-signed-in-locked.png", failure);
+            throw failure;
+        } finally {
+            try { scenario.onActivity(activity -> { if (occluder.get() != null) occluder.get().dismiss(); }); }
+            catch (AssertionError | Exception failure) {
+                if (occluderFailure != null) occluderFailure.addSuppressed(failure);
+                else { preserveVaultFailure("shared-picker-signed-in-locked.png", failure); throw failure; }
+            }
+        }
+        restoreVaultInputWithOneTracedTap();
+        Log.i(TAG, "VAULT_SCREENSHOT_NATIVE_NEGATIVES clipped=reject occluded=reject restored=ready");
+    }
+
+    /** Observe native/window/DOM stability without forcing focus, IME or viewport state. */
+    private String vaultRestorationSnapshot() throws Exception {
+        String encoded = evalString(vaultScreenshotGeometry());
+        if (encoded == null || "null".equals(encoded)) return null;
+        JSONObject state = new JSONObject(encoded);
+        AtomicReference<String> snapshot = new AtomicReference<>();
+        scenario.onActivity(activity -> {
+            WebView view = findWebView(activity.getWindow().getDecorView());
+            WindowInsets insets = view.getRootWindowInsets();
+            if (!activity.hasWindowFocus() || !view.hasWindowFocus() || view.isLayoutRequested()
+                    || view.getRootView().isLayoutRequested() || !imeAnimations.isEmpty() || insets == null) return;
+            Rect visible = new Rect(), window = new Rect();
+            if (!view.getGlobalVisibleRect(visible)) return;
+            view.getWindowVisibleDisplayFrame(window);
+            if (!visible.intersect(window)) return;
+            int[] location = new int[2];
+            view.getLocationOnScreen(location);
+            int imeBottom = insets.getInsets(WindowInsets.Type.ime()).bottom;
+            int keyboardTop = activity.getWindowManager().getCurrentWindowMetrics().getBounds().bottom - imeBottom;
+            visible.bottom = Math.min(visible.bottom, keyboardTop);
+            try {
+                double ratio = view.getWidth() / state.getDouble("width"), zoom = state.getDouble("viewportScale");
+                JSONArray boxes = state.getJSONArray("boxes");
+                for (int i = 0; i < boxes.length(); i++) {
+                    JSONArray box = boxes.getJSONArray(i);
+                    double left = vaultNativeCoordinate(box.getDouble(0), state.getDouble("offsetLeft"), ratio, zoom, location[0]);
+                    double top = vaultNativeCoordinate(box.getDouble(1), state.getDouble("offsetTop"), ratio, zoom, location[1]);
+                    double right = vaultNativeCoordinate(box.getDouble(2), state.getDouble("offsetLeft"), ratio, zoom, location[0]);
+                    double bottom = vaultNativeCoordinate(box.getDouble(3), state.getDouble("offsetTop"), ratio, zoom, location[1]);
+                    if (left < visible.left || top < visible.top || right > visible.right || bottom > visible.bottom) return;
+                }
+                state.put("nativeX", location[0]).put("nativeY", location[1]).put("nativeWidth", view.getWidth())
+                        .put("nativeHeight", view.getHeight()).put("nativeVisible", visible.flattenToString())
+                        .put("windowBounds", activity.getWindowManager().getCurrentWindowMetrics().getBounds().flattenToString())
+                        .put("imeVisible", insets.isVisible(WindowInsets.Type.ime())).put("imeBottom", imeBottom)
+                        .put("activityFocus", activity.hasWindowFocus()).put("webViewFocus", view.hasWindowFocus())
+                        .put("rootFocus", view.getRootView().hasWindowFocus());
+                snapshot.set(state.toString());
+            } catch (org.json.JSONException invalid) { throw new IllegalStateException(invalid); }
+        });
+        return snapshot.get();
+    }
+
+    private void restoreVaultInputWithOneTracedTap() throws Exception {
+        long deadline = SystemClock.uptimeMillis() + WAIT_TIMEOUT_MILLIS;
+        String previous = null, stableSnapshot = null;
+        ScreenshotGuard.Frame before = null;
+        int stable = 0;
+        while (SystemClock.uptimeMillis() < deadline) {
+            String current = vaultRestorationSnapshot();
+            stable = current != null && current.equals(previous) ? stable + 1 : 0;
+            previous = current;
+            if (stable >= 3) {
+                before = renderedScreenshot("vault-dialog-restoration-before-tap");
+                if (current.equals(vaultRestorationSnapshot())) { stableSnapshot = current; break; }
+                stable = 0;
+            }
+            Thread.sleep(100); // Poll observed layout/animation state; never tap on a timer.
+        }
+        assertNotNull("Dialog restoration must stabilize real window, IME, layout and essential control bounds before its sole tap", stableSnapshot);
+        writeScreenshot("shared-picker-dialog-restore-before-tap.png", before.bytes);
+        JSONObject snapshot = new JSONObject(stableSnapshot);
+        JSONArray input = snapshot.getJSONArray("boxes").getJSONArray(0);
+        double ratio = snapshot.getDouble("nativeWidth") / snapshot.getDouble("width");
+        float x = (float) vaultNativeCoordinate((input.getDouble(0) + input.getDouble(2)) / 2,
+                snapshot.getDouble("offsetLeft"), ratio, snapshot.getDouble("viewportScale"), snapshot.getInt("nativeX"));
+        float y = (float) vaultNativeCoordinate((input.getDouble(1) + input.getDouble(3)) / 2,
+                snapshot.getDouble("offsetTop"), ratio, snapshot.getDouble("viewportScale"), snapshot.getInt("nativeY"));
+        evalRaw("(() => {const input=document.querySelector('[data-testid=vault-unlock-passphrase]');"
+                + "window.__vaultRestoreAbort?.abort();const abort=window.__vaultRestoreAbort=new AbortController();"
+                + "const trace=window.__vaultRestoreTap={events:[],focusedBefore:document.activeElement===input};"
+                + "for(const type of ['pointerdown','pointerup','click','focusin'])document.addEventListener(type,e=>{"
+                + "if(trace.events.length<8)trace.events.push({type,input:e.target===input,trusted:e.isTrusted,x:e.clientX??null,y:e.clientY??null});"
+                + "},{capture:true,signal:abort.signal});return 'armed';})()");
+        Log.i(TAG, "VAULT_RESTORE_TAP_BEFORE " + snapshot.put("tapNativeX", x).put("tapNativeY", y)
+                .put("frameDigest", Base64.getEncoder().encodeToString(before.contentDigest)));
+        try {
+            PhysicalTap.Result tap = PhysicalTap.tap(x, y); // Exactly ONE physical input tap, no retries or focus/IME injection.
+            Log.i(TAG, "VAULT_RESTORE_TAP_DISPATCH down=" + tap.downInjected + " up=" + tap.upInjected
+                    + " downTime=" + tap.downTime + " upTime=" + tap.upEventTime);
+            awaitJsTrue("document.activeElement===document.querySelector('[data-testid=vault-unlock-passphrase]')");
+            awaitJsTrue("(() => {const e=window.__vaultRestoreTap.events.filter(e=>e.type!=='focusin');"
+                    + "return ['pointerdown','pointerup','click'].every(t=>e.filter(e=>e.type===t).length===1)"
+                    + "&&e.every(e=>e.input&&e.trusted);})()");
+            awaitVaultScreenshotReady();
+        } finally {
+            // Metadata-only evidence even when the actual focus/IME restoration fails.
+            try {
+                AtomicReference<String> nativeAfter = new AtomicReference<>();
+                scenario.onActivity(activity -> {
+                    WebView view = findWebView(activity.getWindow().getDecorView());
+                    WindowInsets insets = view.getRootWindowInsets();
+                    Rect visible = new Rect();
+                    view.getGlobalVisibleRect(visible);
+                    try {
+                        nativeAfter.set(new JSONObject().put("activityFocus", activity.hasWindowFocus())
+                                .put("webViewFocus", view.hasWindowFocus()).put("rootFocus", view.getRootView().hasWindowFocus())
+                                .put("imeVisible", insets != null && insets.isVisible(WindowInsets.Type.ime()))
+                                .put("imeBottom", insets == null ? 0 : insets.getInsets(WindowInsets.Type.ime()).bottom)
+                                .put("imeAnimations", imeAnimations.size()).put("layoutPending", view.isLayoutRequested())
+                                .put("nativeWidth", view.getWidth()).put("nativeHeight", view.getHeight())
+                                .put("nativeVisible", visible.flattenToString()).toString());
+                    } catch (org.json.JSONException invalid) { throw new IllegalStateException(invalid); }
+                });
+                Log.i(TAG, "VAULT_RESTORE_NATIVE_AFTER " + nativeAfter.get());
+                ScreenshotGuard.Frame after = renderedScreenshot("vault-dialog-restoration-after-tap");
+                writeScreenshot("shared-picker-dialog-restore-after-tap.png", after.bytes);
+                Log.i(TAG, "VAULT_RESTORE_FRAME_AFTER " + Base64.getEncoder().encodeToString(after.contentDigest));
+            } catch (Throwable diagnosticFailure) { Log.w(TAG, "restoration native trace unavailable: " + diagnosticFailure.getClass().getSimpleName()); }
+            try { Log.i(TAG, "VAULT_RESTORE_TAP_AFTER " + evalString("JSON.stringify({trace:window.__vaultRestoreTap,inputFocused:document.activeElement===document.querySelector('[data-testid=vault-unlock-passphrase]')})")); }
+            catch (Throwable diagnosticFailure) { Log.w(TAG, "restoration DOM trace unavailable: " + diagnosticFailure.getClass().getSimpleName()); }
+            try { evalRaw("window.__vaultRestoreAbort?.abort(); 'stopped'"); }
+            catch (Throwable ignored) { /* Preserve any original focus/IME failure. */ }
+        }
+    }
+
     private void captureScreenshot(String name, String markerSelector) throws Exception {
-        awaitJsTrue("(() => {const node = document.querySelector(" + JSONObject.quote(markerSelector) + ");"
-                + " if (!node) return false; node.scrollIntoView({block:'nearest',behavior:'instant'});"
-                + " const r = node.getBoundingClientRect(); return r.height > 0 && r.top >= 0 && r.bottom <= innerHeight;})()");
+        try {
+            if ("[data-testid=vault-unlock-gate]".equals(markerSelector)) {
+                awaitVaultScreenshotReady();
+            } else awaitJsTrue("(() => {const node = document.querySelector(" + JSONObject.quote(markerSelector) + ");"
+                    + " if (!node) return false; node.scrollIntoView({block:'nearest',behavior:'instant'});"
+                    + " const r = node.getBoundingClientRect(); return r.height > 0 && r.top >= 0 && r.bottom <= innerHeight;})()");
+        } catch (AssertionError | Exception failure) {
+            try { captureViewportFailure(name); }
+            catch (Throwable diagnosticFailure) { Log.w(TAG, "viewport failure capture unavailable: " + diagnosticFailure.getClass().getSimpleName()); }
+            throw failure;
+        }
         ScreenshotGuard.Frame capture = null;
         for (int attempt = 0; attempt < 5; attempt += 1) {
             capture = renderedScreenshot(name);
@@ -579,6 +982,38 @@ public final class SharedAccountPickerJourneyTest {
         assertNotNull("screenshot " + name + " stayed byte-identical to the previous capture", capture);
         lastScreenshot = capture;
         writeScreenshot(name, capture.bytes);
+    }
+
+    /** Evidence only: preserve the original failing viewport assertion and native frame. */
+    private void captureViewportFailure(String name) throws Exception {
+        // Capture native pixels first, even if the later JS diagnostic bridge fails.
+        writeScreenshot(name, renderedScreenshot(name).bytes);
+        JSONObject evidence = new JSONObject(evalString("JSON.stringify((() => {"
+                + "const rect=n=>n?{x:n.getBoundingClientRect().x,y:n.getBoundingClientRect().y,width:n.getBoundingClientRect().width,height:n.getBoundingClientRect().height,top:n.getBoundingClientRect().top,bottom:n.getBoundingClientRect().bottom}:null;"
+                + "const hit=n=>{if(!n)return false;const r=n.getBoundingClientRect();return n.contains(document.elementFromPoint(r.x+r.width/2,r.y+r.height/2));};"
+                + "const input=document.querySelector('[data-testid=vault-unlock-passphrase]'),submit=document.querySelector('[data-testid=vault-unlock-submit]'),cancel=document.querySelector('[data-testid=vault-unlock-cancel]'),v=visualViewport;"
+                + "return {innerWidth,innerHeight,visualViewport:v?{width:v.width,height:v.height,offsetTop:v.offsetTop,offsetLeft:v.offsetLeft,scale:v.scale}:null,scrim:rect(document.querySelector('[data-testid=vault-unlock-gate]')),dialog:rect(document.querySelector('[data-testid=vault-unlock-gate] [role=dialog]')),input:rect(input),submit:rect(submit),cancel:rect(cancel),inputFocused:document.activeElement===input,inputHit:hit(input),submitHit:hit(submit),cancelHit:hit(cancel)};"
+                + "})())"));
+        scenario.onActivity(activity -> {
+            WebView view = findWebView(activity.getWindow().getDecorView());
+            Rect visible = new Rect();
+            boolean shown = view.getGlobalVisibleRect(visible);
+            WindowInsets insets = view.getRootWindowInsets();
+            try {
+                evidence.put("nativeWidth", view.getWidth()).put("nativeHeight", view.getHeight())
+                        .put("nativeShown", shown).put("nativeVisibleRect", new JSONArray().put(visible.left).put(visible.top).put(visible.right).put(visible.bottom))
+                        .put("imeVisible", insets != null && insets.isVisible(WindowInsets.Type.ime()))
+                        .put("imeBottom", insets == null ? 0 : insets.getInsets(WindowInsets.Type.ime()).bottom)
+                        .put("activityFocus", activity.hasWindowFocus()).put("webViewWindowFocus", view.hasWindowFocus())
+                        .put("webViewInputFocus", view.hasFocus()).put("rootFocus", view.getRootView().hasWindowFocus())
+                        .put("imeAnimations", imeAnimations.size()).put("imeAnimationEnds", imeAnimationEnds)
+                        .put("layoutPending", view.isLayoutRequested())
+                        .put("systemBars", insets == null ? "missing" : insets.getInsets(WindowInsets.Type.systemBars()).toString());
+            } catch (org.json.JSONException invalid) { throw new IllegalStateException(invalid); }
+        });
+        Log.i(TAG, "PICKER_VIEWPORT_FAILURE " + evidence);
+        // Same case-specific native artifact is pulled by the normal runner.
+        // The original viewport failure is still rethrown by captureScreenshot.
     }
 
     private ScreenshotGuard.Frame renderedScreenshot(String name) throws Exception {

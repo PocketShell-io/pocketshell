@@ -39,6 +39,7 @@ final class EphemeralCredentials {
         }
     }
 
+    private final Map<String, String> bindings = new LinkedHashMap<>();
     private final Map<String, byte[]> keys = new LinkedHashMap<>();
 
     static boolean isEphemeral(String handleId) {
@@ -69,6 +70,19 @@ final class EphemeralCredentials {
         return new Held(handleId, parsed.algorithm, parsed.fingerprintSha256);
     }
 
+    void bind(String handle, String accountId, String vaultId, long epoch, String keyId) throws IOException {
+        if (accountId == null || !accountId.matches("google:[0-9A-Za-z_-]{1,128}") || vaultId == null
+                || !vaultId.matches("[A-Za-z0-9_-]{22}") || epoch < 1 || keyId == null || !keyId.matches("[A-Za-z0-9_-]{22}")) throw new IOException("Invalid vault key identity.");
+        synchronized (keys) {
+            if (!keys.containsKey(handle)) throw new IOException("Vault key was released.");
+            bindings.put(handle, accountId + ":" + vaultId + ":" + epoch + ":" + keyId);
+        }
+    }
+
+    boolean matches(String handle, String accountId, String vaultId, long epoch, String keyId) {
+        synchronized (keys) { return keys.containsKey(handle) && (accountId + ":" + vaultId + ":" + epoch + ":" + keyId).equals(bindings.get(handle)); }
+    }
+
     /** A copy of the held key for one userauth; the caller zeroes it. */
     byte[] resolve(String handleId) throws IOException {
         synchronized (keys) {
@@ -86,6 +100,7 @@ final class EphemeralCredentials {
 
     boolean release(String handleId) {
         synchronized (keys) {
+            bindings.remove(handleId);
             byte[] key = keys.remove(handleId);
             if (key == null) return false;
             Arrays.fill(key, (byte) 0);
@@ -99,6 +114,7 @@ final class EphemeralCredentials {
             int count = keys.size();
             for (byte[] key : keys.values()) Arrays.fill(key, (byte) 0);
             keys.clear();
+            bindings.clear();
             return count;
         }
     }

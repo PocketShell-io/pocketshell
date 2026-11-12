@@ -99,6 +99,70 @@ python3 -m py_compile "$SELFCHECK"
 bash -n "$ROOT_DIR/scripts/test-agents-fixture-aplexer.sh"
 ok "fixture self-check and Docker guard parse"
 
+# Exercise the build guard's actual placement function against the current
+# published CLI module shape, including every fail-closed placement refusal.
+python3 - "$SELFCHECK" <<'PYTEST'
+import ast
+import os
+import sys
+import types
+from pathlib import Path
+from types import SimpleNamespace
+
+source = Path(sys.argv[1]).read_text()
+module = ast.parse(source)
+nodes = [node for node in module.body if isinstance(node, (ast.FunctionDef, ast.ClassDef))
+         and node.name in {"CheckFailed", "fail", "check_placement"}]
+canonical_import = "from pocketshell.runtime import aplexer as _aplexer"
+assert canonical_import in source
+namespace = {"os": os, "sys": sys, "Path": Path}
+exec(compile(ast.Module(body=nodes, type_ignores=[]), str(sys.argv[1]), "exec"), namespace)
+pkg = types.ModuleType("pocketshell"); pkg.__path__ = []
+runtime = types.ModuleType("pocketshell.runtime"); runtime.__path__ = []
+aplexer = types.ModuleType("pocketshell.runtime.aplexer")
+runtime.aplexer = aplexer
+sys.modules.update({"pocketshell": pkg, "pocketshell.runtime": runtime,
+                    "pocketshell.runtime.aplexer": aplexer})
+expected = str(Path(sys.executable).parent / "a")
+worker = str(Path(sys.executable).parent / "aplexer")
+original_override = os.environ.pop("APLEXER_BIN", None)
+try:
+    def report(**changes):
+        return SimpleNamespace(**({"path": expected, "source": "bundled", "worker": worker, "tried": ()} | changes))
+    aplexer.resolve_a = lambda: report()
+    assert namespace["check_placement"]() == (expected, worker)
+    for label, changes, check in [
+        ("missing bundled binary", {"path": None}, "placement"),
+        ("PATH fallback", {"source": "path"}, "placement"),
+        ("wrong bundled directory", {"path": "/other/a"}, "placement"),
+        ("missing sibling worker", {"worker": None}, "worker"),
+    ]:
+        aplexer.resolve_a = lambda changes=changes: report(**changes)
+        try: namespace["check_placement"]()
+        except namespace["CheckFailed"] as error: assert error.check == check, (label, error.check)
+        else: raise AssertionError(f"placement guard accepted {label}")
+    os.environ["APLEXER_BIN"] = expected
+    aplexer.resolve_a = lambda: report()
+    try: namespace["check_placement"]()
+    except namespace["CheckFailed"] as error: assert error.check == "override"
+    else: raise AssertionError("placement guard accepted an explicit override")
+    os.environ.pop("APLEXER_BIN")
+    stale_source = source.replace(canonical_import, "from pocketshell import aplexer as _aplexer", 1)
+    stale = ast.parse(stale_source)
+    stale_nodes = [node for node in stale.body if isinstance(node, (ast.FunctionDef, ast.ClassDef))
+                   and node.name in {"CheckFailed", "fail", "check_placement"}]
+    old = {"os": os, "sys": sys, "Path": Path}
+    exec(compile(ast.Module(body=stale_nodes, type_ignores=[]), "stale-import", "exec"), old)
+    try: old["check_placement"]()
+    except old["CheckFailed"] as error: assert error.check == "import"
+    else: raise AssertionError("retired root-package import unexpectedly succeeded")
+finally:
+    if original_override is not None: os.environ["APLEXER_BIN"] = original_override
+print("PASS: canonical CLI resolver + six placement/import negative controls")
+PYTEST
+ok "current CLI module and fail-closed bundled worker placement contract"
+
+
 if [[ $# -eq 0 ]]; then
   printf 'Static invariants passed (%d checks).\n' "$pass_count"
   exit 0

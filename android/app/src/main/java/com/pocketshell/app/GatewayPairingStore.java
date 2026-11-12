@@ -59,6 +59,12 @@ public final class GatewayPairingStore {
         final String hostKeyB64;
         final String keyHandleId;
         final long pairedAtEpochMs;
+        String credentialSource = "local";
+        String vaultId;
+        long vaultEpoch;
+        long trustedRevision;
+        String hostAlias;
+        String username;
 
         Pairing(String accountSubject, String serverUrl, String deviceId, String fingerprintSha256,
                 String hostKeyType, String hostKeyB64, String keyHandleId, long pairedAtEpochMs) {
@@ -79,6 +85,10 @@ public final class GatewayPairingStore {
         public String hostKeyType() { return hostKeyType; }
         public String hostKeyB64() { return hostKeyB64; }
         public String keyHandleId() { return keyHandleId; }
+        public String credentialSource() { return credentialSource; }
+        public String vaultId() { return vaultId; }
+        public long vaultEpoch() { return vaultEpoch; }
+        public String vaultKeyId() { return "vault".equals(credentialSource) ? keyHandleId : null; }
         public long pairedAtEpochMs() { return pairedAtEpochMs; }
     }
 
@@ -164,6 +174,37 @@ public final class GatewayPairingStore {
         return replacement;
     }
 
+    /** Install only a validated account-vault descriptor, independent of any local UUID key. */
+    synchronized Pairing installVault(String subject, String server, String device, String pin, String keyId,
+            String vaultId, long epoch, long revision, String alias, String username) throws IOException {
+        if (keyId == null || !keyId.matches("[A-Za-z0-9_-]{22}") || vaultId == null
+                || !vaultId.matches("[A-Za-z0-9_-]{22}") || epoch < 1 || revision < 1
+                || GatewayTargetPolicy.parseHostKeyLine(pin) == null) throw new InvalidPairingException("Invalid vault trust record.");
+        // Persist the explicit source atomically with its key reference and pin.
+        String canonical = GatewayTargetPolicy.normalizeServerUrl(server);
+        GatewayTargetPolicy.HostKey hostKey = GatewayTargetPolicy.parseHostKeyLine(pin);
+        if (subject == null || subject.isEmpty() || canonical == null || !canonical.equals(server)
+                || !GatewayTargetPolicy.isValidDeviceId(device)) throw new InvalidPairingException("Invalid vault trust target.");
+        Pairing row = new Pairing(subject, server, device, hostKey.fingerprintSha256,
+                hostKey.keyType, hostKey.keyB64, keyId, clock.currentTimeMillis());
+        row.credentialSource = "vault";
+        row.vaultId = vaultId;
+        row.vaultEpoch = epoch;
+        row.trustedRevision = revision;
+        row.hostAlias = alias;
+        row.username = username;
+        List<Pairing> all = readAll();
+        Pairing previous = lookup(all, subject, server, device);
+        if (previous == null && all.size() >= MAX_PAIRINGS) throw new InvalidPairingException("Too many trusted hosts.");
+        if (previous != null && "vault".equals(previous.credentialSource) && previous.vaultId.equals(vaultId)
+                && (epoch < previous.vaultEpoch || (epoch == previous.vaultEpoch && revision < previous.trustedRevision))) throw new InvalidPairingException("Trusted host rollback refused.");
+        if (alias == null || alias.isEmpty() || alias.length() > 128 || username == null || !username.matches("[A-Za-z_][A-Za-z0-9_.-]{0,63}")) throw new InvalidPairingException("Invalid trusted SSH identity.");
+        all.removeIf(existing -> existing.accountSubject.equals(subject) && existing.serverUrl.equals(row.serverUrl) && existing.deviceId.equals(device));
+        all.add(row);
+        writeAll(all);
+        return row;
+    }
+
     /** The exact canonical target a remove names. */
     static final class RemoveTarget {
         final String serverUrl;
@@ -247,6 +288,15 @@ public final class GatewayPairingStore {
                         hostKeyB64,
                         row.getString("keyHandleId"),
                         row.getLong("pairedAtEpochMs"));
+                pairing.credentialSource = row.optString("credentialSource", "local");
+                if ("vault".equals(pairing.credentialSource)) {
+                    pairing.vaultId = row.getString("vaultId");
+                    pairing.vaultEpoch = TrustedHostRevisions.positive(row, "vaultEpoch");
+                    pairing.trustedRevision = TrustedHostRevisions.positive(row, "trustedRevision");
+                    pairing.hostAlias = row.getString("hostAlias");
+                    pairing.username = row.getString("username");
+                    if (!pairing.vaultId.matches("[A-Za-z0-9_-]{22}") || pairing.vaultEpoch < 1 || pairing.trustedRevision < 1 || hostKeyType == null) throw new IOException("Invalid vault trust record.");
+                } else if (!"local".equals(pairing.credentialSource)) throw new IOException("Invalid credential source.");
                 if ((hostKeyType == null) != (hostKeyB64 == null)) {
                     throw new IOException("Saved gateway pairings are unreadable; no pairing was changed.");
                 }
@@ -261,7 +311,7 @@ public final class GatewayPairingStore {
                 if (!GatewayTargetPolicy.isValidDeviceId(pairing.deviceId)
                         || GatewayTargetPolicy.normalizeServerUrl(pairing.serverUrl) == null
                         || GatewayTargetPolicy.normalizeSha256Fingerprint(pairing.fingerprintSha256) == null
-                        || !pairing.keyHandleId.matches("[0-9a-fA-F-]{36}")
+                        || !("vault".equals(pairing.credentialSource) ? pairing.keyHandleId.matches("[A-Za-z0-9_-]{22}") : pairing.keyHandleId.matches("[0-9a-fA-F-]{36}"))
                         || pairing.pairedAtEpochMs < 0
                         || !GatewayTargetPolicy.normalizeServerUrl(pairing.serverUrl).equals(pairing.serverUrl)) {
                     throw new IOException("Saved gateway pairings are unreadable; no pairing was changed.");
@@ -285,6 +335,10 @@ public final class GatewayPairingStore {
                         .put("fingerprintSha256", pairing.fingerprintSha256)
                         .put("keyHandleId", pairing.keyHandleId)
                         .put("pairedAtEpochMs", pairing.pairedAtEpochMs);
+                row.put("credentialSource", pairing.credentialSource);
+                if ("vault".equals(pairing.credentialSource)) row.put("vaultId", pairing.vaultId)
+                        .put("vaultEpoch", pairing.vaultEpoch).put("trustedRevision", pairing.trustedRevision)
+                        .put("hostAlias", pairing.hostAlias).put("username", pairing.username);
                 if (pairing.hostKeyType != null) {
                     row.put("hostKeyType", pairing.hostKeyType).put("hostKeyB64", pairing.hostKeyB64);
                 }

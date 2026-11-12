@@ -66,6 +66,7 @@ export type NativeSshCapabilityPlugin = Plugin & {
   resourceSnapshot(options: { requestId: string }): Promise<unknown>;
   /** What this build's native `connect()` can dial beyond direct TCP (#3086). */
   transportCapabilities(options: { requestId: string }): Promise<unknown>;
+  sftpRealPath(options: { requestId: string; connectionId: string; generationId: string; path: string }): Promise<unknown>;
   sftpWriteIfUnchanged(
     options: NativeSftpWriteIfUnchangedOptions,
   ): Promise<NativeSftpWriteIfUnchangedResult>;
@@ -168,3 +169,15 @@ export const loadSshTransportCapabilities = () =>
 
 /** Normalize Capacitor's plain bridge error object to the core error type. */
 export const readSshError = readSshCapabilityError;
+
+let pathSequence = 0;
+/** Canonicalization uses SFTP for both POSIX and Windows servers; no shell interpolation. */
+export async function nativeRemoteDirectory(ref: { connectionId: string; generationId: string }, path: string): Promise<string> {
+  const requestId = `sftp-realpath-${++pathSequence}`;
+  const response = await nativeSshCapability.sftpRealPath({ ...ref, requestId, path });
+  if (typeof response !== 'object' || response === null) throw new Error('The remote folder could not be resolved.');
+  const row = response as Record<string, unknown>;
+  if (row.requestId !== requestId || row.connectionId !== ref.connectionId || row.generationId !== ref.generationId
+    || row.isDirectory !== true || typeof row.path !== 'string' || !row.path || /[\u0000\r\n]/.test(row.path)) throw new Error('The remote folder could not be resolved.');
+  return row.path;
+}

@@ -9,10 +9,10 @@
 #   verification) <== pocketshell-link agent (enrolled like a user's host)
 #   --> the host's own sshd on loopback (agents fixture: aplexer + CLI).
 #
-# The emulator has no route to the host's sshd. The pin the phone pairs with
+# The emulator has no route to the host's sshd. The vault-authenticated pin
 # is the line the enrolled agent prints (`pocketshell gateway show
 # --host-key`), checked here against the key file read from the host itself;
-# the phone's own vault key is authorized on the host by the journey through
+# the encrypted fixture's vault key is authorized on the host by the journey through
 # the runner's controller (scripts/gateway-lane-fixture.py), which is also
 # the host-side oracle. scripts/check-js-gateway-results.py checks the JUnit
 # report and the controller's journal.
@@ -203,13 +203,16 @@ compose() { docker compose -f "$COMPOSE_FILE" -p "$PROJECT" "$@"; }
 
 controller_pid=""
 reverse_added=0
+direct_reverse_added=0
+direct_port=""
 fixture_stopped=0
 collect_and_stop_fixture() {
   (( fixture_stopped == 0 )) || return 0
   fixture_stopped=1
   if [[ -n "$controller_pid" ]]; then kill "$controller_pid" 2>/dev/null || true; fi
   if (( reverse_added == 1 )); then "$ADB" -s "$ANDROID_SERIAL" reverse --remove "tcp:$TLS_PORT" >/dev/null 2>&1 || true; fi
-  for service in gateway agent host tlsfront jwks; do
+  if (( direct_reverse_added == 1 )); then "$ADB" -s "$ANDROID_SERIAL" reverse --remove "tcp:$direct_port" >/dev/null 2>&1 || true; fi
+  for service in gateway agent host direct-host tlsfront jwks; do
     compose logs --no-color --no-log-prefix "$service" > "$ARTIFACTS_DIR/host/$service.log" 2>&1 || true
   done
   compose down -v --remove-orphans >/dev/null 2>&1 || true
@@ -234,7 +237,7 @@ docker image inspect pocketshell-test:agents >/dev/null 2>&1 \
 # second registry.
 docker image inspect pocketshell-test:agents >/dev/null 2>&1 \
   || fail 'the local pocketshell-test:agents image is missing and could not be built; the gateway lane never pulls a base image'
-compose up -d jwks gateway tlsfront host
+compose up -d jwks gateway tlsfront host direct-host
 for attempt in $(seq 1 90); do
   if curl -fsS --cacert "$STATE/tls/ca.pem" "https://localhost:$TLS_PORT/healthz" 2>/dev/null | grep -q '"tunnel":"enabled"'; then
     break
@@ -273,14 +276,24 @@ wrong_pin="$(awk '{print $1" "$2}' "$STATE/wrong-pin.pub")"
 compose exec -T host su testuser -s /bin/sh -c \
   "HOME=/home/testuser; cd; mkdir -p ~/$SESSION_FOLDER && pocketshell sessions create --json --cwd ~/$SESSION_FOLDER -- $SESSION_FOLDER >/dev/null" \
   || fail 'could not create the host session'
+compose exec -T direct-host su testuser -s /bin/sh -c \
+  "HOME=/home/testuser; cd; mkdir -p ~/$SESSION_FOLDER && pocketshell sessions create --json --cwd ~/$SESSION_FOLDER -- $SESSION_FOLDER >/dev/null" \
+  || fail 'could not create the direct SSH sidecar session'
 
-hello="$(python3 - "$DEVICE_ID" "$MISSING_DEVICE_ID" "$TLS_PORT" "$host_key_line" "$wrong_pin" "$SUBJECT" "$EMAIL" "$ISSUER" "$SESSION_FOLDER" <<'PY'
+compose exec -T direct-host cat /etc/ssh/ssh_host_ed25519_key.pub > "$ARTIFACTS_DIR/host/direct-host-key.pub"
+direct_key="$(awk '{print $1" "$2}' "$ARTIFACTS_DIR/host/direct-host-key.pub")"
+direct_fingerprint="$(ssh-keygen -lf "$ARTIFACTS_DIR/host/direct-host-key.pub" -E sha256 | awk '{print $2}')"
+direct_endpoint="$(compose port direct-host 22)"
+direct_port="${direct_endpoint##*:}"
+[[ "$direct_port" =~ ^[0-9]+$ ]] || fail 'direct SSH sidecar has no published port'
+
+hello="$(python3 - "$DEVICE_ID" "$MISSING_DEVICE_ID" "$TLS_PORT" "$host_key_line" "$wrong_pin" "$SUBJECT" "$EMAIL" "$ISSUER" "$SESSION_FOLDER" "$direct_port" "$direct_key" "$direct_fingerprint" <<'PY'
 import json, sys
-device, missing, port, pin, wrong, sub, email, issuer, folder = sys.argv[1:]
+device, missing, port, pin, wrong, sub, email, issuer, folder, direct_port, direct_key, direct_fingerprint = sys.argv[1:]
 print(json.dumps({
     "deviceId": device, "missingDeviceId": missing, "serverUrl": f"wss://localhost:{port}", "tlsPort": int(port),
     "hostKeyLine": pin, "wrongHostKeyLine": wrong, "user": "testuser", "sub": sub, "email": email,
-    "issuer": issuer, "sessionFolder": folder,
+    "issuer": issuer, "sessionFolder": folder, "directPort": int(direct_port), "directHostKeyLine": direct_key, "directFingerprint": direct_fingerprint,
 }))
 PY
 )"
@@ -308,6 +321,8 @@ trap on_exit EXIT
 
 pocketshell_run_without_avd_lock_fd "$ADB" -s "$ANDROID_SERIAL" reverse "tcp:$TLS_PORT" "tcp:$TLS_PORT" >/dev/null
 reverse_added=1
+pocketshell_run_without_avd_lock_fd "$ADB" -s "$ANDROID_SERIAL" reverse "tcp:$direct_port" "tcp:$direct_port" >/dev/null
+direct_reverse_added=1
 # Key-vault W4: the account vault (built by core's KeyVaultStore) holds a
 # fresh throwaway key bound to the gateway host; the journey authorizes only
 # that key on the host, so a gateway dial can succeed only with the vault key.
@@ -316,7 +331,7 @@ ssh-keygen -q -t ed25519 -N '' -C "gateway lane vault key $RUN_ID" -f "$vault_di
 node "$ROOT_DIR/scripts/vault-journey-fixture/build.mjs" \
   --key "$vault_dir/key" --public-key "$(cat "$vault_dir/key.pub")" --alias gw-dev --hostname gw-dev.gateway --port 22 \
   --user vault-lane --passphrase "pocketshell-vault-test-passphrase gateway" --sync-passphrase "gateway lane passphrase" \
-  --gateway-auth both --out "$vault_dir/fixture.json" > "$ARTIFACTS_DIR/vault-fixture-build.txt" 2>&1 \
+  --trusted-hello "$ARTIFACTS_DIR/host/hello.json" --gateway-auth managed --out "$vault_dir/fixture.json" > "$ARTIFACTS_DIR/vault-fixture-build.txt" 2>&1 \
   || { cat "$ARTIFACTS_DIR/vault-fixture-build.txt" >&2; fail 'vault fixture build failed'; }
 DEVICE_VAULT_FIXTURE="/data/local/tmp/pocketshell-vault-fixture-$RUN_ID.json"
 pocketshell_run_without_avd_lock_fd "$ADB" -s "$ANDROID_SERIAL" push "$vault_dir/fixture.json" "$DEVICE_VAULT_FIXTURE" >/dev/null \
@@ -350,9 +365,15 @@ shopt -u nullglob
 pocketshell_run_without_avd_lock_fd "$ADB" -s "$ANDROID_SERIAL" logcat -d -v threadtime > "$ARTIFACTS_DIR/logcat.txt" 2>&1 || true
 pocketshell_run_without_avd_lock_fd "$ADB" -s "$ANDROID_SERIAL" exec-out screencap -p > "$ARTIFACTS_DIR/final-screen.png" 2>/dev/null || true
 mkdir -p "$ARTIFACTS_DIR/screenshots"
-for shot in pin-mismatch device-offline terminal-io vault-unlocked-gateway-hosts vault-gateway-connected after-reconnect; do
+for shot in account-direct-picker account-direct-trust account-direct-terminal account-direct-resumed-terminal account-direct-gateway-terminal account-direct-returned-terminal pin-mismatch device-offline terminal-io vault-unlocked-gateway-hosts vault-gateway-connected after-reconnect trusted-vault-servers trusted-vault-terminal trusted-vault-tampered trusted-vault-foreign authloss-initial-terminal authloss-login-required authloss-unlock-cancelled authloss-recovered-terminal onboarding-before-google onboarding-account-unavailable onboarding-wrong-phrase onboarding-existing-terminal onboarding-create-first-vault onboarding-create-unavailable onboarding-created-empty-servers onboarding-created-vault-reopened; do
   pocketshell_run_without_avd_lock_fd "$ADB" -s "$ANDROID_SERIAL" pull "/data/local/tmp/gwlane-$shot.png" "$ARTIFACTS_DIR/screenshots/$shot.png" >/dev/null 2>&1 || true
   pocketshell_run_without_avd_lock_fd "$ADB" -s "$ANDROID_SERIAL" shell rm -f "/data/local/tmp/gwlane-$shot.png" >/dev/null 2>&1 || true
+done
+pocketshell_run_without_avd_lock_fd "$ADB" -s "$ANDROID_SERIAL" pull "/sdcard/Pictures/PocketShell/Onboarding/$RUN_ID/onboarding-existing-terminal-viewport.png" "$ARTIFACTS_DIR/screenshots/onboarding-existing-terminal-viewport.png" >/dev/null 2>&1 || true
+pocketshell_run_without_avd_lock_fd "$ADB" -s "$ANDROID_SERIAL" shell rm -f "/sdcard/Pictures/PocketShell/Onboarding/$RUN_ID/onboarding-existing-terminal-viewport.png" >/dev/null 2>&1 || true
+for surface in account-direct-terminal-viewport account-direct-terminal-viewport-native-full onboarding-existing-terminal-viewport-native-full onboarding-setup-viewport onboarding-setup-viewport-native-full; do
+  pocketshell_run_without_avd_lock_fd "$ADB" -s "$ANDROID_SERIAL" pull "/sdcard/Pictures/PocketShell/Onboarding/$RUN_ID/$surface.png" "$ARTIFACTS_DIR/screenshots/$surface.png" >/dev/null 2>&1 || true
+  pocketshell_run_without_avd_lock_fd "$ADB" -s "$ANDROID_SERIAL" shell rm -f "/sdcard/Pictures/PocketShell/Onboarding/$RUN_ID/$surface.png" >/dev/null 2>&1 || true
 done
 collect_and_stop_fixture
 

@@ -207,8 +207,13 @@ export class MockHost {
     this.files = seedFiles(this.now());
   }
 
-  findSession(name: string): MockSession | undefined {
-    return this.sessions.find((session) => session.name === name);
+  findSession(selector: string): MockSession | undefined {
+    // Like the real CLI, a full UUID is an immutable identity, never a
+    // display-name fallback. Explicit non-UUID manual names remain supported.
+    if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu.test(selector)) {
+      return this.sessions.find((session) => session.id === selector);
+    }
+    return this.sessions.find((session) => session.name === selector);
   }
 
   touch(session: MockSession): void {

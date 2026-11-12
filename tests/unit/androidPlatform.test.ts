@@ -185,7 +185,8 @@ describe('Android PocketShellApi platform', () => {
       connectionId: connectionId!, sessionName: 'main', backend: 'aplexer', workspace: '/home/u/git/demo', aplexerId: 'main-id', cols: 50, rows: 30,
     });
     expect(attached.switched).toBe(false);
-    expect(native.opened[0]!.command).toContain("sessions attach -- '/home/u/git/demo:main'");
+    expect(native.opened[0]!.command).toContain(`sessions attach -- '${native.sessions[0]!.id}'`);
+    expect(native.opened[0]!.command).not.toContain("'/home/u/git/demo:main'");
     // Geometry-first: the PTY opens at the pane's size; no follow-up resize.
     expect(native.opened[0]).toMatchObject({ cols: 50, rows: 30 });
     expect(native.resizes).toEqual([]);
@@ -273,7 +274,8 @@ describe('Android PocketShellApi platform', () => {
     const main2 = await rejoin;
     expect(await typed).toBe(true);
     expect(native.channelWrites).toEqual([[native.channelOf('main'), 'early\r']]);
-    expect(native.opened.at(-1)!.command).toContain(":main'");
+    expect(native.opened.at(-1)!.command).toContain(`sessions attach -- '${native.sessions[0]!.id}'`);
+    expect(native.opened.at(-1)!.command).not.toContain("'/home/u/git/demo:main'");
     // The fence still holds: main's retired id never types into tests.
     expect(await hub.input(main1.shellId, 'x', 'tests')).toBe(false);
     expect(await hub.input(main2.shellId, 'late\r', 'main')).toBe(true);
@@ -410,6 +412,7 @@ describe('Android PocketShellApi platform', () => {
         return controller;
       },
       hosts,
+      remoteDirectory: async () => '/home/u',
       lifecycle: { onActiveChange: (handler) => { lifecycle = handler; return () => { lifecycle = null; }; } },
       backgroundGraceMs: () => 60_000,
       addHostRoute: '/android/hosts',

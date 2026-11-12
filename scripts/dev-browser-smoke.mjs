@@ -14,7 +14,7 @@
  *
  * mock journeys: legacy shell (host form → host-key trust → sessions →
  * terminal echo → composer send → settings/usage → Android back) and the
- * shared app (?shell=shared: host → trust → session → terminal echo), plus a
+ * shared app (?shell=shared: Google → vault unlock → trusted server → terminal echo), plus a
  * Vite HMR update without a page reload.
  *
  * live journey: the legacy shell against the real host — it creates a fresh
@@ -23,7 +23,7 @@
  * wrote; then the shared app opens the same session and types into it. The
  * session and file are removed afterwards.
  */
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import net from 'node:net';
@@ -36,6 +36,40 @@ import { parseArgs as parseLauncherArgs } from './dev-browser.mjs';
 
 const repoRoot = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const PHONE = { viewport: { width: 412, height: 915 }, deviceScaleFactor: 2, isMobile: false, hasTouch: false };
+
+/** Standalone so Playwright evaluates one complete sample in the page's RAF poll. */
+export function viewportReadiness({ geometry: supplied, expected } = {}) {
+  let geometry = supplied;
+  if (!geometry) {
+    const rect = element => {
+      if (!element) return null;
+      const r = element.getBoundingClientRect();
+      return { top: r.top, bottom: r.bottom, left: r.left, right: r.right, height: r.height, width: r.width };
+    };
+    const style = getComputedStyle(document.body);
+    const screen = [...document.querySelectorAll('.xterm-screen')].find(element => element.offsetParent !== null);
+    geometry = {
+      viewport: { width: innerWidth, height: innerHeight },
+      safe: { top: parseFloat(style.paddingTop), bottom: innerHeight - parseFloat(style.paddingBottom),
+        left: parseFloat(style.paddingLeft), right: innerWidth - parseFloat(style.paddingRight) },
+      app: rect(document.querySelector('#app')), workspace: rect(document.querySelector('.workspace')), terminal: rect(screen),
+    };
+    window.__psViewportReadiness = { at: performance.now(), expected, geometry };
+  }
+  const { safe } = geometry;
+  if (!safe || !['top', 'bottom', 'left', 'right'].every(edge => Number.isFinite(safe[edge]))) return false;
+  if (expected && (geometry.viewport?.width !== expected.width || geometry.viewport?.height !== expected.height
+      || safe.top !== expected.top || geometry.viewport.height - safe.bottom !== expected.bottom)) return false;
+  for (const name of ['app', 'workspace', 'terminal']) {
+    const box = geometry[name];
+    if (!box || !['top', 'bottom', 'left', 'right', 'height', 'width'].every(key => Number.isFinite(box[key]))
+        || box.height <= 0 || box.width <= 0 || box.top < safe.top || box.bottom > safe.bottom
+        || box.left < safe.left || box.right > safe.right) return false;
+  }
+  // Return the accepted sample itself. A subsequent measurement can observe a
+  // different point in responsive layout/xterm's asynchronous resize sequence.
+  return geometry;
+}
 
 function parseArgs(argv) {
   const [mode, ...rest] = argv;
@@ -326,22 +360,98 @@ async function mockJourneys(browser, base, smoke) {
   const shared = await browser.newContext(PHONE);
   const sharedPage = smoke.watch(await shared.newPage(), 'shared');
   await smoke.open(sharedPage, `${base}/?shell=shared`);
-  await smoke.step('shared: the seeded mock host is listed and asks for host-key trust', async () => {
-    await visibleText(sharedPage, 'mock-devbox').click({ timeout: 30_000 });
-    await sharedPage.waitForSelector('[data-testid="trust-host-key"]', { timeout: 20_000 });
-    if (!(await sharedPage.locator('body').innerText()).includes(mockHostFingerprint())) {
-      throw new Error('the shared trust prompt does not show the mock host fingerprint');
+  await smoke.step('shared: Google sign-in and vault unlock reveal the authenticated mock server', async () => {
+    await sharedPage.getByTestId('server-google-login').click();
+    await sharedPage.getByTestId('vault-unlock-passphrase').fill('dev passphrase');
+    await sharedPage.getByTestId('vault-unlock-submit').click();
+    await sharedPage.getByTestId('trusted-server-connect').filter({ hasText: 'mock-devbox' }).waitFor({ timeout: 30_000 });
+    await shot(sharedPage, smoke, 'shared-01-trusted-server');
+    await sharedPage.getByTestId('trusted-server-connect').filter({ hasText: 'mock-devbox' }).click();
+    try {
+      await sharedPage.locator('.xterm:visible').first().waitFor({ timeout: 30_000 });
+    } catch (error) {
+      await shot(sharedPage, smoke, 'shared-connect-failure');
+      throw new Error(`${error.message}\nShared screen: ${await sharedPage.locator('body').innerText()}`);
     }
-    await shot(sharedPage, smoke, 'shared-01-trust');
-    await sharedPage.click('[data-testid="trust-host-key"]');
+    if (await sharedPage.getByTestId('trust-host-key').isVisible()) throw new Error('Trusted vault pin unexpectedly asked for TOFU');
   });
-  await smoke.step('shared: the session tree opens a terminal that echoes typed input', async () => {
-    await visibleText(sharedPage, 'codex-review').click({ timeout: 20_000 });
+  await smoke.step('shared: the trusted server workspace terminal echoes typed input', async () => {
     await sharedPage.locator('.xterm:visible').first().waitFor({ timeout: 15_000 });
     await typeInTerminal(sharedPage, `echo shared-${marker}`);
     await waitForTerminalLine(sharedPage, `shared-${marker}`);
     await shot(sharedPage, smoke, 'shared-02-terminal');
     return `shared-${marker}`;
+  });
+
+  await smoke.step('shared: the rendered terminal stays inside the root content box across platform insets and viewport sizes', async () => {
+    const cases = [
+      { name: 'portrait-bars', width: 393, height: 851, top: 50, bottom: 24 },
+      { name: 'landscape-bars', width: 851, height: 393, top: 24, bottom: 24 },
+      { name: 'resized-ime', width: 393, height: 480, top: 50, bottom: 0 },
+      { name: 'desktop', width: 900, height: 700, top: 0, bottom: 0 },
+    ];
+    const measured = [];
+    try {
+      for (const item of cases) {
+        await sharedPage.setViewportSize({ width: item.width, height: item.height });
+        await sharedPage.evaluate(({ top, bottom }) => {
+          document.documentElement.style.setProperty('--ps-inset-top', `${top}px`);
+          document.documentElement.style.setProperty('--ps-inset-bottom', `${bottom}px`);
+        }, item);
+        const measure = () => sharedPage.evaluate(() => {
+          const rect = element => { const r = element.getBoundingClientRect(); return { top: r.top, bottom: r.bottom, left: r.left, right: r.right, height: r.height }; };
+          const style = getComputedStyle(document.body);
+          const safe = { top: parseFloat(style.paddingTop), bottom: innerHeight - parseFloat(style.paddingBottom), left: parseFloat(style.paddingLeft), right: innerWidth - parseFloat(style.paddingRight) };
+          const screen = [...document.querySelectorAll('.xterm-screen')].find(element => element.offsetParent !== null);
+          return { safe, app: rect(document.querySelector('#app')), workspace: rect(document.querySelector('.workspace')), terminal: rect(screen) };
+        });
+        let failedGeometry = null;
+        let failedOperand = null;
+        try {
+          const ready = await sharedPage.waitForFunction(viewportReadiness, { expected: item }, { timeout: 5_000 });
+          const geometry = await ready.jsonValue();
+          await ready.dispose();
+          for (const name of ['app', 'workspace', 'terminal']) {
+            const rect = geometry[name];
+            if (rect.top < geometry.safe.top || rect.bottom > geometry.safe.bottom || rect.left < geometry.safe.left || rect.right > geometry.safe.right) {
+                failedGeometry = geometry;
+                failedOperand = { name, top: rect.top < geometry.safe.top, bottom: rect.bottom > geometry.safe.bottom,
+                  left: rect.left < geometry.safe.left, right: rect.right > geometry.safe.right };
+              throw new Error(`${name} exceeds the safe content box`);
+            }
+          }
+          measured.push({ name: item.name, ...geometry });
+          await shot(sharedPage, smoke, `shared-viewport-${item.name}`);
+        } catch (error) {
+          const diagnostics = await sharedPage.evaluate(() => {
+            const properties = ['height', 'min-height', 'max-height', 'box-sizing', 'display', 'position', 'overflow',
+              'padding-top', 'padding-bottom', 'padding-left', 'padding-right', '--ps-inset-top', '--ps-inset-bottom'];
+            const describe = element => {
+              const style = getComputedStyle(element);
+              return { tag: element.tagName, id: element.id, className: element.className,
+                inline: Object.fromEntries(properties.map(key => [key, element.style.getPropertyValue(key)]).filter(([, value]) => value)),
+                computed: Object.fromEntries(properties.map(key => [key, style.getPropertyValue(key)])) };
+            };
+            return { at: performance.now(), innerWidth, innerHeight, devicePixelRatio, userAgent: navigator.userAgent,
+              viewport: visualViewport && { width: visualViewport.width, height: visualViewport.height, offsetTop: visualViewport.offsetTop },
+              readiness: window.__psViewportReadiness, html: describe(document.documentElement), body: describe(document.body),
+              app: describe(document.querySelector('#app')), workspace: describe(document.querySelector('.workspace')) };
+          });
+          const failure = { variant: item, failedOperand, failedGeometry, diagnostics };
+          writeFileSync(path.join(smoke.artifacts, `shared-viewport-${item.name}-failure-geometry.json`), JSON.stringify(failure, null, 2));
+          await shot(sharedPage, smoke, `shared-viewport-${item.name}-failure`);
+          throw new Error(`${item.name}: ${error.message}; failed ${JSON.stringify(failure)}; afterCapture ${JSON.stringify(await measure())}`);
+        }
+      }
+      writeFileSync(path.join(smoke.artifacts, 'shared-viewport-geometry.json'), JSON.stringify(measured, null, 2));
+      return 'portrait, landscape, resized WebView/IME, desktop; exact root/workspace/terminal containment';
+    } finally {
+      await sharedPage.setViewportSize(PHONE.viewport);
+      await sharedPage.evaluate(() => {
+        document.documentElement.style.removeProperty('--ps-inset-top');
+        document.documentElement.style.removeProperty('--ps-inset-bottom');
+      });
+    }
   });
 
   await smoke.step('vite: a hot update applies without reloading the page', async () => {
@@ -476,6 +586,10 @@ async function liveJourney(browser, base, smoke, options, token) {
 
 async function main() {
   const options = parseArgs(process.argv.slice(2));
+  if (options.mode === 'mock') {
+    const contract = spawnSync(process.execPath, ['--test', path.join(repoRoot, 'tests/scripts/dev-browser-viewport-readiness.test.mjs')], { stdio: 'inherit' });
+    if (contract.status !== 0) throw new Error('Viewport readiness regression contract failed');
+  }
   mkdirSync(options.artifacts, { recursive: true });
   const smoke = new Smoke(options.artifacts);
   const port = options.port || await freePort();
@@ -509,7 +623,9 @@ async function main() {
   if (failed || passed === 0 || result.failed > 0) process.exit(1);
 }
 
-main().catch((error) => {
-  process.stderr.write(`dev-browser-smoke: ${error?.message ?? error}\n`);
-  process.exit(2);
-});
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  main().catch((error) => {
+    process.stderr.write(`dev-browser-smoke: ${error?.message ?? error}\n`);
+    process.exit(2);
+  });
+}

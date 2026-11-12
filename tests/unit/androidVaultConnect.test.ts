@@ -9,7 +9,7 @@ import { readFileSync } from 'node:fs';
 import { KeyVaultStore, type VaultSlotTransport } from '@pocketshell/core';
 import { createAndroidVault, type VaultCore, type UnlockedVault, type VaultNative } from '@/vault/androidVault';
 import { createStoreVaultCore } from '@/vault/coreVault';
-import { FakeNative, HOST_KEY, MemoryStorage } from './support/androidFakeNative';
+import { FakeNative, HOST_KEY, MemoryStorage, settle } from './support/androidFakeNative';
 
 /**
  * Key-vault W4 (G10 reproduction first). The maintainer's scenario: the
@@ -79,12 +79,17 @@ class FakeVaultNative implements VaultNative {
 
 /** Gateway dials need the pin receipt the Java plugin returns. */
 class GatewayNative extends FakeNative {
+  readonly erasedHandles = new Set<string>();
   override capability(): SshCapability {
     const base = super.capability();
     return {
       ...base,
       gatewayTransport: true,
       connect: async (options: SshConnectOptions) => {
+        if (options.credential.kind === 'key-handle' && this.erasedHandles.has(options.credential.handleId)) {
+          this.connects.push(options);
+          throw Object.assign(new Error('The vault key handle was released.'), { code: 'SSH_AUTH_FAILED' });
+        }
         const result = await base.connect(options);
         return options.gateway ? { ...result, gatewayHostKeyVerified: true as const } : result;
       },
@@ -111,6 +116,8 @@ interface Setup {
   vault?: UnlockedVault | 'absent' | 'locked';
   /** What the unlock sheet does when asked: unlock with this vault, or decline. */
   onUnlockAsked?: 'unlock' | 'decline';
+  freshTrust?: boolean;
+  omitVault?: boolean;
   /** The vault the passphrase opens when the test starts locked. */
   unlocksTo?: UnlockedVault;
 }
@@ -120,7 +127,7 @@ async function setup(options: Setup = {}) {
   const storage = new MemoryStorage();
   storage.setItem(ANDROID_HOSTS_STORAGE_KEY, '[]');
   const trust = createLocalTrustStore(storage);
-  await trust.record('alexey@135.181.114.209:22', { kind: 'wire-key', ...HOST_KEY });
+  if (!options.freshTrust) await trust.record('alexey@135.181.114.209:22', { kind: 'wire-key', ...HOST_KEY });
   const hosts = new AndroidHostStore({ storage, readLegacyHosts: async () => [] });
   const account = options.account ?? [HETZNER, GATEWAY_HOST];
   const adopt = vi.fn(async () => false);
@@ -135,8 +142,13 @@ async function setup(options: Setup = {}) {
   const vault = createAndroidVault({ core, native: vaultNative, scope: async () => 'phone@example.com', askUnlock });
   await vault.refresh();
   if (typeof options.vault === 'object') core.open(options.vault);
+  const controllers: ConnectionController[] = [];
   const created = createAndroidPlatform({
-    createController: () => new ConnectionController({ capability: native.capability(), trustStore: trust, retryDelaysMs: [0] }),
+    createController: () => {
+      const controller = new ConnectionController({ capability: native.capability(), trustStore: trust, retryDelaysMs: [0] });
+      controllers.push(controller);
+      return controller;
+    },
     hosts,
     backgroundGraceMs: () => 60_000,
     addHostRoute: '/x',
@@ -145,17 +157,18 @@ async function setup(options: Setup = {}) {
       find: async (request) => matchAccountHost(account, request),
       adopt,
     },
-    vault,
+    vault: options.omitVault ? undefined : vault,
     gatewayTransport: async () => true,
     gatewayPairings: { list: async () => [PAIRING] },
   });
-  return { native, created, adopt, vault, vaultNative, askUnlock, hosts, core };
+  return { native, created, adopt, vault, vaultNative, askUnlock, hosts, core, controllers, storage, trust };
 }
 
 /** The account as the web mirrored it: the gateway host's entry carries `gatewayAuth` (design section 7). */
 const mirroredAccount = (policy?: 'host' | 'managed' | 'both') =>
   [HETZNER, accountHost('laptop', 'laptop.gw', { gateway: GW, ...(policy ? { gatewayAuth: policy } : {}) })];
 
+const explicitDirect = { host: HETZNER.hostname, port: 22, user: 'alexey', hostAlias: 'hetzner', accountDirect: true as const };
 const direct = { host: HETZNER.hostname, port: 22, user: 'alexey', hostAlias: 'hetzner' } as never;
 const viaGateway = { host: GATEWAY_HOST.hostname, port: 22, user: 'alexey', hostAlias: 'laptop', gateway: GW } as never;
 
@@ -188,7 +201,137 @@ class AccountSlots implements VaultSlotTransport {
   }
 }
 
+async function recoversWithFreshVaultHandle(route: 'server-tap' | 'retry'): Promise<void> {
+  const unlocked = unlockedVault({ laptop: { keyId: 'k1', gatewayAuth: 'managed' } }, { k1: { kind: 'key', pem: PEM } });
+  const { created, native, vault, vaultNative, core, controllers } = await setup({ vault: unlocked, account: mirroredAccount('managed') });
+  try {
+    const initial = await created.api.ssh.connect(viaGateway);
+    expect(initial).toMatchObject({ ok: true, connectionId: 'android-1' });
+    await created.api.helper.sessionsList('android-1');
+    const attached = await created.api.shell.attachSession({ connectionId: 'android-1', sessionName: 'main', aplexerId: 'main-id' });
+    expect(await created.api.shell.redraw(attached.shellId)).toBe(true);
+    const selected = controllers[0]!.getSnapshot().selectedSession;
+    expect(selected?.id).toBe('main-id');
+    // Native refuses a lease erased by the actual Android vault lock path.
+    await vault.lock();
+    expect(vaultNative.released.length).toBeGreaterThan(0);
+    native.erasedHandles.add('ephemeral-1');
+    native.dropTransport();
+    await settle(() => controllers[0]!.getSnapshot().phase === 'lost');
+    core.open(unlocked);
+    if (route === 'server-tap') {
+      expect(await created.api.ssh.connect(viaGateway)).toEqual({ ok: true, connectionId: 'android-1' });
+    } else {
+      expect(await created.api.ssh.reconnect!('android-1')).toBe(true);
+    }
+    expect(controllers).toHaveLength(1);
+    expect(vaultNative.held).toHaveLength(2);
+    expect(native.connects.at(-1)!.credential).toEqual({ kind: 'key-handle', handleId: 'ephemeral-2' });
+    expect(controllers[0]!.getSnapshot().selectedSession).toEqual(selected);
+    expect(await created.api.shell.input(attached.shellId, 'after-reauth', 'main')).toBe(true);
+    expect(native.channelWrites.at(-1)).toEqual([native.channelOf('main'), 'after-reauth']);
+  } finally { created.dispose(); }
+}
+
 describe('Android dials account and gateway hosts with the account key vault (key-vault W4)', () => {
+  it('explicit accountDirect uses the verified vault binding without adopting or persisting a phone host', async () => {
+    const unlocked = unlockedVault({ hetzner: { keyId: 'k1', gatewayAuth: 'host' } }, { k1: { kind: 'key', pem: PEM } });
+    const t = await setup({ vault: unlocked });
+    try {
+      expect(t.created.api.hosts?.accountDirect).toBe(true);
+      expect(await t.created.api.ssh.connect({ ...explicitDirect })).toMatchObject({ ok: true });
+      expect(t.native.connects).toHaveLength(1);
+      expect(t.native.connects[0]).toMatchObject({ hostname: HETZNER.hostname, port: 22, username: 'alexey',
+        credential: { kind: 'key-handle', handleId: 'ephemeral-1' } });
+      expect(t.native.connects[0]).not.toHaveProperty('gateway');
+      expect(t.adopt).not.toHaveBeenCalled();
+      expect(t.hosts.savedHosts()).toEqual([]);
+      expect(t.vaultNative.remembered.size).toBe(0);
+    } finally { t.created.dispose(); }
+  });
+
+  it('explicit accountDirect still requires the normal first-contact host-key decision', async () => {
+    const unlocked = unlockedVault({ hetzner: { keyId: 'k1', gatewayAuth: 'host' } }, { k1: { kind: 'key', pem: PEM } });
+    const t = await setup({ vault: unlocked, freshTrust: true });
+    const questions: unknown[] = [];
+    t.created.api.ssh.onTrustDecision!(async (question) => { questions.push(question); return 'reject'; });
+    try {
+      const result = await t.created.api.ssh.connect({ ...explicitDirect, tofuDecision: 'accept-always' });
+      expect(result.ok).toBe(false);
+      expect(result.error).toContain('not trusted');
+      expect(questions).toHaveLength(1);
+      expect(questions[0]).toMatchObject({ hostname: HETZNER.hostname, port: 22, fingerprintSha256: HOST_KEY.fingerprintSha256 });
+      expect(await t.trust.get('alexey@135.181.114.209:22')).toBeNull();
+      expect(t.native.opened).toHaveLength(0);
+      expect(t.hosts.savedHosts()).toEqual([]);
+    } finally { t.created.dispose(); }
+  });
+
+  it('explicit accountDirect refuses missing or changed aliases and endpoint fields before credential lookup', async () => {
+    const rows = [[], [accountHost('other-alias', HETZNER.hostname)],
+      [accountHost('hetzner', 'changed.example')], [accountHost('hetzner', HETZNER.hostname, { port: 2200 })],
+      [accountHost('hetzner', HETZNER.hostname, { user: 'other-user' })]];
+    for (const account of rows) {
+      const unlocked = unlockedVault({ hetzner: { keyId: 'k1', gatewayAuth: 'host' } }, { k1: { kind: 'key', pem: PEM } });
+      const t = await setup({ account, vault: unlocked });
+      try {
+        const result = await t.created.api.ssh.connect({ ...explicitDirect });
+        expect(result).toEqual({ ok: false, error: 'The synced SSH host changed. Reload your account and try again.' });
+        expect(unlocked.decryptForHost).not.toHaveBeenCalled();
+        expect(t.native.connects).toEqual([]);
+        expect(t.adopt).not.toHaveBeenCalled();
+        expect(t.askUnlock).not.toHaveBeenCalled();
+        expect(t.vaultNative.held).toEqual([]);
+        expect(t.hosts.savedHosts()).toEqual([]);
+      } finally { t.created.dispose(); }
+    }
+  });
+
+  it('explicit accountDirect refuses local and every managed marker on both the request and current account row', async () => {
+    const markers: Array<Partial<HostEntry> & Record<string, unknown>> = [{ local: true }, { gateway: GW }, { gatewayAuth: 'host' }, { link: undefined }, { trustedVault: null }];
+    for (const marker of markers) for (const side of ['request', 'account'] as const) {
+      const unlocked = unlockedVault({ hetzner: { keyId: 'k1', gatewayAuth: 'host' } }, { k1: { kind: 'key', pem: PEM } });
+      const t = await setup({ vault: unlocked, account: [accountHost('hetzner', HETZNER.hostname, side === 'account' ? marker : {})] });
+      try {
+        expect((await t.created.api.ssh.connect({ ...explicitDirect,
+          ...(side === 'request' ? marker : {}) } as never)).ok).toBe(false);
+        expect(unlocked.decryptForHost).not.toHaveBeenCalled();
+        expect(t.native.connects).toEqual([]);
+        expect(t.adopt).not.toHaveBeenCalled();
+        expect(t.askUnlock).not.toHaveBeenCalled();
+        expect(t.vaultNative.held).toEqual([]);
+        expect(t.hosts.savedHosts()).toEqual([]);
+      } finally { t.created.dispose(); }
+    }
+  });
+
+  it('explicit accountDirect refuses absent locked unbound and unavailable vaults without phone-key fallback', async () => {
+    for (const options of [{ vault: 'absent' as const }, { vault: 'locked' as const, onUnlockAsked: 'decline' as const },
+      { vault: unlockedVault({}, {}) }, { omitVault: true }]) {
+      const t = await setup(options);
+      try {
+        expect((await t.created.api.ssh.connect({ ...explicitDirect })).ok).toBe(false);
+        expect(t.native.connects).toEqual([]);
+        expect(t.adopt).not.toHaveBeenCalled();
+        expect(t.vaultNative.held).toEqual([]);
+        expect(t.vaultNative.remembered.size).toBe(0);
+        expect(t.hosts.savedHosts()).toEqual([]);
+      } finally { t.created.dispose(); }
+    }
+  });
+
+  it('explicit accountDirect can unlock the current vault once and dial its in-memory key', async () => {
+    const unlocked = unlockedVault({ hetzner: { keyId: 'k1', gatewayAuth: 'host' } }, { k1: { kind: 'key', pem: PEM } });
+    const t = await setup({ vault: 'locked', onUnlockAsked: 'unlock', unlocksTo: unlocked });
+    try {
+      expect((await t.created.api.ssh.connect({ ...explicitDirect })).ok).toBe(true);
+      expect(t.askUnlock).toHaveBeenCalledTimes(1);
+      expect(t.vaultNative.held).toEqual([PEM]);
+      expect(t.adopt).not.toHaveBeenCalled();
+      expect(t.hosts.savedHosts()).toEqual([]);
+    } finally { t.created.dispose(); }
+  });
+
   it('dials a web-saved key for an account host from memory, with no key picker and nothing saved', async () => {
     const vault = unlockedVault({ hetzner: { keyId: 'k1', gatewayAuth: 'host' } }, { k1: { kind: 'key', pem: PEM } });
     const { native, created, adopt, vaultNative, hosts } = await setup({ vault });
@@ -359,7 +502,7 @@ describe('Android dials account and gateway hosts with the account key vault (ke
     expect(synced).toEqual(['sync words']);
     // The decrypted key reached native exactly once, as the web uploaded it.
     expect(vaultNative.held).toHaveLength(1);
-    expect(vaultNative.held[0]).toContain(pem.split('\n')[1]);
+    expect(vaultNative.held[0]).toContain(pem.split(/\r?\n/)[1]);
     expect(native.connects[0]!.credential).toEqual({ kind: 'key-handle', handleId: 'ephemeral-1' });
     expect(phone.writes).toEqual([]);
     await vault.lock();
@@ -436,8 +579,12 @@ describe('Android dials account and gateway hosts with the account key vault (ke
     vaultNative.holdVaultKey = (options) => new Promise((resolve) => { finish = () => resolve(original(options)); });
     const dial = created.api.ssh.connect(direct);
     await new Promise((resolve) => setTimeout(resolve, 0));
-    await vault.lock();
+    let locked = false;
+    const locking = vault.lock().then(() => { locked = true; });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(locked).toBe(false);
     finish();
+    await locking;
     const result = await dial;
     expect(result.ok).toBe(false);
     expect(vaultNative.released).toContainEqual(['ephemeral-1']);
@@ -490,4 +637,27 @@ describe('Android dials account and gateway hosts with the account key vault (ke
     expect(vaultNative.held).toEqual([PEM]);
     created.dispose();
   });
+  it('the normal server tap refreshes an erased vault handle on the same logical controller and terminal', async () => {
+    await recoversWithFreshVaultHandle('server-tap');
+  });
+  it('public Retry resolves a fresh vault handle without discarding the same logical terminal', async () => {
+    await recoversWithFreshVaultHandle('retry');
+  });
+
+  it('public Retry cannot bypass a still-locked managed vault or dial its released key again', async () => {
+    const unlocked = unlockedVault({ laptop: { keyId: 'k1', gatewayAuth: 'managed' } }, { k1: { kind: 'key', pem: PEM } });
+    const { created, native, vault, vaultNative, controllers, askUnlock } = await setup({ vault: unlocked, account: mirroredAccount('managed') });
+    try {
+      expect((await created.api.ssh.connect(viaGateway)).ok).toBe(true);
+      await vault.lock(); native.erasedHandles.add('ephemeral-1'); native.dropTransport();
+      await settle(() => controllers[0]!.getSnapshot().phase === 'lost');
+      const before = native.connects.length;
+      expect(await created.api.ssh.reconnect!('android-1')).toBe(false);
+      expect(askUnlock).toHaveBeenCalledTimes(1);
+      expect(native.connects).toHaveLength(before);
+      expect(vaultNative.held).toHaveLength(1);
+      expect(controllers).toHaveLength(1);
+    } finally { created.dispose(); }
+  });
+
 });

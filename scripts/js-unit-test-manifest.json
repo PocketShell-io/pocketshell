@@ -441,6 +441,8 @@
       "suite": "Android shared app shell",
       "tests": [
         "routes by the shared map plus exactly the Android host form and account screen",
+        "uses native navigation clearance without double-padding a resized IME viewport and disposes its listener",
+        "late native inset reads after disposal cannot mutate the shared viewport",
         "writes the system-bar and landscape side insets into the shared inset contract",
         "hands the shared root a phone mono stack, not the desktop Consolas default"
       ]
@@ -594,7 +596,11 @@
         "turns sync API refusals into plain words and refuses an envelope over the 8 KB limit before sending",
         "signing out deletes the native sign-in and the cached account copy",
         "serves the shared app's api.sync group from the same adapter",
-        "accepts only signed-in state from the native plugin, never a token field"
+        "accepts only signed-in state from the native plugin, never a token field",
+        "notifies confirmed native auth loss once and permits normal sign-in without sign-out",
+        "keeps network cancellation successful requests and wrong-passphrase responses out of auth loss",
+        "rejects late successes from the lost generation without invalidating a fresh login",
+        "refuses old decrypted account results after auth loss and a different login"
       ]
     },
     "tests/unit/devBrowserCapacitor.test.ts": {
@@ -869,12 +875,20 @@
         "never falls back to plain SSH: a gateway refusal reaches the user and no direct dial follows, even for a phone host at the same address",
         "an account host carrying a gateway marker is dialled through the gateway, never adopted as a plain SSH phone host",
         "reconnect stays on the gateway: the controller re-dials native connect with the same gateway target and pairing key",
-        "reads public pairing rows and fails closed on any other reply"
+        "reads public pairing rows and fails closed on any other reply",
+        "keeps a saved gateway route when a caller sends only its alias",
+        "refuses an alias-only saved gateway route when native gateway support is absent"
       ]
     },
     "tests/unit/androidVaultConnect.test.ts": {
       "suite": "Android dials account and gateway hosts with the account key vault (key-vault W4)",
       "tests": [
+        "explicit accountDirect uses the verified vault binding without adopting or persisting a phone host",
+        "explicit accountDirect still requires the normal first-contact host-key decision",
+        "explicit accountDirect refuses missing or changed aliases and endpoint fields before credential lookup",
+        "explicit accountDirect refuses local and every managed marker on both the request and current account row",
+        "explicit accountDirect refuses absent locked unbound and unavailable vaults without phone-key fallback",
+        "explicit accountDirect can unlock the current vault once and dial its in-memory key",
         "dials a web-saved key for an account host from memory, with no key picker and nothing saved",
         "dials a vault password entry as a password credential",
         "a locked vault asks to unlock, never for a key, then dials the vault key",
@@ -904,7 +918,10 @@
         "a vault key still being handed to native when the vault locks is released, never kept",
         "two account hosts at the same address each dial with their own vault key, chosen by the alias core sends",
         "two gateway entries at the same display address keep their own policy: host dials the pairing key, managed refuses",
-        "an alias no account entry carries still finds the host by its address"
+        "an alias no account entry carries still finds the host by its address",
+        "the normal server tap refreshes an erased vault handle on the same logical controller and terminal",
+        "public Retry resolves a fresh vault handle without discarding the same logical terminal",
+        "public Retry cannot bypass a still-locked managed vault or dial its released key again"
       ]
     },
     "tests/unit/androidVaultUnlock.test.ts": {
@@ -915,12 +932,18 @@
         "a remembered record from an older epoch or another vault is deleted and the passphrase is asked for",
         "a remembered record that fails for another reason (offline, rate limited) is kept for the next launch",
         "whoever unlocks the store (the shared sheet) is followed; a lock wipes every held native key",
+        "user Lock joins store-triggered native cleanup and fences resumed vault reads until it finishes",
+        "an explicit native cleanup failure rejects Lock without forgetting remembered state",
         "sign-out locks, wipes held keys and forgets every remembered record",
         "a signed-out phone or an account without a vault is \"no-vault\": the phone key flow applies",
         "remember on this device: the shared sheet saves the record sealed natively per account, never the passphrase",
         "the shared controller over the phone store offers remember and the web reset, never key upload",
         "reads a vault slot raw (no envelope); a missing slot is absent; a verify-gated read is typed",
-        "never writes the vault from the phone",
+        "keeps general slot writes and verifier replacement unavailable on the phone",
+        "first setup atomically creates a header and verifier for a bound account without enabling slot writes",
+        "creation captures account context before asynchronous work instead of writing into a new account",
+        "creates and reopens the same encrypted vault at the server epoch without a second setup or plaintext upload",
+        "an unavailable or existing verifier never starts new vault initialization",
         "a vault the server hides until a verify (gated mode) still counts as a vault, never as \"no vault\"",
         "verify answers \"unavailable\" on HTTP 404 so the unlock falls back to the check value",
         "verify answers \"unavailable\" on HTTP 503 so the unlock falls back to the check value",
@@ -932,7 +955,9 @@
         "the remember record carries vaultId, epoch, DEK and AUTH (decision #6), round-trips, and wipes the bytes",
         "a remembered record that no longer opens the vault reads as stale; a rate-limited one is kept",
         "the adapter follows the store: current while unlocked, lock through it, presence follows probe",
-        "accepts only ephemeral handles and never echoes key material"
+        "accepts only ephemeral handles and never echoes key material",
+        "lists versioned vault slot metadata only through the fixed native settings endpoint",
+        "rejects duplicate malformed and unauthorized vault directories instead of treating them as empty"
       ]
     },
     "tests/unit/connectedAppBarHost.test.ts": {
@@ -975,6 +1000,79 @@
         "cold starts an explicitly enabled host and deduplicates a concurrent picker dial through one core owner",
         "does not dial hosts without explicit enablement or after the user turns automatic forwarding off",
         "uses normal core host-key trust on automatic startup and never silently accepts a first-contact key"
+      ]
+    },
+    "tests/unit/androidGatewayDirectory.test.ts": {
+      "suite": "Android gateway picker integration",
+      "tests": [
+        "lists native account devices and keeps their advertised key advisory",
+        "refuses another gateway before requesting account devices",
+        "drops a list if the account changes during its native request",
+        "rejects a reply belonging to another native request",
+        "pairs the typed pin and chosen phone key then preserves the route across restart",
+        "does not save a host if native pairing refuses it",
+        "does not replace an existing host with a gateway device of the same name",
+        "never turns a malformed stored gateway marker into an ordinary host"
+      ]
+    },
+    "tests/unit/androidTrustedHosts.test.ts": {
+      "suite": "Android account vault trusted server installation",
+      "tests": [
+        "installs a validated vault reference and managed route without a local phone key",
+        "compares authenticated descriptor fields independently of JSON property order",
+        "refuses a different account before native installation or host save",
+        "refuses locked replaced and stale epoch vaults",
+        "refuses missing invalid rollback or revoked descriptors without phone key fallback",
+        "refuses unbound mismatched and non-managed vault credentials",
+        "rechecks account after native work and preserves no saved row on an account switch",
+        "loads protected revision floors and supplies them to authenticated descriptor verification"
+      ]
+    },
+    "tests/unit/androidFreshShell.test.ts": {
+      "suite": "Android fresh server terminal adapters",
+      "tests": [
+        "creates an ordinary home shell from a canonical POSIX or Windows SFTP directory through the controller",
+        "reuses an existing ordinary shell and never creates one after canonicalization fails"
+      ]
+    },
+    "tests/unit/androidAuthLoss.test.ts": {
+      "suite": "Android native auth loss shared-store custody",
+      "tests": [
+        "cancels an in-flight unlock and restores normal login without deleting encrypted vault or remembered trust",
+        "does not cancel or lock a signed-in consumer for ordinary network or provider cancellation",
+        "rejects pre-loss status completion without resurrecting the actual shared signed-in display",
+        "keeps a later different login when obsolete signed-in or signed-out status completes out of order",
+        "propagates gateway-owned signed-out status from the exported account helper into real shared-store cleanup",
+        "keeps an initial guest status passive without starting OAuth or reporting a lost account",
+        "preserves an accepted account when status fails through network or provider cancellation",
+        "fences observed status-loss cleanup before a later different normal login can publish fresh shared state",
+        "binds auth loss in the actual shared bootstrap to transient-only Android cleanup"
+      ]
+    },
+    "tests/unit/androidVaultLockRaces.test.ts": {
+      "suite": "Android vault Lock fences real Core and sealed Remember across asynchronous boundaries",
+      "tests": [
+        "a refresh delayed at scope cannot import remembered keys during or after Lock",
+        "a refresh delayed at probe cannot import remembered keys during or after Lock",
+        "a refresh delayed at recall cannot import remembered keys during or after Lock",
+        "an import already running in real Core cannot reinstall its DEK after Lock or replace a newer login",
+        "a stale remembered-import result arriving after Lock cannot forget the sealed record",
+        "an old probe error cannot overwrite a later authenticated account state",
+        "an old signed-out scope result cannot lock or relabel a newer authenticated session",
+        "a second Lock invalidates reads already waiting for the first native cleanup",
+        "a delayed credential refresh cannot open a password sheet after Lock",
+        "an old pending unlock answer cannot use keys from a newer authenticated session",
+        "a key decrypted before Lock cannot leave an older credential request",
+        "a password decrypted before Lock cannot leave an older credential request",
+        "an account lookup begun before Lock cannot start a native key hold afterwards",
+        "an old decryption error after Lock cannot replace the newer account outcome",
+        "Lock waits for an in-flight native hold and final cleanup even if scoped cleanup fails",
+        "cleanup failure keeps refresh and credentials closed until a successful Lock retry",
+        "real Google account lookup NOT_SIGNED_IN with cleanup failure false settles without a native lease or callback deadlock",
+        "real Google account lookup NOT_SIGNED_IN with cleanup failure true settles without a native lease or callback deadlock",
+        "real Google account lookup SIGN_IN_CANCELLED with cleanup failure false settles without a native lease or callback deadlock",
+        "real Google auth loss while native hold is pending completes cleanup with final wipe failure false",
+        "real Google auth loss while native hold is pending completes cleanup with final wipe failure true"
       ]
     }
   }

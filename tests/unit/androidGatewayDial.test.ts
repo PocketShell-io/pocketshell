@@ -111,6 +111,33 @@ const gatewayRequest = (gateway: unknown = GW, extra: Record<string, unknown> = 
   ({ host: 'gw-host', port: 22, user: 'alexey', hostAlias: 'gw', gateway, ...extra }) as never;
 
 describe('Android dials the gateway behind the native capability (#3086 slice 3)', () => {
+  it('keeps a saved gateway route when a caller sends only its alias', async () => {
+    for (const request of [
+      { host: 'gw-host', port: 22, user: 'alexey', hostAlias: 'saved-gateway' },
+      { host: 'gw-host', port: 22, user: 'other', hostAlias: 'stale-alias' },
+      { host: 'gw-host', port: 22, user: 'other' },
+      { host: 'gw-host', port: 22, user: '' },
+    ]) {
+      const { native, created } = await setup({ phone: [{ name: 'saved-gateway', hostname: 'gw-host', user: 'alexey',
+        port: 22, keyHandleId: PHONE_KEY, gateway: GW }] });
+      const result = await created.api.ssh.connect(request);
+      expect(result.ok).toBe(true);
+      expect(native.connects[0]?.gateway).toEqual(GW);
+      expect(native.connects[0]?.credential).toEqual({ kind: 'key-handle', handleId: PAIRED_KEY });
+      expect(native.connects[0]?.username).toBe(request.user || 'alexey');
+      created.dispose();
+    }
+  });
+
+  it('refuses an alias-only saved gateway route when native gateway support is absent', async () => {
+    const { native, created } = await setup({ reply: reportsNoGateway, phone: [{ name: 'saved-gateway', hostname: 'gw-host', user: 'alexey',
+      port: 22, keyHandleId: PHONE_KEY, gateway: GW }] });
+    const result = await created.api.ssh.connect({ host: 'gw-host', port: 22, user: 'alexey', hostAlias: 'saved-gateway' });
+    expect(result.ok).toBe(false);
+    expect(native.connects).toHaveLength(0);
+    created.dispose();
+  });
+
   it('admits a valid gateway host once the native plugin reports the transport, and dials it through native connect with the pairing key', async () => {
     const { native, created, pairings } = await setup();
     const result = await created.api.ssh.connect(gatewayRequest());

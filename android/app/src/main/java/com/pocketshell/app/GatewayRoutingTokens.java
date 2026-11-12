@@ -9,7 +9,7 @@ package com.pocketshell.app;
  * a reconnect ladder does not mint per attempt, and mints a fresh one when
  * the cached token would not outlive the attempt that needs it. The token
  * is never written to storage, logged, put in an error message, or returned
- * over the Capacitor bridge: the only consumer is {@link GatewayTunnel}'s
+ * over the Capacitor bridge: consumers are the native gateway directory and {@link GatewayTunnel}'s
  * auth frame. {@link Issued#toString()} redacts it.
  */
 final class GatewayRoutingTokens {
