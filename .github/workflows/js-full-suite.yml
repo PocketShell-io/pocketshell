@@ -47,7 +47,10 @@ jobs:
   web-and-android:
     name: Full JS suite
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    # The packaged lanes took ~55 min on 2026-11-05 and the suite has grown
+    # since; at 60 the nightly was cancelled mid-run with no failing test.
+    # The 90-minute packaged-journeys step below needs a job cap above it.
+    timeout-minutes: 120
     steps:
       - name: Checkout with pinned core source
         uses: actions/checkout@v6
@@ -448,6 +451,10 @@ jobs:
             exit 1
           fi
           scripts/check-js-hotkeys-journey-results.py --results-dir "${evidence_runs[0]}"
+
+      - name: Name failing journeys in the job summary
+        if: always()
+        run: scripts/summarize-junit-failures.py android/app/build/outputs
 
       - name: Collect isolated composer fixture diagnostics
         if: always()

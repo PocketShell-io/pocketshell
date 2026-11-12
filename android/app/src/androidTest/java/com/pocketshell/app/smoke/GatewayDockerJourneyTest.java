@@ -6,6 +6,7 @@ import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 
 import android.content.Context;
+import android.content.SharedPreferences;
 import android.os.Build;
 import android.os.SystemClock;
 import android.util.Log;
@@ -14,6 +15,8 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.webkit.WebView;
 
+import androidx.security.crypto.EncryptedSharedPreferences;
+import androidx.security.crypto.MasterKey;
 import androidx.test.core.app.ActivityScenario;
 import androidx.test.ext.junit.runners.AndroidJUnit4;
 import androidx.test.platform.app.InstrumentationRegistry;
@@ -110,7 +113,31 @@ public final class GatewayDockerJourneyTest {
         backend.seed(encrypt(accountHosts().toString()));
         GoogleSyncEnvironment.installForTesting(activity -> google, backend);
         for (String prefs : new String[]{AUTH_PREFS, "pocketshell-gateway-pairings", "pocketshell-trusted-host-revisions", "pocketshell_vault_device_v1"})
-            targetContext().deleteSharedPreferences(prefs);
+            clearFixturePreferences(prefs);
+    }
+
+    /**
+     * Keep the backing preferences and encryption keysets alive: the process-wide
+     * native pairing store retains its encrypted preferences across activities.
+     * Deleting a file evicts only Context's cache and leaves that retained object
+     * serving the previous method's trust revision. Clearing through its editor
+     * resets both retained readers and disk without weakening native rollback.
+     */
+    @SuppressWarnings("deprecation")
+    private void clearFixturePreferences(String name) throws Exception {
+        Context context = targetContext().getApplicationContext();
+        SharedPreferences preferences;
+        if (name.equals("pocketshell_vault_device_v1")) {
+            preferences = context.getSharedPreferences(name, Context.MODE_PRIVATE);
+        } else {
+            MasterKey key = new MasterKey.Builder(context)
+                    .setKeyScheme(MasterKey.KeyScheme.AES256_GCM).build();
+            preferences = EncryptedSharedPreferences.create(context, name, key,
+                    EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
+                    EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM);
+        }
+        assertTrue("fixture preferences clear committed: " + name, preferences.edit().clear().commit());
+        assertTrue("fixture preferences have no prior method records: " + name, preferences.getAll().isEmpty());
     }
 
     @After
@@ -130,7 +157,7 @@ public final class GatewayDockerJourneyTest {
                 scenario.close();
             }
             GoogleSyncEnvironment.resetForTesting();
-            targetContext().deleteSharedPreferences(AUTH_PREFS);
+            clearFixturePreferences(AUTH_PREFS);
         }
     }
 
@@ -427,6 +454,127 @@ public final class GatewayDockerJourneyTest {
         assertEveryDialWentThroughTheGateway(nativeDials());
         assertEquals("no cloud writes from the phone", 0, backend.writes);
         assertNoRoutingTokenEscaped();
+    }
+
+    /** An account-only direct endpoint uses normal SSH trust beside the authenticated Gateway route. */
+    @Test
+    public void usesAccountOnlyDirectSshAlongsideTrustedGatewayForRealTerminals() throws Exception {
+        selectVariant("active");
+        JSONObject account = accountHosts();
+        account.getJSONArray("hosts").put(new JSONObject().put("name", "account-direct").put("hostname", "localhost")
+                .put("port", hello.getInt("directPort")).put("user", hello.getString("user")));
+        backend.seed(encrypt(account.toString()));
+        String fingerprint = authorizeVault("account-direct-gateway-authorize");
+        JSONObject directAuth = controller(new JSONObject().put("op", "direct-authorize")
+                .put("publicKey", fixture().getString("publicKey")).put("phase", "account-direct-authorize"));
+        assertEquals("the same vault credential is authorized on the distinct direct host", fingerprint, directAuth.getString("fingerprint"));
+        launchSignedInAndUnlocked();
+        awaitJsTrue("[...document.querySelectorAll('.host-row')].some(n=>n.textContent.includes('account-direct'))");
+        assertEquals("fresh phone has no local copy of the account-only host", "[]", evalString("localStorage.getItem('" + HOSTS_KEY + "')"));
+        assertTrue("authenticated Gateway remains alongside the direct account row", exists("[data-testid=trusted-server-connect]"));
+        // No remembered TOFU from another run may turn first-contact proof into a cached-key test.
+        evalRaw("Object.keys(localStorage).filter(k=>k.startsWith('pocketshell.ssh.host-key.')).forEach(k=>localStorage.removeItem(k));'untrusted'");
+        screenshot("account-direct-picker");
+        evalRaw("(() => {const row=[...document.querySelectorAll('.host-row')].find(n=>n.textContent.includes('account-direct'));"
+                + "if(!row)throw Error('account-only direct row missing');row.click();return 'clicked';})()");
+        awaitJsTrue("!!document.querySelector('[data-testid=host-key-decision]')", 120_000);
+        assertFalse("verified account binding never asks for a phone key", exists("[data-testid=account-host-key-gate]"));
+        assertEquals("first-contact prompt is the distinct direct host's real key", hello.getString("directFingerprint"),
+                evalString("document.querySelector('[data-testid=host-key-fingerprint]').textContent.trim()"));
+        screenshot("account-direct-trust");
+        click("[data-testid=trust-host-key]");
+        awaitJsTrue("!!document.querySelector('button[title=\"Back to hosts\"]')", 120_000);
+        if (exists("button[title=\"Show session panel\"]")) click("button[title=\"Show session panel\"]");
+        String folder = hello.getString("sessionFolder");
+        awaitJsTrue("[...document.querySelectorAll('.dir-header')].some(n=>n.textContent.includes(" + JSONObject.quote(folder) + "))");
+        evalRaw("[...document.querySelectorAll('.dir-header')].find(n=>n.textContent.includes(" + JSONObject.quote(folder) + ")).click();'opened'");
+        awaitJsTrue(VISIBLE_TERMINAL + ".includes('$')", 120_000);
+        String file = "gwlane-account-direct-" + run + ".txt";
+        typeCommand("echo ACDIRECT$((6*7))_" + run + " | tee ~/" + file);
+        awaitJsTrue(VISIBLE_TERMINAL + ".includes('ACDIRECT42')");
+        JSONObject directFile = null;
+        long deadline = SystemClock.uptimeMillis() + WAIT_TIMEOUT_MILLIS;
+        do {
+            directFile = controller(new JSONObject().put("op", "direct-host-file").put("name", file).put("phase", "account-direct-io"));
+            if (("ACDIRECT42_" + run + "\n").equals(directFile.optString("content"))) break;
+            Thread.sleep(100);
+        } while (SystemClock.uptimeMillis() < deadline);
+        assertTrue("direct shell created a real regular file", directFile.getBoolean("exists") && "regular".equals(directFile.getString("type")));
+        assertEquals("independent direct host exec succeeded", 0, directFile.getInt("hostExecExitCode"));
+        assertEquals("independent direct file read succeeded", 0, directFile.getInt("readExitCode"));
+        assertEquals("typed bytes executed on the direct host", "ACDIRECT42_" + run + "\n", directFile.getString("content"));
+        Log.i(TAG, "ACCOUNT_DIRECT_VISIBLE_TERMINAL " + JSONObject.quote(evalString(VISIBLE_TERMINAL)));
+        OnboardingViewportCapture.capture(scenario, evalString("JSON.stringify((()=>{const r=[...document.querySelectorAll('.xterm-screen')].find(n=>n.offsetParent!==null).getBoundingClientRect();return {left:r.left,top:r.top,right:r.right,bottom:r.bottom,innerWidth};})())"), run, "account-direct-terminal-viewport");
+        screenshot("account-direct-terminal");
+        JSONArray directDials = nativeDials();
+        assertTrue("a real native direct SSH dial was observed", directDials.length() > 0);
+        for (int i = 0; i < directDials.length(); i++) {
+            JSONObject dial = directDials.getJSONObject(i);
+            assertTrue("direct endpoint never becomes a Gateway dial", dial.isNull("gateway"));
+            assertEquals("localhost", dial.getString("hostname"));
+            assertEquals(hello.getInt("directPort"), dial.getInt("port"));
+            assertEquals("key-handle", dial.getString("credentialKind"));
+        }
+        assertEquals("direct SSH never adopts the account host on the phone", "[]", evalString("localStorage.getItem('" + HOSTS_KEY + "')"));
+        JSONObject firstDirectConnection = nativeConnectionRef(directDials.length() - 1);
+        assertEquals("the first direct native transport is live", "connected", nativeConnectionState(firstDirectConnection, "direct-before-resume"));
+        click("button[title=\"Back to hosts\"]");
+        awaitJsTrue("[...document.querySelectorAll('.host-row')].some(n=>n.textContent.includes('account-direct'))");
+        evalRaw("[...document.querySelectorAll('.host-row')].find(n=>n.textContent.includes('account-direct')).click();'resumed'");
+        awaitJsTrue("!!document.querySelector('button[title=\"Back to hosts\"]')", 120_000);
+        awaitJsTrue(VISIBLE_TERMINAL + ".replace(/\\s+/g,'').includes(" + JSONObject.quote("ACDIRECT42_" + run) + ")", 120_000);
+        assertEquals("returning to the connected account row resumes without another native dial", directDials.length(), nativeDials().length());
+        assertEquals("resume retains the same live native transport", "connected", nativeConnectionState(firstDirectConnection, "direct-after-resume"));
+        screenshot("account-direct-resumed-terminal");
+        click("button[title=\"Back to hosts\"]");
+        awaitJsTrue("!!document.querySelector('[data-testid=trusted-server-connect]:not([disabled])')");
+        assertTrue("account-only direct row remains available", Boolean.parseBoolean(evalString("String([...document.querySelectorAll('.host-row')].some(n=>n.textContent.includes('account-direct')))")));
+        int gatewayMark = controller(new JSONObject().put("op", "mark")).getInt("mark");
+        tapHost(DEVICE_HOST);
+        awaitJsTrue(VISIBLE_TERMINAL + ".includes('$')", 120_000);
+        assertTrue("Gateway still authenticates with its verified vault key", acceptedFingerprints(sshdSince(gatewayMark, "account-direct-gateway-connect")).contains(fingerprint));
+        JSONArray allDials = nativeDials();
+        assertTrue("a separate Gateway dial followed the direct dial", allDials.length() > directDials.length());
+        for (int i = directDials.length(); i < allDials.length(); i++)
+            assertNotNull("Gateway path retains its transport marker", allDials.getJSONObject(i).optJSONObject("gateway"));
+        screenshot("account-direct-gateway-terminal");
+        JSONObject gatewayConnection = nativeConnectionRef(allDials.length() - 1);
+        assertEquals("the Gateway native transport is live", "connected", nativeConnectionState(gatewayConnection, "gateway-before-direct-switch"));
+        click("button[title=\"Back to hosts\"]");
+        awaitJsTrue("[...document.querySelectorAll('.host-row')].some(n=>n.textContent.includes('account-direct'))");
+        evalRaw("[...document.querySelectorAll('.host-row')].find(n=>n.textContent.includes('account-direct')).click();'switched'");
+        awaitJsTrue("!!document.querySelector('button[title=\"Back to hosts\"]')", 120_000);
+        awaitJsTrue(VISIBLE_TERMINAL + ".replace(/\\s+/g,'').includes(" + JSONObject.quote("ACDIRECT42_" + run) + ")", 120_000);
+        JSONArray reverseDials = nativeDials();
+        // androidApi retains one controller per host; reconnecting a usable
+        // direct controller reauthorizes its target without another native dial.
+        assertEquals("Gateway to direct resumes the existing pooled transport without another native dial", allDials.length(), reverseDials.length());
+        assertEquals("the original direct native transport remains live", "connected", nativeConnectionState(firstDirectConnection, "direct-after-gateway-return"));
+        // A previously visible receipt alone could be stale. New input must
+        // execute on the distinct direct host after the Gateway round trip.
+        String returnFile = "gwlane-account-direct-return-" + run + ".txt";
+        typeCommand("echo ACDIRECTRETURN$((6*7))_" + run + " | tee ~/" + returnFile);
+        awaitJsTrue(VISIBLE_TERMINAL + ".replace(/\\s+/g,'').includes(" + JSONObject.quote("ACDIRECTRETURN42_" + run) + ")", 120_000);
+        JSONObject returnedFile = null;
+        deadline = SystemClock.uptimeMillis() + WAIT_TIMEOUT_MILLIS;
+        do {
+            returnedFile = controller(new JSONObject().put("op", "direct-host-file").put("name", returnFile).put("phase", "account-direct-return-io"));
+            if (("ACDIRECTRETURN42_" + run + "\n").equals(returnedFile.optString("content"))) break;
+            Thread.sleep(100);
+        } while (SystemClock.uptimeMillis() < deadline);
+        assertTrue("returned direct shell created a real regular file", returnedFile.getBoolean("exists") && "regular".equals(returnedFile.getString("type")));
+        assertEquals("independent returned direct host exec succeeded", 0, returnedFile.getInt("hostExecExitCode"));
+        assertEquals("independent returned direct file read succeeded", 0, returnedFile.getInt("readExitCode"));
+        assertEquals("fresh typed bytes reached the direct host after Gateway", "ACDIRECTRETURN42_" + run + "\n", returnedFile.getString("content"));
+        screenshot("account-direct-returned-terminal");
+        assertEquals("direct host stays account-only while authenticated Gateway trust is retained", "true",
+                evalString("String((()=>{const rows=JSON.parse(localStorage.getItem('" + HOSTS_KEY + "')??'[]');return !rows.some(r=>r.name==='account-direct') && rows.some(r=>r.name==='gw-dev' && r.trustedVault);})())"));
+        assertEquals("connecting writes no account settings", 0, backend.writes);
+        assertNoRoutingTokenEscaped();
+        Log.i(TAG, "ACCOUNT_DIRECT " + new JSONObject().put("directDials", directDials.length()).put("gatewayDials", allDials.length() - directDials.length())
+                .put("noLocalCopy", true).put("normalTofu", true).put("vaultCredential", true).put("hostFile", file)
+                .put("resumeReusedNativeTransport", true).put("reverseDirectDials", reverseDials.length() - allDials.length())
+                .put("returnedHostFile", returnFile).put("returnReusedNativeTransport", true));
     }
 
     /** Real native expiry/renewal rejection, shared cleanup, same-vault reauthentication and PTY recovery. */
@@ -957,7 +1105,7 @@ public final class GatewayDockerJourneyTest {
         for (int i = 0; i < recent.length(); i++) previousDials.put(recent.get(i));
         scenario.close(); scenario = null;
         for (String prefs : new String[]{AUTH_PREFS, "pocketshell_vault_device_v1"})
-            targetContext().deleteSharedPreferences(prefs);
+            clearFixturePreferences(prefs);
         selectVariant(variant);
         launchSignedInAndUnlocked();
     }
@@ -1105,11 +1253,11 @@ public final class GatewayDockerJourneyTest {
                 + "const nativePromise=window.Capacitor.nativePromise.bind(window.Capacitor);"
                 + "window.Capacitor.nativePromise=(plugin,method,options)=>{"
                 + "if(plugin==='SshCapability'&&method==='connect') window.__gwDials.push({at:Date.now(),"
-                + "gateway:options?.gateway ?? null, link:options?.link ?? null, hostname:String(options?.hostname ?? ''),"
+                + "gateway:options?.gateway ?? null, link:options?.link ?? null, hostname:String(options?.hostname ?? ''),port:Number(options?.port ?? 0),"
                 + "credentialKind:String(options?.credential?.kind ?? ''), handleId:String(options?.credential?.handleId ?? ''),"
                 + " expectedHostKey:options?.expectedHostKey ?? null});"
                 + "const pending=nativePromise(plugin,method,options);if(plugin!=='SshCapability'||method!=='connect')return pending;"
-                + "const index=window.__gwDials.length-1;return pending.then(result=>{window.__gwDialResults.push({index,outcome:'fulfilled'});return result;},"
+                + "const index=window.__gwDials.length-1;return pending.then(result=>{window.__gwDialResults.push({index,outcome:'fulfilled',connectionId:result.connectionId,generationId:result.generationId});return result;},"
                 + "error=>{const code=/^[A-Z][A-Z0-9_]{0,63}$/.test(error?.code??'')?error.code:'OTHER';window.__gwDialResults.push({index,outcome:'rejected',code});throw error;});}; return 'installed';})()"));
     }
 
@@ -1118,6 +1266,26 @@ public final class GatewayDockerJourneyTest {
         JSONArray current = new JSONArray(evalString("JSON.stringify(window.__gwDials ?? [])"));
         for (int i = 0; i < current.length(); i++) result.put(current.get(i));
         return result;
+    }
+
+    /** Public native transport identity from a successful shipping connect, never a fake id. */
+    private JSONObject nativeConnectionRef(int dialIndex) throws Exception {
+        JSONObject result = new JSONObject(evalString("JSON.stringify((window.__gwDialResults??[]).find(r=>r.index==="
+                + dialIndex + "&&r.outcome==='fulfilled')??{})"));
+        assertTrue("successful native dial exposes its connection identity: " + result, result.has("connectionId") && result.has("generationId"));
+        return result;
+    }
+
+    /** Read-only shipping native state verifies the transport behind a visible terminal. */
+    private String nativeConnectionState(JSONObject reference, String phase) throws Exception {
+        JSONObject request = new JSONObject().put("requestId", "account-direct-" + phase)
+                .put("connectionId", reference.getString("connectionId")).put("generationId", reference.getString("generationId"));
+        evalRaw("(() => {window.__gwConnectionRead=null;window.Capacitor.nativePromise('SshCapability','getConnectionState',"
+                + request + ").then(r=>{window.__gwConnectionRead={state:r.state};},e=>{window.__gwConnectionRead={error:String(e?.code??e)};});return 'reading';})()");
+        awaitJsTrue("window.__gwConnectionRead!==null");
+        JSONObject reply = new JSONObject(evalString("JSON.stringify(window.__gwConnectionRead)"));
+        assertFalse("native transport state is readable: " + reply, reply.has("error"));
+        return reply.getString("state");
     }
 
     /** D28: no gateway host is ever dialled as plain SSH. */

@@ -13,6 +13,7 @@ import java.io.File;
 import java.io.IOException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
 import org.json.JSONArray;
 
 /**
@@ -75,7 +76,7 @@ public final class GatewayPairingPlugin extends Plugin {
     public void devices(PluginCall call) {
         String requestId = call.getString("requestId", "");
         String expectedEmail = call.getString("expectedAccountEmail");
-        worker.execute(() -> {
+        submit(call, () -> {
             try {
                 call.resolve(new JSObject().put("requestId", requestId)
                         .put("devices", directory.devices(expectedEmail)));
@@ -89,11 +90,24 @@ public final class GatewayPairingPlugin extends Plugin {
         });
     }
 
+    /**
+     * Runs a plugin call on the worker. A call that arrives after the plugin was
+     * destroyed (a dying WebView racing the activity teardown) is rejected rather
+     * than letting RejectedExecutionException crash the whole process.
+     */
+    private void submit(PluginCall call, Runnable task) {
+        try {
+            worker.execute(task);
+        } catch (RejectedExecutionException destroyed) {
+            call.reject("Plugin was destroyed before the call could run");
+        }
+    }
+
     /** The current account's pairings: public data only, no account subject. */
     @PluginMethod
     public void list(PluginCall call) {
         String requestId = call.getString("requestId", "");
-        worker.execute(() -> {
+        submit(call, () -> {
             try {
                 String subject = session.subject();
                 JSONArray rows = new JSONArray();
@@ -124,7 +138,7 @@ public final class GatewayPairingPlugin extends Plugin {
         String hostKey = call.getString("hostKey");
         String keyHandleId = call.getString("keyHandleId");
         String expectedEmail = call.getString("expectedAccountEmail");
-        worker.execute(() -> {
+        submit(call, () -> {
             try {
                 GatewayPairingStore.Pairing pairing = pairForAccount(sharedStore(getContext()), session,
                         this::vaultHasHandle, expectedEmail, serverUrl, deviceId, hostKey, keyHandleId);
@@ -147,7 +161,7 @@ public final class GatewayPairingPlugin extends Plugin {
         String requestId = call.getString("requestId", "");
         String serverUrl = call.getString("serverUrl");
         String deviceId = call.getString("deviceId");
-        worker.execute(() -> {
+        submit(call, () -> {
             try {
                 // The whole target is validated before the store is even
                 // opened: a missing or malformed origin/device removes nothing.
@@ -178,7 +192,7 @@ public final class GatewayPairingPlugin extends Plugin {
 
     @PluginMethod
     public void trustedRevisions(PluginCall call) {
-        worker.execute(() -> {
+        submit(call, () -> {
             try {
                 String account = call.getString("accountId");
                 requireAccountId(account);
@@ -191,7 +205,7 @@ public final class GatewayPairingPlugin extends Plugin {
 
     @PluginMethod
     public void saveTrustedRevision(PluginCall call) {
-        worker.execute(() -> {
+        submit(call, () -> {
             try {
                 String account = call.getString("accountId");
                 requireAccountId(account);
@@ -205,7 +219,7 @@ public final class GatewayPairingPlugin extends Plugin {
     /** Only the authenticated, decrypted vault descriptor path calls this. Local phone keys are never substituted. */
     @PluginMethod
     public void installTrustedHost(PluginCall call) {
-        worker.execute(() -> {
+        submit(call, () -> {
             try {
                 JSObject host = call.getObject("host");
                 if (host == null || !"active".equals(host.getString("status"))) throw new IOException("Missing active trusted host.");

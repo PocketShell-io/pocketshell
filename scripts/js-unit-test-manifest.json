@@ -883,6 +883,12 @@
     "tests/unit/androidVaultConnect.test.ts": {
       "suite": "Android dials account and gateway hosts with the account key vault (key-vault W4)",
       "tests": [
+        "explicit accountDirect uses the verified vault binding without adopting or persisting a phone host",
+        "explicit accountDirect still requires the normal first-contact host-key decision",
+        "explicit accountDirect refuses missing or changed aliases and endpoint fields before credential lookup",
+        "explicit accountDirect refuses local and every managed marker on both the request and current account row",
+        "explicit accountDirect refuses absent locked unbound and unavailable vaults without phone-key fallback",
+        "explicit accountDirect can unlock the current vault once and dial its in-memory key",
         "dials a web-saved key for an account host from memory, with no key picker and nothing saved",
         "dials a vault password entry as a password credential",
         "a locked vault asks to unlock, never for a key, then dials the vault key",

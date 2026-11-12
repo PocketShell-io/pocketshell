@@ -41,9 +41,9 @@ grep -Eq '^FROM[[:space:]]+debian:trixie-slim([[:space:]]|$)' "$DOCKERFILE" \
   || fail "Dockerfile.agents must use the glibc trixie base"
 ok "agents image uses the glibc base required by the pinned aplexer release"
 
-grep -Fq 'curl -fsSL -o /usr/bin/a' "$DOCKERFILE" \
+grep -Eq 'curl -fsSL .*--retry-all-errors .*-o /usr/bin/a ' "$DOCKERFILE" \
   || fail "Dockerfile.agents does not install the bundled a binary"
-grep -Fq 'curl -fsSL -o /usr/bin/aplexer' "$DOCKERFILE" \
+grep -Eq 'curl -fsSL .*--retry-all-errors .*-o /usr/bin/aplexer ' "$DOCKERFILE" \
   || fail "Dockerfile.agents does not install the sibling aplexer worker"
 grep -Fq 'sed -n' "$DOCKERFILE" \
   || fail "Dockerfile.agents must derive the pins from fixture-pins.txt"

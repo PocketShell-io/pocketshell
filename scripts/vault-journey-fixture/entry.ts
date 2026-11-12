@@ -101,6 +101,8 @@ async function main(): Promise<void> {
   must('bindHost', await store.bindHost(args.alias, keyId, args.gatewayAuth));
   if (args.trustedHello) {
     const hello = JSON.parse(readFileSync(args.trustedHello, 'utf8'));
+    if (hello.directPort !== undefined)
+      must('bind direct account host', await store.bindHost('account-direct', keyId, 'host'));
     const devicePublicKey = randomBytes(32).toString('base64url');
     must('managed bindHost', await store.bindHost(args.alias, keyId, 'managed'));
     must('trusted host', await store.putTrustedHost(`google:${hello.sub}`, { serverUrl: hello.serverUrl, deviceId: hello.deviceId }, {

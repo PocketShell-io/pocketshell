@@ -211,6 +211,20 @@ jobs:
           tests/scripts/shared-app-runner-cleanup-test.sh
           scripts/test-docker-test-hygiene.sh
 
+      # services.gradle.org intermittently times out the wrapper download
+      # (10s, no retry), which failed every packaged lane at once. Fetch the
+      # distribution here with retries so the build step finds it cached.
+      - name: Pre-fetch Gradle wrapper distribution
+        shell: bash
+        run: |
+          for attempt in 1 2 3 4 5; do
+            android/gradlew -p android --version && exit 0
+            echo "gradle wrapper download attempt ${attempt} failed" >&2
+            sleep $((attempt * 10))
+          done
+          echo 'FAIL: could not fetch the Gradle wrapper distribution after 5 attempts' >&2
+          exit 1
+
       - name: Build Android debug APK
         run: pnpm build:android:debug
 

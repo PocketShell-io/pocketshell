@@ -1303,6 +1303,37 @@ public abstract class SharedAppDockerJourneyTest {
                 + "if(!b)throw Error('Add a host action missing');b.click();return 'ok';})()");
     }
 
+    /**
+     * Reproduce hosted selection drift after launch, immediately before each
+     * form editor is focused. Merely seeing a keyboard must not let Gboard /
+     * LatinIME stand in for the scripted service that receives the edit ops.
+     */
+    private void driftJ19SelectionToStockIme() {
+        String stock = null;
+        for (String candidate : ScriptedIme.shell("ime list -a -s").split("\\n")) {
+            candidate = candidate.trim();
+            if (candidate.contains("LatinIME") && !candidate.equals(ime.id())) {
+                stock = candidate;
+                break;
+            }
+        }
+        assertTrue("J19 drift regression requires an installed stock LatinIME", stock != null);
+        ScriptedIme.shell("ime enable " + stock);
+        ScriptedIme.shell("ime set " + stock);
+        String expanded = stock.replace("/.", "/" + stock.substring(0, stock.indexOf('/')) + ".");
+        long deadline = SystemClock.uptimeMillis() + 10_000;
+        while (SystemClock.uptimeMillis() < deadline) {
+            String dump = ScriptedIme.shell("dumpsys input_method");
+            if (stock.equals(ScriptedIme.shell("settings get secure default_input_method").trim())
+                    && (dump.contains("mCurMethodId=" + stock) || dump.contains("mCurMethodId=" + expanded))) {
+                Log.i(TAG, "J19_POST_SELECTION_DRIFT stock=" + stock);
+                return;
+            }
+            SystemClock.sleep(100);
+        }
+        throw new AssertionError("could not stage J19 post-selection IME drift: " + ScriptedIme.inputMethodState());
+    }
+
     /** A bound InputConnection can accept text before its native keyboard is visible. */
     private void focusJ19FormInputWithNativeIme(String selector) throws Exception {
         String quoted = JSONObject.quote(selector);
@@ -1331,6 +1362,10 @@ public abstract class SharedAppDockerJourneyTest {
             WebView view = activity.getBridge().getWebView();
             ((InputMethodManager) activity.getSystemService(Context.INPUT_METHOD_SERVICE)).showSoftInput(view, 0);
         });
+        // A visible stock keyboard also satisfies the inset/focus checks below.
+        // Recover post-launch selection drift and prove our service owns this
+        // app's InputConnection before sending it scripted edits, as terminals do.
+        ime.awaitBoundTo(android.os.Process.myPid(), 20_000);
         long deadline = SystemClock.uptimeMillis() + 10_000;
         int stable = 0;
         String last = "not sampled";
@@ -1358,6 +1393,7 @@ public abstract class SharedAppDockerJourneyTest {
         awaitJsTrue("!!document.querySelector('.host-list, .empty')");
         openAddHostForm();
         awaitJsTrue("!!document.querySelector('[data-testid=host-name]')");
+        driftJ19SelectionToStockIme();
         focusJ19FormInputWithNativeIme("[data-testid=host-name]");
         runIme(ScriptedIme.script().commit("IME host"));
         awaitJsTrue("document.querySelector('[data-testid=host-name]').value === 'IME host'");
@@ -1380,6 +1416,7 @@ public abstract class SharedAppDockerJourneyTest {
         awaitJsTrue("document.querySelector('section.add-form')?.offsetParent !== null");
         setValue("section.add-form input[type=number]", "19001");
         setValue("section.add-form input.host", "");
+        driftJ19SelectionToStockIme();
         focusJ19FormInputWithNativeIme("section.add-form input.host");
         runIme(ScriptedIme.script().commit("localhost"));
         awaitJsTrue("document.querySelector('section.add-form input.host').value === 'localhost'");

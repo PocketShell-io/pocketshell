@@ -29,8 +29,8 @@ RUN set -eu; \
     arch="$(dpkg --print-architecture)"; \
     case "$arch" in amd64) asset_arch=linux-amd64 ;; arm64) asset_arch=linux-arm64 ;; *) exit 1 ;; esac; \
     base="https://github.com/alexeygrigorev/aplexer/releases/download/v${ver}"; \
-    curl -fsSL -o /usr/bin/a "$base/a-${asset_arch}"; \
-    curl -fsSL -o /usr/bin/aplexer "$base/aplexer-${asset_arch}"; \
+    curl -fsSL --retry 8 --retry-delay 5 --retry-all-errors --connect-timeout 20 -o /usr/bin/a "$base/a-${asset_arch}"; \
+    curl -fsSL --retry 8 --retry-delay 5 --retry-all-errors --connect-timeout 20 -o /usr/bin/aplexer "$base/aplexer-${asset_arch}"; \
     chmod +x /usr/bin/a /usr/bin/aplexer; \
     pip install --break-system-packages --no-cache-dir "pocketshell==${cli_pin}"
 

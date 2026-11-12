@@ -65,6 +65,7 @@ let fitAddon: FitAddon | undefined;
 let resizeObserver: ResizeObserver | undefined;
 let renderListener: { dispose(): void } | undefined;
 let writeParsedListener: { dispose(): void } | undefined;
+let resizeListener: { dispose(): void } | undefined;
 let terminalTestInputInjector: ((data: string) => boolean) | undefined;
 const resizeReporter = new TerminalGeometryReporter();
 let foregroundRefitFrame = 0;
@@ -261,6 +262,7 @@ onMounted(() => {
     evidenceWindow.__ps2857TerminalWriteParsedCount = (evidenceWindow.__ps2857TerminalWriteParsedCount ?? 0) + 1;
     captureComposerSmokeTerminalText();
   });
+  resizeListener = terminal.onResize(() => captureComposerSmokeTerminalText());
   window.addEventListener(terminalGeometryRequestEvent, captureRequestedTerminalGeometry);
   terminal.onData((data) => {
     captureTerminalInputChunk(data);
@@ -294,6 +296,8 @@ onBeforeUnmount(() => {
   renderListener = undefined;
   writeParsedListener?.dispose();
   writeParsedListener = undefined;
+  resizeListener?.dispose();
+  resizeListener = undefined;
   if (visualViewportResizeListener) window.visualViewport?.removeEventListener('resize', visualViewportResizeListener);
   if (windowResizeListener) window.removeEventListener('resize', windowResizeListener);
   document.removeEventListener('visibilitychange', refitAfterVisibilityResume);

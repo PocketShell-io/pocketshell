@@ -42,9 +42,10 @@ REQUIRED_METHODS = frozenset(
         "recoversNativeAuthLossWithoutSignOutAndPreservesVaultTrustBeforeRealTerminal",
         "onboardingExistingVaultRequiresGoogleThenRejectsWrongPhraseBeforeOneUnlockAndRealTerminal",
         "onboardingCreatesMissingVaultAtomicallyInAppAndReopensItWithoutWeb",
+                "usesAccountOnlyDirectSshAlongsideTrustedGatewayForRealTerminals",
     }
 )
-SELF_TEST_CASES = 34
+SELF_TEST_CASES = 40
 
 
 class GateFailure(ValueError):
@@ -240,7 +241,46 @@ def validate_host(host_dir: Path) -> dict:
     sshd_text = sshd_log.read_text(encoding="utf-8", errors="replace")
     if not re.search(r"Received disconnect from 127\.0\.0\.1 port \d+:\d+: Could not verify `ssh-ed25519` host key .*\[preauth\]", sshd_text):
         raise GateFailure("sshd never saw the phone refuse the host key (the pin mismatch) during KEX")
+    validate_account_direct(host_dir, entries, authorized)
     return {"authorized": sorted(authorized), "rows": [sizes["size1"], sizes["size2"]]}
+
+
+def validate_account_direct(host_dir: Path, entries: list[dict], authorized: set[str]) -> None:
+    direct_keys = {r["fingerprint"] for r in _phase(entries, "direct-authorize", "account-direct-authorize")}
+    if direct_keys != authorized:
+        raise GateFailure("the account-only direct host did not authorize the vault's key")
+    gateway_keys = {a["fingerprint"] for row in _phase(entries, "sshd-since", "account-direct-gateway-connect") for a in row["accepted"]}
+    if not gateway_keys & authorized or gateway_keys - authorized:
+        raise GateFailure("the Gateway path after direct SSH did not use its verified vault key")
+    files = _phase(entries, "direct-host-file", "account-direct-io")
+    verified = []
+    for row in files:
+        match = re.fullmatch(r"gwlane-account-direct-([A-Za-z0-9_-]+)\.txt", row.get("name", ""))
+        if match and row.get("content") == f"ACDIRECT42_{match[1]}\n" and row.get("exists") is True and row.get("type") == "regular" \
+                and row.get("hostExecExitCode") == 0 and row.get("readExitCode") == 0 and row.get("hostExecStderr") == "" and row.get("readStderr") == "":
+            verified.append(row["name"])
+    if not verified:
+        raise GateFailure("no same-run independent direct SSH terminal file proves typed execution")
+    text = (host_dir.parent / "logcat.txt").read_text(encoding="utf-8", errors="replace")
+    receipts = [json.loads(line.split("ACCOUNT_DIRECT ", 1)[1]) for line in text.splitlines() if "ACCOUNT_DIRECT " in line]
+    if len(receipts) != 1:
+        raise GateFailure("exactly one account-only direct SSH runtime receipt is required")
+    row = receipts[0]
+    if any(row.get(key) is not True for key in ("noLocalCopy", "normalTofu", "vaultCredential")) or row.get("hostFile") not in verified \
+            or any(type(row.get(key)) is not int or row[key] < 1 for key in ("directDials", "gatewayDials")):
+        raise GateFailure("direct SSH/Gateway provenance, TOFU, credential or native dial evidence is incomplete")
+    visible = [json.loads(line.split("ACCOUNT_DIRECT_VISIBLE_TERMINAL ", 1)[1]) for line in text.splitlines() if "ACCOUNT_DIRECT_VISIBLE_TERMINAL " in line]
+    if len(visible) != 1 or not isinstance(visible[0], str) or "ACDIRECT42" not in visible[0]:
+        raise GateFailure("the direct terminal's authoritative visible text is missing or blank")
+    (host_dir.parent / "account-direct-visible-terminal.txt").write_text(visible[0], encoding="utf-8")
+    hello = json.loads((host_dir / "hello.json").read_text())
+    direct_key = " ".join((host_dir / "direct-host-key.pub").read_text().split()[:2])
+    if hello.get("directHostKeyLine") != direct_key or not re.fullmatch(r"SHA256:[A-Za-z0-9+/]{43}", hello.get("directFingerprint", "")):
+        raise GateFailure("the direct SSH TOFU key is not bound to the sidecar's own public host key")
+    for name in ("account-direct-picker", "account-direct-trust", "account-direct-terminal", "account-direct-gateway-terminal", "account-direct-terminal-viewport"):
+        frame = host_dir.parent / "screenshots" / f"{name}.png"
+        if not frame.is_file() or frame.stat().st_size < 1024 or not frame.read_bytes().startswith(b"\x89PNG\r\n\x1a\n"):
+            raise GateFailure(f"account-only direct SSH screenshot missing or invalid: {name}")
 
 
 def validate_authloss_runtime(artifacts: Path) -> None:
@@ -303,9 +343,10 @@ def _write_xml(directory: Path, methods: list[str], failed: str | None = None) -
 def _write_host(directory: Path, **overrides) -> None:
     key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAINV1em8xlnD0YdhVrl9boi0uLwrfiqee7NBQdXL/8jT6"
     hello = {"deviceId": "gwlane-x", "serverUrl": "wss://localhost:3287", "hostKeyLine": key,
-             "wrongHostKeyLine": "ssh-ed25519 AAAAWRONG"}
+             "wrongHostKeyLine": "ssh-ed25519 AAAAWRONG", "directHostKeyLine": key, "directFingerprint": "SHA256:" + "d" * 43}
     (directory / "hello.json").write_text(json.dumps(hello))
     (directory / "host-key.pub").write_text(key + "\n")
+    (directory / "direct-host-key.pub").write_text(key + "\n")
     (directory / "pinned-key.json").write_text(json.dumps({"hostKeyLine": key, "deviceId": "gwlane-x"}))
     open_line = "INFO tunnel: client session open device=gwlane-x account=google:s\n"
     (directory / "gateway.log").write_text(
@@ -360,6 +401,15 @@ def _write_host(directory: Path, **overrides) -> None:
          "reply":{"ok":True,"name":"gwlane-authloss-io-r.txt","content":overrides.get("authloss_content", "GWAUTH42_r\n"),
                   "exists":True,"type":"regular","readExitCode":0,"sizeBytes":11}},
     ])
+    entries.extend([
+        entry("direct-authorize", "account-direct-authorize", fingerprint=fpv),
+        entry("sshd-since", "account-direct-gateway-connect", accepted=[{"fingerprint": overrides.get("direct_gateway_fp", fpv)}]),
+        {"request": {"op": "direct-host-file", "phase": "account-direct-io"}, "reply": {
+            "ok": True, "name": "gwlane-account-direct-r.txt", "content": overrides.get("direct_content", "ACDIRECT42_r\n"),
+            "exists": True, "type": "regular", "hostExecExitCode": 0, "readExitCode": 0, "hostExecStderr": "", "readStderr": ""}},
+    ])
+    if overrides.get("direct_file_missing"):
+        entries = [e for e in entries if e["request"].get("op") != "direct-host-file"]
     receipt = {"losses":3,"silentFailures":3,"interactive":4,"gatewayChallenges":1,"signOuts":0,"cloudWrites":0,"floor":1,
                "encryptedSlotsUnchanged":True,"protectedBytesSurviveLoss":not overrides.get("authloss_custody_bad",False),
                "rememberBytesUnchanged":True,"scopeStable":True,"beforeDropDials":1,"preTapDials":overrides.get("authloss_pre_tap_dials",2),"finalDials":3,
@@ -382,6 +432,11 @@ def _write_host(directory: Path, **overrides) -> None:
         log.write("ONBOARDING_CREATED "+json.dumps({"epoch":3,"initializations":overrides.get("onboarding_initializations",1),"initializeAttempts":2,
                   "createGates":2,"unlockGates":1,"interactive":2,"ciphertextPreserved":True,"plaintextUploaded":False,"emptyServers":True})+"\n")
         log.write("ONBOARDING_VISIBLE_TERMINAL GWONBOARD42_r\n")
+    if not overrides.get("direct_receipt_missing"):
+        with (directory.parent / "logcat.txt").open("a") as log:
+            log.write('ACCOUNT_DIRECT_VISIBLE_TERMINAL "ACDIRECT42_r\\n$"\n')
+            log.write("ACCOUNT_DIRECT " + json.dumps({"directDials": 1, "gatewayDials": 1, "noLocalCopy": True,
+                "normalTofu": True, "vaultCredential": True, "hostFile": "gwlane-account-direct-r.txt"}) + "\n")
     shots = directory.parent / "screenshots"
     shots.mkdir(exist_ok=True)
     for name in ("authloss-initial-terminal", "authloss-login-required", "authloss-unlock-cancelled", "authloss-recovered-terminal"):
@@ -390,6 +445,10 @@ def _write_host(directory: Path, **overrides) -> None:
                  "onboarding-create-first-vault","onboarding-create-unavailable","onboarding-created-empty-servers","onboarding-created-vault-reopened",
                  "onboarding-existing-terminal-viewport","onboarding-setup-viewport"):
         (shots/f"{name}.png").write_bytes(b"\x89PNG\r\n\x1a\n"+b"x"*1024)
+    for name in ("account-direct-picker", "account-direct-trust", "account-direct-terminal", "account-direct-gateway-terminal", "account-direct-terminal-viewport"):
+        (shots / f"{name}.png").write_bytes(b"\x89PNG\r\n\x1a\n" + b"x" * 1024)
+    if overrides.get("direct_shot_missing"):
+        (shots / "account-direct-terminal.png").unlink()
     if overrides.get("onboarding_viewport_missing"):
         (shots/"onboarding-existing-terminal-viewport.png").unlink()
     if overrides.get("authloss_shot_missing"):
@@ -426,7 +485,7 @@ def self_test() -> int:
         h.mkdir()
         _write_xml(r, sorted(REQUIRED_METHODS))
         _write_host(h)
-        assert validate_results(r) == 7
+        assert validate_results(r) == 8
         validate_host(h)
         cases += 1
     expect_fail("missing method", results={"methods": sorted(REQUIRED_METHODS)[:1]})
@@ -462,6 +521,12 @@ def self_test() -> int:
     expect_fail("onboarding vault created twice",host={"onboarding_initializations":2})
     expect_fail("onboarding terminal output from another run",host={"onboarding_content":"GWONBOARD42_other\n"})
     expect_fail("onboarding terminal viewport missing",host={"onboarding_viewport_missing":True})
+    expect_fail("new direct SSH journey omitted", results={"methods": [m for m in sorted(REQUIRED_METHODS) if m != "usesAccountOnlyDirectSshAlongsideTrustedGatewayForRealTerminals"]})
+    expect_fail("direct SSH host oracle absent", host={"direct_file_missing": True})
+    expect_fail("direct SSH host output belongs to another run", host={"direct_content": "ACDIRECT42_other\n"})
+    expect_fail("post-direct Gateway uses a foreign key", host={"direct_gateway_fp": "SHA256:" + "x" * 43})
+    expect_fail("direct SSH runtime receipt absent", host={"direct_receipt_missing": True})
+    expect_fail("direct SSH terminal screenshot absent", host={"direct_shot_missing": True})
     if cases != SELF_TEST_CASES:
         raise AssertionError(f"ran {cases} self-test cases, expected {SELF_TEST_CASES}")
     print(f"PASS: gateway result checker self-test ({cases} cases)")

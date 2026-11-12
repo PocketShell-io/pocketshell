@@ -24,6 +24,7 @@ vi.mock('@xterm/xterm', () => ({
     open() {}
     onRender() { return { dispose() {} }; }
     onWriteParsed() { return { dispose() {} }; }
+    onResize() { return { dispose() {} }; }
     onData() { return { dispose() {} }; }
     write(_bytes: Uint8Array, callback?: () => void) { callback?.(); }
     clear() {}

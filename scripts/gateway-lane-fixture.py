@@ -132,8 +132,8 @@ class Fixture:
             raise RuntimeError(f"docker compose {' '.join(command)} exited {result.returncode}: {result.stderr.strip()[-400:]}")
         return result.stdout
 
-    def _host_result(self, script: str, stdin: str | None = None) -> subprocess.CompletedProcess:
-        command = ["exec", "-T", "host", "su", "testuser", "-s", "/bin/sh", "-c", "HOME=/home/testuser; cd; " + script]
+    def _host_result(self, script: str, stdin: str | None = None, service: str = "host") -> subprocess.CompletedProcess:
+        command = ["exec", "-T", service, "su", "testuser", "-s", "/bin/sh", "-c", "HOME=/home/testuser; cd; " + script]
         result = subprocess.run(
             ["docker", "compose", "-f", self.args.compose_file, "-p", self.args.project, *command],
             check=False, capture_output=True, text=True, timeout=60, input=stdin,
@@ -146,10 +146,11 @@ class Fixture:
             raise RuntimeError(f"host command exited {result.returncode}: {result.stderr.strip()[-400:]}")
         return result.stdout
 
-    def host_file(self, name: str) -> dict:
+    def host_file(self, name: str, direct: bool = False) -> dict:
         if HOST_FILE.fullmatch(name) is None:
             raise ValueError("host-file reads ~/gwlane-*.txt only")
-        result = self._host_result("python3 -c " + shlex.quote(host_file_program(name)))
+        script = "python3 -c " + shlex.quote(host_file_program(name))
+        result = self._host_result(script, service="direct-host") if direct else self._host_result(script)
         status = {"name": name, "hostExecExitCode": result.returncode, "hostExecStderr": result.stderr[-400:]}
         if result.returncode != 0:
             return {"ok": False, "content": "", **status}
@@ -196,6 +197,15 @@ class Fixture:
             self.host_exec("umask 077; mkdir -p .ssh; cat >> .ssh/authorized_keys", stdin=line + "\n")
             installed = self.host_exec("cat .ssh/authorized_keys").splitlines().count(line)
             return {"fingerprint": fp, "installedCopies": installed}
+        if op == "direct-authorize":
+            line = str(request.get("publicKey", "")).strip()
+            fp = fingerprint(line)
+            installed = self._host_result("umask 077; mkdir -p .ssh; cat >> .ssh/authorized_keys", stdin=line + "\n", service="direct-host")
+            if installed.returncode != 0:
+                raise RuntimeError("direct host authorization failed: " + installed.stderr[-400:])
+            return {"fingerprint": fp}
+        if op == "direct-host-file":
+            return self.host_file(str(request.get("name", "")), direct=True)
         if op == "mark":
             return {"mark": len(self.sshd_lines())}
         if op == "sshd-since":

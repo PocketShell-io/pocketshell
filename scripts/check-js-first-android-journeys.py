@@ -196,6 +196,7 @@ LANES = (
                 "recoversNativeAuthLossWithoutSignOutAndPreservesVaultTrustBeforeRealTerminal",
                 "onboardingExistingVaultRequiresGoogleThenRejectsWrongPhraseBeforeOneUnlockAndRealTerminal",
                 "onboardingCreatesMissingVaultAtomicallyInAppAndReopensItWithoutWeb",
+                "usesAccountOnlyDirectSshAlongsideTrustedGatewayForRealTerminals",
             }
         ),
     ),
