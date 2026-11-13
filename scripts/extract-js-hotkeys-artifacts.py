@@ -64,6 +64,7 @@ VIEWPORT_SCREENSHOTS = {
 }
 FAILURE_ONLY_SCREENSHOTS = {
     "fastkeys-prompt-reopen-failure.png",
+    "fastkeys-receiver-ready-failure.png",
 }
 REQUIRED_ASSETS = SCREENSHOTS | VIEWPORT_SCREENSHOTS | {"fastkeys-journey.json"}
 FAILURE_ASSETS = {
@@ -2103,6 +2104,26 @@ def self_test() -> int:
         failures += 1
     else:
         print("PASS: Prompt reopen failure screenshot is preserved as failure-only evidence")
+    receiver_ready_failure_assets = {
+        **keyboard_failure_assets,
+        "fastkeys-receiver-ready-failure.png": diagnostic_png,
+    }
+    try:
+        preserved = parse_assets(make_failure_log(receiver_ready_failure_assets), failure_run_id,
+                                 preserve_test_failure=True)
+        receiver_ready_preservation_ok = preserved == receiver_ready_failure_assets
+    except ExtractionFailure:
+        receiver_ready_preservation_ok = False
+    try:
+        parse_assets(make_failure_log(receiver_ready_failure_assets), failure_run_id)
+        receiver_ready_green_rejected = False
+    except ExtractionFailure:
+        receiver_ready_green_rejected = True
+    if not receiver_ready_preservation_ok or not receiver_ready_green_rejected:
+        print("FAIL: receiver READY failure screenshot is not preserved as failure-only evidence", file=sys.stderr)
+        failures += 1
+    else:
+        print("PASS: receiver READY failure screenshot is preserved as failure-only evidence")
     incomplete_keyboard_assets = dict(keyboard_failure_assets)
     incomplete_keyboard_assets.pop("fastkeys-row-closed-ime-open-viewport.png")
     try:

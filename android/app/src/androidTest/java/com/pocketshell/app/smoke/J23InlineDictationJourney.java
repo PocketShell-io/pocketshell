@@ -1737,7 +1737,24 @@ public final class J23InlineDictationJourney {
         markResizeFitPhase("send-receiver-command:" + readyMarker);
         click(".composer-shared-controls .send");
         awaitJsTrue("document.querySelector('[data-testid=prompt-draft]')?.value === ''");
-        awaitJsTrue(TerminalTextOracle.contains(readyMarker), 15_000);
+        // Send starts a composer/IME transition that refits the terminal several
+        // times (38x30 -> 37x12 -> 38x11 on the API 35 emulator) while the
+        // receiver prints READY. Run 43402577042 checked READY mid-transition and
+        // read a 37-col grid of a 38-col pane, so the marker was never readable.
+        // Only look for READY once SSH has acknowledged the grid xterm renders.
+        awaitStableAcknowledgedTerminalGrid();
+        try {
+            awaitJsTrue(TerminalTextOracle.contains(readyMarker), 15_000);
+        } catch (AssertionError error) {
+            String state = evalString("JSON.stringify({grid:window.__ps2875TerminalRuntimeGeometry??null,"
+                    + "status:document.querySelector('[data-testid=terminal-resize-status]')?.dataset.status??null,"
+                    + "pending:document.querySelector('.app-shell')?.dataset.sshTerminalResizePending??null,"
+                    + "acks:document.querySelector('.app-shell')?.dataset.sshTerminalResizeAcks??null,"
+                    + "fits:(window.__ps2884ResizeFitEvents??[]).slice(-20),acked:(window.__ps2884ResizeAckEvents??[]).slice(-20)})");
+            captureScreenshot("fastkeys-receiver-ready-failure.png");
+            throw new AssertionError("Receiver READY marker " + readyMarker + " not visible after the acknowledged grid settled; geometry="
+                    + state, error);
+        }
         SystemClock.sleep(300);
         closePromptComposerSheet();
         markResizeFitPhase("receiver-ready:" + readyMarker);
