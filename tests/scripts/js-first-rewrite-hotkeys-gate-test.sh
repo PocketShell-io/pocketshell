@@ -143,6 +143,8 @@ def require_contract(source: str, packaged_lanes: str, packaged_runner: str, art
         ("composer recording artifact self-test remains active", "complete prompt dictation recording/transcribing/review artifacts are accepted"),
         ("Prompt reopen failure screenshot is failure-only evidence", "fastkeys-prompt-reopen-failure.png"),
         ("Prompt reopen failure screenshot extraction self-test remains active", "Prompt reopen failure screenshot is preserved as failure-only evidence"),
+        ("receiver READY failure screenshot is failure-only evidence", "fastkeys-receiver-ready-failure.png"),
+        ("receiver READY failure screenshot extraction self-test remains active", "receiver READY failure screenshot is preserved as failure-only evidence"),
     )
     for label, needle in required:
         combined = source + packaged_lanes + packaged_runner + artifact_extractor + app
