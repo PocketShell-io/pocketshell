@@ -1458,8 +1458,12 @@ def validate_journey(journey: object) -> None:
                     raise ExtractionFailure("Main catalog endpoint evidence is missing target or rail bounds")
                 intersects = (right > content_left and left < content_right
                               and bottom > content_top and top < content_bottom)
-                contained = (left >= content_left and right <= content_right
-                             and top >= content_top and bottom <= content_bottom)
+                # Same 0.5 CSS px allowance as RectContainment.SUBPIXEL_TOLERANCE_PX in the
+                # Java journey (#3055): a fractional end-clamp scrollLeft can leave a full 48dp
+                # key a few tenths of a px past the rail edge; real clipping (>0.5px) still fails.
+                tol = 0.5
+                contained = (left >= content_left - tol and right <= content_right + tol
+                             and top >= content_top - tol and bottom <= content_bottom + tol)
                 if intersects != endpoint_intersects:
                     raise ExtractionFailure("Main catalog endpoint intersection flag does not match measured bounds")
                 if intersects and (not contained or key.get("endpointInsideContent") is not True
@@ -1970,6 +1974,10 @@ def self_test() -> int:
          with_missing_main_key(sample_journey()), False),
         ("Main endpoint clamp clipping Tab at x=6.38 rejected",
          with_main_endpoint_tab_clipped(sample_journey()), False),
+        ("Main endpoint ctrl-x 0.19px sub-pixel overhang accepted",
+         with_main_endpoint_ctrl_x_subpixel_overhang(sample_journey()), True),
+        ("Main endpoint ctrl-x 2px clipping rejected",
+         with_main_endpoint_ctrl_x_two_pixel_clip(sample_journey()), False),
         ("Ctrl catalog reachability between 48dp row boundaries rejected",
          with_partial_ctrl_row_offset(sample_journey()), False),
         ("undersized Ctrl catalog target rejected",
@@ -3318,6 +3326,29 @@ def with_main_endpoint_tab_clipped(journey: dict[str, object]) -> dict[str, obje
     tab["endpointIntersectsContent"] = True
     tab["endpointInsideContent"] = False
     tab["endpointScrollLeft"] = 183.619
+    return copied
+
+
+def with_main_endpoint_ctrl_x_subpixel_overhang(journey: dict[str, object]) -> dict[str, object]:
+    """Release run 37319816493 / JS full suite 43699558266: ctrl-x 0.19px past the rail at a fractional clamp."""
+    copied = json.loads(json.dumps(journey))
+    key = copied["catalogReachability"]["mainKeys"][-1]
+    key["endpointBounds"]["left"] = 398.381 - 48
+    key["endpointBounds"]["right"] = 398.381
+    key["endpointContentBounds"]["right"] = 398.190
+    key["endpointIntersectsContent"] = True
+    key["endpointInsideContent"] = True
+    key["endpointInsideViewport"] = True
+    key["endpointScrollLeft"] = 168
+    return copied
+
+
+def with_main_endpoint_ctrl_x_two_pixel_clip(journey: dict[str, object]) -> dict[str, object]:
+    copied = with_main_endpoint_ctrl_x_subpixel_overhang(journey)
+    key = copied["catalogReachability"]["mainKeys"][-1]
+    key["endpointBounds"]["left"] = 398.190 + 2 - 48
+    key["endpointBounds"]["right"] = 398.190 + 2
+    key["endpointInsideContent"] = False
     return copied
 
 
