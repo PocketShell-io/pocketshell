@@ -31,6 +31,7 @@ ${constants}
 ${method('    void typeCommand(String command)')}
 ${source.includes('    private static String terminalEnterScript()') ? method('    private static String terminalEnterScript()') : ''}
 static Scenario scenario = new Scenario();
+void awaitNativeWebViewFocus() {}
 static String evalString(String s) { record("EVAL",s); return s.startsWith("JSON.stringify") ? "{\\\"focused\\\":true}" : "focused"; }
 static void awaitJsTrue(String s) { record("WAIT",s); }
 static void assertTrue(String s, boolean b) {}
