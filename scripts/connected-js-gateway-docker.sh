@@ -338,8 +338,8 @@ pocketshell_run_without_avd_lock_fd "$ADB" -s "$ANDROID_SERIAL" push "$vault_dir
   || fail 'could not stage the vault fixture'
 rm -rf -- "$vault_dir"
 
-pocketshell_android_apply_lane_settings "$ADB" "$ANDROID_SERIAL" "$ARTIFACTS_DIR/lane-settings.txt" \
-  || fail "could not apply the lane input settings on $ANDROID_SERIAL"
+pocketshell_android_input_preflight "$ADB" "$ANDROID_SERIAL" "$ARTIFACTS_DIR/input-preflight.txt" \
+  || { pocketshell_android_capture_input_diagnostics "$ADB" "$ANDROID_SERIAL" "$ARTIFACTS_DIR/failure-diagnostics"; fail "Android input preflight failed on $ANDROID_SERIAL; see $ARTIFACTS_DIR/input-preflight.txt"; }
 pocketshell_run_without_avd_lock_fd "$ADB" -s "$ANDROID_SERIAL" logcat -c >/dev/null 2>&1 || true
 
 RESULTS_DIR="$ROOT_DIR/android/app/build/outputs/androidTest-results/connected/debug"
@@ -375,6 +375,9 @@ for surface in account-direct-terminal-viewport account-direct-terminal-viewport
   pocketshell_run_without_avd_lock_fd "$ADB" -s "$ANDROID_SERIAL" pull "/sdcard/Pictures/PocketShell/Onboarding/$RUN_ID/$surface.png" "$ARTIFACTS_DIR/screenshots/$surface.png" >/dev/null 2>&1 || true
   pocketshell_run_without_avd_lock_fd "$ADB" -s "$ANDROID_SERIAL" shell rm -f "/sdcard/Pictures/PocketShell/Onboarding/$RUN_ID/$surface.png" >/dev/null 2>&1 || true
 done
+if (( test_status != 0 )); then
+  pocketshell_android_capture_input_diagnostics "$ADB" "$ANDROID_SERIAL" "$ARTIFACTS_DIR/failure-diagnostics"
+fi
 collect_and_stop_fixture
 
 pocketshell_run_without_avd_lock_fd "$ADB" -s "$ANDROID_SERIAL" shell rm -f "$DEVICE_VAULT_FIXTURE" >/dev/null 2>&1 || true

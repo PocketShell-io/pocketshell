@@ -33,6 +33,7 @@ import org.json.JSONObject;
 import org.json.JSONTokener;
 import org.junit.After;
 import org.junit.Before;
+import org.junit.Rule;
 import org.junit.Test;
 import org.junit.FixMethodOrder;
 import org.junit.runners.MethodSorters;
@@ -94,6 +95,10 @@ public final class GatewayDockerJourneyTest {
     private static final String VISIBLE_TEXTAREA =
             "[...document.querySelectorAll('.xterm')].find((n)=>n.offsetParent!==null)?.querySelector('.xterm-helper-textarea')";
     private static final String PICKER_ERROR = "(document.querySelector('.picker p.error')?.textContent ?? '').trim()";
+
+    /** #2946: per-test dismiss-and-probe before each test's first injected input. */
+    @Rule
+    public final AndroidInputGuardRule inputGuard = new AndroidInputGuardRule();
 
     ActivityScenario<MainActivity> scenario;
     JSONObject hello;
@@ -1179,6 +1184,8 @@ public final class GatewayDockerJourneyTest {
      * (CI runs 43710655205, 43722666042). Wait for both, never resend the key.
      */
     private void awaitNativeWebViewFocus() throws Exception {
+        inputGuard.beforeFirstInjectedInput("typeCommand", this::evalRaw,
+                action -> scenario.onActivity(action::accept));
         long deadline = SystemClock.uptimeMillis() + WAIT_TIMEOUT_MILLIS;
         String last = "";
         while (SystemClock.uptimeMillis() < deadline) {
