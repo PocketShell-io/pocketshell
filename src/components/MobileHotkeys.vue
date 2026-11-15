@@ -12,6 +12,7 @@ import { createMobileHotkeysActions, createMobileHotkeysState, type MobileHotkey
 import type { InlineDictationState } from '../session/inlineDictation';
 import { noSpeechWarningCopy } from '../session/dictationNoSpeech';
 import { usePrefersReducedMotion } from './prefersReducedMotion';
+import { observeMainKeyRail } from './mobileHotkeysRail';
 
 // Keep the one-tap keys in the terminal flow. The full catalog is a compact,
 // on-demand grid with its own vertical scroll area.
@@ -83,6 +84,10 @@ const mainKeyRows = Array.from(
   ),
 );
 const ctrlRows = HOTKEY_CTRL_PAGE_ROWS;
+const mainRail = ref<HTMLElement>();
+watch(mainRail, (rail, _previous, cleanup) => {
+  if (rail?.parentElement && typeof ResizeObserver !== 'undefined') cleanup(observeMainKeyRail(rail));
+}, { flush: 'post' });
 const hasPersistentStatus = computed(() => Boolean(slots['persistent-status']));
 const hasPersistentControls = computed(() => Boolean(slots['persistent-controls']));
 const hasPersistentAccessory = computed(() => Boolean(slots['persistent-accessory']));
@@ -501,6 +506,7 @@ defineExpose({
         </header>
         <div
           v-if="page === 'main'"
+          ref="mainRail"
           class="mobile-hotkeys__catalog-scroll mobile-hotkeys__main-keys"
           data-testid="mobile-hotkeys-main-page"
           id="mobile-hotkeys-main-page"
@@ -1112,8 +1118,7 @@ defineExpose({
   overflow-y: hidden;
   scroll-snap-type: x mandatory;
   padding-inline: 0;
-  padding-right: 0.33px;
-  scroll-padding-inline: 0;
+  scroll-padding-inline: var(--sp-1);
   overscroll-behavior-x: contain;
   touch-action: pan-x;
 }
@@ -1126,6 +1131,9 @@ defineExpose({
   flex: 0 0 48px;
   align-items: center;
   gap: var(--sp-2);
+  /* Split the final slot gap across both edges. Whole-slot clipping plus these
+     insets keeps keys away from either fractional-DPR clipping boundary. */
+  padding-inline: var(--sp-1);
 }
 .mobile-hotkeys__ctrl-grid { justify-content: flex-start; }
 .mobile-hotkeys__ctrl-row { display: flex; height: 48px; min-height: 48px; flex: 0 0 48px; align-items: center; justify-content: flex-start; gap: var(--sp-2); scroll-snap-align: start; scroll-snap-stop: always; }
@@ -1140,11 +1148,6 @@ defineExpose({
   font: 500 var(--fs-300)/1.1 var(--font-mono);
   scroll-snap-align: start;
   scroll-snap-stop: always;
-}
-.mobile-hotkeys__main-row > .mobile-hotkeys__key--catalog:last-child {
-  scroll-snap-align: end;
-  /* Balance the end snap so both edge keys stay inside fractional WebView bounds. */
-  margin-right: 0.12px;
 }
 .mobile-hotkeys__key--catalog:hover:not(:disabled) {
   border-color: var(--accent-dim);

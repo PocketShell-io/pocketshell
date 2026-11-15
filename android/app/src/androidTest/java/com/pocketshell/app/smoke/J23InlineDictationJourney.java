@@ -1723,23 +1723,26 @@ public final class J23InlineDictationJourney {
     }
 
     private void prepareByteCapture(String rawPath, int byteCount, String readyMarker, String doneMarker) throws Exception {
-        String geometryOraclePath = rawPath + ".geometry";
         // Keep the receiver's temporary sampler out of the parent interactive
         // shell's job table. Bash's long Terminated notice can evict DONE from
         // the 38x6 alternate-screen viewport before the visibility check.
-        String command = "(set +m; stty raw -echo; (while :; do stty size </dev/tty >> " + geometryOraclePath
-                + "; sleep 0.1; done) & ptyGeometryMonitor=$!; printf '\\r\\n" + readyMarker + "\\r\\n'; dd bs=1 count=" + byteCount
-                + " status=none > " + rawPath + "; stty sane; kill \"$ptyGeometryMonitor\" 2>/dev/null || true;"
-                + " wait \"$ptyGeometryMonitor\" 2>/dev/null || true; printf '\\n" + doneMarker + "\\n')";
+        String command = FastKeyReceiverCommand.build(rawPath, byteCount, readyMarker, doneMarker);
         markResizeFitPhase("set-receiver-draft:" + readyMarker);
         openPromptComposerSheet();
         setValue("[data-testid=prompt-draft]", command);
         markResizeFitPhase("send-receiver-command:" + readyMarker);
         click(".composer-shared-controls .send");
         awaitJsTrue("document.querySelector('[data-testid=prompt-draft]')?.value === ''");
-        awaitJsTrue(TerminalTextOracle.contains(readyMarker), 15_000);
-        SystemClock.sleep(300);
+        // READY must be produced after the post-Send composer/IME resize, not
+        // merely read later: a 37-column render of a 38-column host redraw can
+        // permanently lose the final character of each row (run 43402577042).
         closePromptComposerSheet();
+        tapDomCenter(".terminal-viewport");
+        awaitImeVisible(true);
+        awaitJsTrue("document.querySelector('.app-shell')?.dataset.keyboardVisible === 'true'");
+        awaitStableAcknowledgedTerminalGrid();
+        InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_ENTER);
+        awaitJsTrue(TerminalTextOracle.contains(readyMarker), 15_000);
         markResizeFitPhase("receiver-ready:" + readyMarker);
     }
 
@@ -3254,17 +3257,19 @@ public final class J23InlineDictationJourney {
      * another resize within it.
      */
     private void awaitStableAcknowledgedTerminalGrid() throws Exception {
-        long deadline = SystemClock.uptimeMillis() + WAIT_TIMEOUT_MILLIS;
-        while (true) {
-            awaitAcknowledgedTerminalGrid();
-            int acks = terminalResizeAcks();
-            SystemClock.sleep(750);
-            awaitAcknowledgedTerminalGrid();
-            if (terminalResizeAcks() == acks) return;
-            if (SystemClock.uptimeMillis() > deadline) {
-                throw new AssertionError("terminal resize ACKs did not settle; last count " + terminalResizeAcks());
-            }
-        }
+        awaitRenderedFrame();
+        TerminalGridSettle.await(() -> {
+            JSONObject sample = evalJson("(() => {window.dispatchEvent(new Event('pocketshell:terminal-geometry-request'));"
+                    + "const grid=window.__ps2875TerminalRuntimeGeometry,shell=document.querySelector('.app-shell');"
+                    + "return JSON.stringify({cols:grid?.cols??0,rows:grid?.rows??0,acks:Number(shell?.dataset.sshTerminalResizeAcks??0),"
+                    + "pending:Number(shell?.dataset.sshTerminalResizePending??0),failures:Number(shell?.dataset.sshTerminalResizeFailures??0),"
+                    + "accepted:document.querySelector('[data-testid=terminal-resize-status]')?.dataset.status??''});})()");
+            return new TerminalGridSettle.Sample(sample.getInt("cols"), sample.getInt("rows"), sample.getInt("acks"),
+                    sample.getInt("pending"), sample.getInt("failures"), sample.getString("accepted"));
+        }, new TerminalGridSettle.Clock() {
+            public long now() { return SystemClock.uptimeMillis(); }
+            public void pause() { SystemClock.sleep(100); }
+        }, WAIT_TIMEOUT_MILLIS);
     }
 
     private JSONArray hotkeyWrites() throws Exception {

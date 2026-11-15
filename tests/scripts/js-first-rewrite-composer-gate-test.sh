@@ -20,6 +20,8 @@ COMPOSER_ORDER_GATE="$ROOT_DIR/scripts/check-js-usage-ports-composer-order.py"
 }
 "$COMPOSER_ORDER_GATE" --self-test
 
+node "$ROOT_DIR/tests/scripts/gateway-terminal-input-test.mjs"
+
 bash -n "$RUNNER"
 python3 - "$WORKFLOW" "$RUNNER" "$EXTRACTOR" "$TOOLCACHE_PRUNER" "$PACKAGED_LANES" <<'PY'
 import ast

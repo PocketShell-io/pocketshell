@@ -4,6 +4,7 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.fail;
 
 import android.content.Context;
 import android.content.SharedPreferences;
@@ -1158,12 +1159,53 @@ public final class GatewayDockerJourneyTest {
                 + "if(!textarea) throw new Error('no visible terminal'); textarea.focus();"
                 + "const transfer=new DataTransfer();transfer.setData('text/plain'," + JSONObject.quote(command) + ");"
                 + "textarea.dispatchEvent(new ClipboardEvent('paste',{clipboardData:transfer,bubbles:true,cancelable:true}));"
-                + "window.__gwKeyUps=[]; textarea.addEventListener('keyup',(e)=>window.__gwKeyUps.push(e.key),{once:true});"
                 + "return {focused:document.activeElement===textarea};})())");
         assertTrue("the terminal holds focus for typing: " + result, new JSONObject(result).getBoolean("focused"));
         awaitJsTrue(VISIBLE_TERMINAL + ".includes(" + JSONObject.quote(command.substring(0, Math.min(8, command.length()))) + ")");
+        // Remote echo is asynchronous; initial paste focus is no longer a
+        // precondition for the later hardware Enter (CI run 43710655205).
+        // Reacquire the currently visible textarea, then arm a receipt that an
+        // unrelated keyup cannot consume. Do not resend Enter on a timeout.
+        awaitNativeWebViewFocus();
+        assertEquals("terminal owns the hardware Enter", "focused", evalString(terminalEnterScript()));
         InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_ENTER);
         awaitJsTrue("(window.__gwKeyUps ?? []).includes('Enter')");
+    }
+
+    /**
+     * sendKeyDownUpSync is delivered to the focused window's focused view, so the
+     * activity must hold window focus and the WebView view focus at that instant;
+     * a transient focus loss during remote echo otherwise drops the Enter silently
+     * (CI runs 43710655205, 43722666042). Wait for both, never resend the key.
+     */
+    private void awaitNativeWebViewFocus() throws Exception {
+        long deadline = SystemClock.uptimeMillis() + WAIT_TIMEOUT_MILLIS;
+        String last = "";
+        while (SystemClock.uptimeMillis() < deadline) {
+            final String[] state = new String[1];
+            final boolean[] ready = new boolean[1];
+            scenario.onActivity(activity -> {
+                android.webkit.WebView webView = activity.getBridge().getWebView();
+                webView.requestFocus();
+                ready[0] = activity.hasWindowFocus() && webView.hasWindowFocus() && webView.isFocused();
+                state[0] = "activityWindowFocus=" + activity.hasWindowFocus()
+                        + ", webViewWindowFocus=" + webView.hasWindowFocus()
+                        + ", webViewFocused=" + webView.isFocused();
+            });
+            last = state[0];
+            if (ready[0]) return;
+            SystemClock.sleep(250);
+        }
+        fail("native WebView never held window and view focus before hardware Enter: " + last);
+    }
+
+    private static String terminalEnterScript() {
+        return "(() => {const textarea=" + VISIBLE_TEXTAREA + ";"
+                + "if(!textarea) throw new Error('no visible terminal'); textarea.focus();"
+                + "if(document.activeElement!==textarea) throw new Error('terminal did not take focus');"
+                + "window.__gwKeyUps=[]; const receipt=(e)=>{if(e.key!=='Enter') return;"
+                + "window.__gwKeyUps.push(e.key); textarea.removeEventListener('keyup',receipt);};"
+                + "textarea.addEventListener('keyup',receipt); return 'focused';})()";
     }
 
     /** The visible pane's row count once it has stayed the same for 4 consecutive polls ~250 ms apart. */
