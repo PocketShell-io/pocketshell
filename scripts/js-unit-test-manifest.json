@@ -510,6 +510,8 @@
     "tests/unit/mobileHotkeys.test.ts": {
       "suite": "mobile fast-key behavior",
       "tests": [
+        "keeps the Main clipping viewport on whole 56px slots across fractional phone widths",
+        "observes available parent width and disconnects without observing its own rail writes",
         "keeps icon actions in exact 48px slots and uses Kotlin-aligned mic state tints",
         "uses one App-owned dictation status value for dock sizing and status-row visibility",
         "keeps the controls inert off-live and resumes only after an explicit live state",

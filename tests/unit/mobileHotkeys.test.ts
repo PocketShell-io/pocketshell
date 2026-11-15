@@ -5,6 +5,7 @@ import MobileHotkeys from '../../src/components/MobileHotkeys.vue';
 import mobileHotkeysSource from '../../src/components/MobileHotkeys.vue?raw';
 import appSource from '../../src/App.vue?raw';
 import { createMobileHotkeysActions, createMobileHotkeysState } from '../../src/components/mobileHotkeysModel';
+import { mainKeyRailWidth, observeMainKeyRail } from '../../src/components/mobileHotkeysRail';
 import type { InlineDictationState } from '../../src/session/inlineDictation';
 
 function makeHarness(enabled = true, holdThresholdMs = 500) {
@@ -22,6 +23,36 @@ describe('mobile fast-key behavior', () => {
   afterEach(() => {
     vi.useRealTimers();
     vi.unstubAllGlobals();
+  });
+
+  it('keeps the Main clipping viewport on whole 56px slots across fractional phone widths', () => {
+    expect(mainKeyRailWidth(384.19049072265625)).toBe(336);
+    for (const width of [280, 320, 330, 384, 384.19, 391.99, 392, 412.19]) {
+      expect(mainKeyRailWidth(width) % 56).toBe(0);
+      expect(mainKeyRailWidth(width)).toBeLessThanOrEqual(width);
+      expect(mainKeyRailWidth(width)).toBeGreaterThanOrEqual(56);
+    }
+  });
+
+  it('observes available parent width and disconnects without observing its own rail writes', () => {
+    let notify: ResizeObserverCallback;
+    const observe = vi.fn();
+    const disconnect = vi.fn();
+    vi.stubGlobal('ResizeObserver', class {
+      constructor(callback: ResizeObserverCallback) { notify = callback; }
+      observe = observe;
+      disconnect = disconnect;
+    });
+    const parent = { getBoundingClientRect: () => ({ width: 384.19049072265625 }) };
+    const rail = { parentElement: parent, style: { width: '' } };
+    const stop = observeMainKeyRail(rail as unknown as HTMLElement);
+    expect(rail.style.width).toBe('336px');
+    expect(observe).toHaveBeenCalledOnce();
+    expect(observe).toHaveBeenCalledWith(parent);
+    notify!([{ contentRect: { width: 412.19 } }] as ResizeObserverEntry[], {} as ResizeObserver);
+    expect(rail.style.width).toBe('392px');
+    stop();
+    expect(disconnect).toHaveBeenCalledOnce();
   });
 
   it('keeps icon actions in exact 48px slots and uses Kotlin-aligned mic state tints', () => {

@@ -35,6 +35,7 @@ REQUIRED_CLASSES=(
   com.pocketshell.app.SshCapabilityPluginChannelRequestTest
   com.pocketshell.app.SshCapabilityPluginCloseTest
   com.pocketshell.app.smoke.RectContainmentTest
+  com.pocketshell.app.smoke.TerminalGridSettleTest
   com.pocketshell.app.SshCapabilityPluginConnectDeadlineTest
   com.pocketshell.app.SshCapabilityPluginGatewayAccountTest
   com.pocketshell.app.SshCapabilityPluginGatewayClockTest

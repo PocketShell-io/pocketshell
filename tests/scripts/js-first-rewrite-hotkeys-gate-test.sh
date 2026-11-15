@@ -19,6 +19,7 @@ APP="$ROOT_DIR/src/App.vue"
 
 bash -n "$RUNNER"
 bash -n "$LANES"
+python3 "$ROOT_DIR/tests/scripts/fastkey-receiver-pty-test.py"
 python3 - "$WORKFLOW" "$RUNNER" "$LANES" "$EXTRACTOR" "$PTY_GEOMETRY" "$RESULT_CHECKER" "$JOURNEY" "$MOBILE_HOTKEYS" "$APP" <<'PY'
 import ast
 import re
@@ -33,6 +34,7 @@ extractor = extractor_path.read_text()
 pty_geometry = pty_geometry_path.read_text()
 checker = checker_path.read_text()
 journey = journey_path.read_text()
+receiver_command = journey_path.parents[6].joinpath("sharedTest/java/com/pocketshell/app/smoke/FastKeyReceiverCommand.java").read_text()
 mobile_hotkeys = mobile_hotkeys_path.read_text()
 terminal_dictation = mobile_hotkeys_path.with_name("TerminalDictationBar.vue").read_text()
 prompt_composer = mobile_hotkeys_path.with_name("PromptComposer.vue").read_text()
@@ -366,11 +368,12 @@ if ("height: 96px;" not in mobile_hotkeys or "height: 48px;" not in mobile_hotke
 if ("scroll-snap-type: y mandatory;" not in mobile_hotkeys
         or "scroll-snap-type: x mandatory;" not in mobile_hotkeys
         or "padding-inline: 0;" not in mobile_hotkeys
-        or "padding-right: 0.33px;" not in mobile_hotkeys
-        or "scroll-padding-inline: 0;" not in mobile_hotkeys
+        or "padding-inline: var(--sp-1);" not in mobile_hotkeys
+        or "observeMainKeyRail" not in mobile_hotkeys
+        or "scroll-padding-inline: var(--sp-1);" not in mobile_hotkeys
         or "scroll-snap-align: start; scroll-snap-stop: always;" not in mobile_hotkeys
-        or ".mobile-hotkeys__main-row > .mobile-hotkeys__key--catalog:last-child" not in mobile_hotkeys
-        or "scroll-snap-align: end;" not in mobile_hotkeys
+        or "padding-right: 0.33px;" in mobile_hotkeys
+        or "scroll-snap-align: end;" in mobile_hotkeys
         or 'startY = towardEnd ? container.getDouble("bottom") - 2' not in journey
         or "Math.rint(scrollTop / 48.0)" not in journey
         or "assertMainCatalogEndpointReachability" not in journey
@@ -461,8 +464,16 @@ if "sshPrivateKeyPath=$DEVICE_KEY_PATH" not in runner or "sshPrivateKeyBase64" i
     raise AssertionError("dedicated runner must stage the fixture key for native key-vault import (#2926), never pass key bytes")
 if "pocketshell_android_input_preflight" not in runner:
     raise AssertionError("dedicated runner must run the Android input preflight before the journey (#2946)")
-if '(set +m; stty raw -echo;' not in journey:
+if '(set +m; stty sane -echo;' not in receiver_command:
     raise AssertionError("byte receiver must suppress background sampler job notices that evict the visible marker")
+prepare_receiver = journey.split('private void prepareByteCapture(', 1)[1].split('private void openPromptComposerSheet', 1)[0]
+if not (prepare_receiver.index('closePromptComposerSheet();')
+        < prepare_receiver.index('awaitStableAcknowledgedTerminalGrid();')
+        < prepare_receiver.index('sendKeyDownUpSync(KeyEvent.KEYCODE_ENTER)')
+        < prepare_receiver.index('TerminalTextOracle.contains(readyMarker)')):
+    raise AssertionError("receiver READY must be produced only after closing the composer and settling the grid")
+if 'IFS= read -r receiverStart || exit; stty raw -echo;' not in receiver_command:
+    raise AssertionError("the receiver must consume its canonical setup Enter before exact raw capture")
 def require_resumed_done_marker(source):
     if 'awaitJsTrue(TerminalTextOracle.contains(resumedDone), 15_000);' not in source:
         raise AssertionError("reattached fast-key journey must retain its visible resumed DONE marker assertion")
