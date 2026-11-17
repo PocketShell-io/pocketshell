@@ -62,10 +62,10 @@ describe('Android shared app shell', () => {
         },
       },
     });
-    expect(written.get(INSET_VARIABLES.top)).toBe('env(safe-area-inset-top, 0px)');
-    expect(written.get(INSET_VARIABLES.bottom)).toBe('env(safe-area-inset-bottom, 0px)');
-    expect(written.get(INSET_VARIABLES.left)).toBe('env(safe-area-inset-left, 0px)');
-    expect(written.get(INSET_VARIABLES.right)).toBe('env(safe-area-inset-right, 0px)');
+    expect(written.get(INSET_VARIABLES.top)).toBe('var(--safe-area-inset-top, env(safe-area-inset-top, 0px))');
+    expect(written.get(INSET_VARIABLES.bottom)).toBe('var(--safe-area-inset-bottom, env(safe-area-inset-bottom, 0px))');
+    expect(written.get(INSET_VARIABLES.left)).toBe('var(--safe-area-inset-left, env(safe-area-inset-left, 0px))');
+    expect(written.get(INSET_VARIABLES.right)).toBe('var(--safe-area-inset-right, env(safe-area-inset-right, 0px))');
     // The keyboard inset is left at the shared 0px default until A3 feeds it.
     expect(written.has(INSET_VARIABLES.keyboard)).toBe(false);
     expect(Object.keys(ANDROID_INSETS).sort()).toEqual(['bottom', 'left', 'right', 'top']);

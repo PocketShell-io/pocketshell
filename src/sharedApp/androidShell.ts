@@ -16,10 +16,10 @@ import { createKeyboardInsetsStateSync } from '@/native/keyboardInsetsState';
 export const ANDROID_MONO_FALLBACK = BUNDLED_MONO_STACK;
 
 export const ANDROID_INSETS: AppInsets = {
-  top: 'env(safe-area-inset-top, 0px)',
-  bottom: 'env(safe-area-inset-bottom, 0px)',
-  left: 'env(safe-area-inset-left, 0px)',
-  right: 'env(safe-area-inset-right, 0px)',
+  top: 'var(--safe-area-inset-top, env(safe-area-inset-top, 0px))',
+  bottom: 'var(--safe-area-inset-bottom, env(safe-area-inset-bottom, 0px))',
+  left: 'var(--safe-area-inset-left, env(safe-area-inset-left, 0px))',
+  right: 'var(--safe-area-inset-right, env(safe-area-inset-right, 0px))',
 };
 
 export function applyAndroidInsets(target?: InsetTarget): void {
