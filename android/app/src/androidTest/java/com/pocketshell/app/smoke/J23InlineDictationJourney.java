@@ -3056,9 +3056,12 @@ public final class J23InlineDictationJourney {
                 expectedCap, viewport.getDouble("height"), 0.5);
         JSONObject grid = runtimeGrid(geometry);
         if (Build.VERSION.SDK_INT == 35 && expectedCap == ACCEPTED_ANDROID_TERMINAL_VIEWPORT_CAP_DP) {
-            assertEquals(action + " must retain the accepted API 35 xterm column count; geometry=" + geometry,
-                    38, grid.getInt("cols"));
-            assertEquals(action + " must retain the accepted API 35 38×6 PTY grid; geometry=" + geometry,
+            // The 144px cap gives the six-row grid #2884 accepted; the column count
+            // follows the terminal font (13px compact default, #3138: 47 here, 38 at
+            // the old 16px), so assert the compact floor instead of the old constant.
+            assertTrue(action + " must keep the compact 13px terminal's column count (>=45; the old 16px grid was 38); geometry=" + geometry,
+                    grid.getInt("cols") >= 45);
+            assertEquals(action + " must retain the accepted API 35 six-row PTY grid; geometry=" + geometry,
                     6, grid.getInt("rows"));
         }
         assertAtLeastFiveRows(action, geometry);

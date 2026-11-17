@@ -197,20 +197,20 @@ if ("TERMINAL_VIEWPORT_ROUNDING_EPSILON_CSS_PX = 0.01" not in journey
     raise AssertionError("Fast Keys geometry must document the 0.01px viewport rounding epsilon and reject larger overlaps")
 if ("Math.min(ACCEPTED_ANDROID_TERMINAL_VIEWPORT_CAP_DP," not in journey
         or "private JSONObject assertAcceptedKeyboardUpViewport" not in journey
-        or "38, grid.getInt(\"cols\")" not in journey
+        or "grid.getInt(\"cols\") >= 45" not in journey
         or "6, grid.getInt(\"rows\")" not in journey
         or "acceptedKeyboardGrid, runtimeGrid(afterNavigationTaps)" not in journey
         or "acceptedKeyboardGrid, runtimeGrid(afterReconnectGeometry)" not in journey):
-    raise AssertionError("Android journey must lock the API 35 144px/38x6 keyboard baseline through navigation and reattach")
+    raise AssertionError("Android journey must lock the API 35 144px/six-row compact keyboard baseline through navigation and reattach")
 if ("terminalViewportDockCapPx.value = terminalViewportDockBaseCapPx.value;" not in app
         or '(afterGeometry.optBoolean("inlineDictationStatusVisible") ? 16 : 0)' in journey):
     raise AssertionError("dictation status must not shrink the captured terminal viewport cap")
 if ("min(ACCEPTED_ANDROID_TERMINAL_VIEWPORT_CAP_PX, math.floor(idle_viewport_height))" not in extractor
         or "min(ACCEPTED_ANDROID_TERMINAL_VIEWPORT_CAP_PX,\n                                math.floor(baseline_viewport_height))" not in extractor
-        or "API35_ACCEPTED_TERMINAL_GRID = (38, 6)" not in extractor
-        or "API 35 keyboard-up baseline must lock the accepted 144px / 38×6 terminal grid" not in extractor
+        or "API35_MIN_COMPACT_COLS = 45" not in extractor
+        or "API 35 keyboard-up baseline must lock the accepted 144px / six-row compact terminal grid" not in extractor
         or "with_api35_expanded_keyboard_viewport(sample_journey()), False" not in extractor):
-    raise AssertionError("artifact gate must reject a 172px viewport and enforce the accepted API35 144px/38x6 grid")
+    raise AssertionError("artifact gate must reject a 172px viewport and enforce the accepted API35 144px/six-row compact grid")
 if ("the status row keeps its phase-specific height above the 48dp key row" not in journey
         or 'geometry.getInt("inlineDictationWaveformBars")' not in journey
         or 'geometry.getString("inlineDictationElapsed").matches' not in journey
