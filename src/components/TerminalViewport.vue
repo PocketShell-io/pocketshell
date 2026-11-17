@@ -2,6 +2,7 @@
 import { nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { FitAddon } from '@xterm/addon-fit';
 import { Terminal } from '@xterm/xterm';
+import { remeasureAfterFontLoad } from '@ui/fonts';
 import type { ITheme } from '@xterm/xterm';
 import { TerminalGeometryReporter, type TerminalResizeRequest } from '../terminalGeometry';
 import { waitForAttachAutofocusTestGate } from '../session/attachAutofocusTestGate';
@@ -232,6 +233,8 @@ watch(() => [props.theme, props.fontFamily, props.fontSize] as const, async () =
   terminal.options.fontSize = props.fontSize;
   await nextTick();
   fitTerminal('theme-font-change');
+  const openedTerminal = terminal;
+  void remeasureAfterFontLoad(openedTerminal, props.fontFamily, props.fontSize, () => fitTerminal('font-load'), () => terminal !== openedTerminal);
 });
 
 onMounted(() => {
@@ -249,6 +252,9 @@ onMounted(() => {
   fitAddon = new FitAddon();
   terminal.loadAddon(fitAddon);
   terminal.open(terminalHost.value);
+  // The bundled face may still be loading: re-measure the cell and refit once
+  // it is ready so the column count never rests on fallback metrics (#3138).
+  void remeasureAfterFontLoad(terminal, props.fontFamily, props.fontSize, () => fitTerminal('font-load'));
   renderListener = terminal.onRender(({ start, end }) => {
     const evidenceWindow = window as ComposerSmokeEvidenceWindow;
     if (!evidenceWindow.__ps2857CaptureTerminalEvidence) return;

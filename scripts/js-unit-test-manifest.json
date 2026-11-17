@@ -1076,6 +1076,14 @@
         "real Google auth loss while native hold is pending completes cleanup with final wipe failure false",
         "real Google auth loss while native hold is pending completes cleanup with final wipe failure true"
       ]
+    },
+    "tests/unit/bundledMonoFont.test.ts": {
+      "suite": "bundled monospace font (#3138)",
+      "tests": [
+        "puts JetBrains Mono first in the Android stacks and --font-mono",
+        "defaults the phone terminal to 13px (50 columns across full-width 412dp)",
+        "emits both complete JetBrains Mono woff2 files into the built bundle"
+      ]
     }
   }
 }

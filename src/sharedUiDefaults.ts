@@ -1,13 +1,13 @@
-import { fontCssVariables } from '@ui/fonts';
+import { BUNDLED_MONO_STACK, fontCssVariables } from '@ui/fonts';
 import { resolveTheme, THEME_CHOICE_DEFAULT } from '@ui/themes';
 
 /** PocketShell's shared dark palette, applied from the pinned desktop source. */
 export const mobileTheme = resolveTheme(THEME_CHOICE_DEFAULT);
 
-/** Android browser surfaces use the system monospace face as the safe fallback. */
+/** Android browser surfaces use the bundled JetBrains Mono, then the platform monospace (#3138). */
 export const mobileFontVariables = fontCssVariables(
   { monospaceFontFamily: null, terminalFontSize: 13, editorFontSize: 13 },
-  'ui-monospace, monospace',
+  BUNDLED_MONO_STACK,
 );
 export const mobileMonoFontFamily = mobileFontVariables['--font-mono'];
 
