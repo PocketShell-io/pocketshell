@@ -12,7 +12,9 @@ import java.util.Map;
 /**
  * Production {@link GoogleSyncSession.Transport}. Reads the error stream on a
  * non-2xx status so the 404/409 bodies the sync flow branches on still arrive,
- * caps the response, and always disconnects.
+ * caps the response, and keeps the connection alive for reuse: the body is always
+ * read to the end and closed, which returns the socket to the JDK keep-alive
+ * pool; only a failed exchange disconnects (issue #3137).
  */
 final class HttpSyncTransport implements GoogleSyncSession.Transport {
     private static final int TIMEOUT_MS = 15_000;
@@ -22,6 +24,8 @@ final class HttpSyncTransport implements GoogleSyncSession.Transport {
     public GoogleSyncSession.Response send(String method, String url, Map<String, String> headers, String body)
             throws IOException {
         HttpURLConnection connection = (HttpURLConnection) new URL(url).openConnection();
+        boolean completed = false;
+        long started = System.nanoTime();
         try {
             connection.setRequestMethod(method);
             connection.setConnectTimeout(TIMEOUT_MS);
@@ -41,9 +45,13 @@ final class HttpSyncTransport implements GoogleSyncSession.Transport {
             }
             int status = connection.getResponseCode();
             InputStream stream = status >= 200 && status < 300 ? connection.getInputStream() : connection.getErrorStream();
-            return new GoogleSyncSession.Response(status, read(stream));
+            GoogleSyncSession.Response response = new GoogleSyncSession.Response(status, read(stream));
+            completed = true;
+            return response;
         } finally {
-            connection.disconnect();
+            if (!completed) connection.disconnect();
+            android.util.Log.d("PocketShellSync", "http " + method + " " + new URL(url).getPath() + " "
+                    + (System.nanoTime() - started) / 1_000_000L + "ms");
         }
     }
 

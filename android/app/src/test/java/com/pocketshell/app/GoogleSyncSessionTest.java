@@ -52,6 +52,7 @@ public final class GoogleSyncSessionTest {
         assertEquals(200, session.listSettings().status);
         assertEquals(API + "/settings", transport.requests.get(1).url);
         assertEquals("Bearer " + store.value, transport.requests.get(1).headers.get("Authorization"));
+        now = NOW + 61; // past the #3137 verified-identity cache window, so the backend is asked again
         transport.responses.add(new GoogleSyncSession.Response(200, "{\"sub\":\"other\"}"));
         try { session.verifiedAccountId(); fail("foreign subject"); } catch (SyncAuthException expected) { assertEquals(SyncAuthException.NOT_SIGNED_IN, expected.code); }
     }

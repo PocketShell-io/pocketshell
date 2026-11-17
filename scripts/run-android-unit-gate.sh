@@ -27,6 +27,7 @@ REQUIRED_CLASSES=(
   com.pocketshell.app.GatewayTunnelTlsTest
   com.pocketshell.app.GoogleSyncSessionGatewayExchangeTest
   com.pocketshell.app.GoogleSyncSessionTest
+  com.pocketshell.app.GoogleSyncSessionRequestBudgetTest
   com.pocketshell.app.KeyHandleConnectFailuresTest
   com.pocketshell.app.SpeechAudioPresenceTest
   com.pocketshell.app.SpeechRecognitionOptionsTest

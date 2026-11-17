@@ -1027,7 +1027,9 @@
         "refuses missing invalid rollback or revoked descriptors without phone key fallback",
         "refuses unbound mismatched and non-managed vault credentials",
         "rechecks account after native work and preserves no saved row on an account switch",
-        "loads protected revision floors and supplies them to authenticated descriptor verification"
+        "loads protected revision floors and supplies them to authenticated descriptor verification",
+        "validates a pairing with one revision load and one trusted-host read (#3137)",
+        "still refuses an account change between validation and install (#3137)"
       ]
     },
     "tests/unit/androidDesktopChrome.test.ts": {

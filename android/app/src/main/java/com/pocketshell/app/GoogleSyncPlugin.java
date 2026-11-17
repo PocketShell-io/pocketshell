@@ -23,10 +23,15 @@ import java.util.concurrent.RejectedExecutionException;
 @CapacitorPlugin(name = "GoogleSync")
 public final class GoogleSyncPlugin extends Plugin {
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
+    /** Read-only backend calls (identity, GET requests) never queue behind sign-in/out or a slow renewal. */
+    private final ExecutorService readers = Executors.newFixedThreadPool(3);
     private GoogleSyncSession session;
+    /** Pre-renew the ID token on foreground when it expires within this window. */
+    private static final long PRE_RENEW_WINDOW_SECONDS = 10L * 60L;
 
     @Override
     public void load() {
+        GoogleSyncSession.timingLog = line -> android.util.Log.d("PocketShellSync", line);
         session = new GoogleSyncSession(
                 new EncryptedSyncTokenStore(getContext()),
                 GoogleSyncEnvironment.signIn(this::getActivity),
@@ -38,6 +43,25 @@ public final class GoogleSyncPlugin extends Plugin {
     @Override
     protected void handleOnDestroy() {
         worker.shutdown();
+        readers.shutdown();
+    }
+
+    @Override
+    protected void handleOnResume() {
+        // Off the critical path: renew before the user's first tap, not during it.
+        try {
+            worker.execute(() -> session.renewIfExpiringWithin(PRE_RENEW_WINDOW_SECONDS));
+        } catch (RejectedExecutionException destroyed) {
+            // Plugin already torn down.
+        }
+    }
+
+    private void submitRead(PluginCall call, Runnable task) {
+        try {
+            readers.execute(task);
+        } catch (RejectedExecutionException destroyed) {
+            call.reject("Plugin was destroyed before the call could run");
+        }
     }
 
     /**
@@ -67,7 +91,7 @@ public final class GoogleSyncPlugin extends Plugin {
     /** Public stable verified subject only; the JWT never crosses the bridge. */
     @PluginMethod
     public void accountId(PluginCall call) {
-        submit(call, () -> {
+        submitRead(call, () -> {
             try { call.resolve(new JSObject().put("accountId", session.verifiedAccountId())); }
             catch (SyncAuthException error) { reject(call, error); }
         });
@@ -115,14 +139,15 @@ public final class GoogleSyncPlugin extends Plugin {
         String body = call.getString("body");
         String endpoint = call.getString("endpoint");
         String accountId = call.getString("accountId");
-        submit(call, () -> {
+        Runnable task = () -> {
             try {
                 GoogleSyncSession.Response response = session.requestBound(method, slot, endpoint, body, accountId);
                 call.resolve(new JSObject().put("status", response.status).put("body", response.body));
             } catch (SyncAuthException error) {
                 reject(call, error);
             }
-        });
+        };
+        if ("GET".equals(method)) submitRead(call, task); else submit(call, task);
     }
 
     private JSObject statusJson(GoogleSyncSession.Status status) {
