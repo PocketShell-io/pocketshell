@@ -1297,6 +1297,67 @@ public abstract class SharedAppDockerJourneyTest {
         assertEquals("scrolling sends no input bytes, including arrow sequences, to the host", "", recorded.getString("stdout").trim());
     }
 
+    /**
+     * #3146: a `cd` inside an open aplexer shell makes the host report a new
+     * `workspace` for the same session id. The tree may file the session under
+     * its new folder, but the open terminal must stay: no second PTY open, the
+     * same xterm DOM node, the same transport.
+     */
+    public void cdInsideOpenShellKeepsTheTerminalMounted() throws Exception {
+        String run = "j25-" + Long.toString(System.currentTimeMillis(), 36);
+        connectFixtureAndAttach(run);
+        installRecoveryRecorder();
+        JSONObject live = latestLiveJournalEntry();
+        String tag = "shell-" + run;
+        // Mark the visible xterm node: a remount creates a new element without the mark.
+        assertEquals("marked", evalString("(() => {const n=[...document.querySelectorAll('.xterm')]"
+                + ".find((e)=>e.offsetParent!==null); if(!n) return 'none'; n.__ps3146='mounted'; return 'marked';})()"));
+        int opensBefore = Integer.parseInt(evalString("String(window.__ps2954.opens.length)"));
+        int closesBefore = Integer.parseInt(evalString("String(window.__ps2954.closes.length)"));
+        int dialsBefore = nativeDialCount();
+        int xtermBefore = Integer.parseInt(evalString("String(document.querySelectorAll('.xterm').length)"));
+        screenshot("j25-before-cd");
+        typeLine("cd /tmp && echo J25_CD_DONE");
+        awaitJsTrue(VISIBLE_TERMINAL + ".includes('J25_CD_DONE')", 15_000);
+        // Host oracle: the session's aplexer workspace follows the cwd (this is the premise).
+        String snapshotCmd = "PATH=\"$HOME/.local/bin:$PATH\" a --json snapshot";
+        JSONObject moved = null;
+        for (int attempt = 0; attempt < 20 && moved == null; attempt++) {
+            JSONObject snap = awaitNativeExec("j25-snap-" + run + "-" + attempt, live.getString("transportId"),
+                    live.getString("generationId"), snapshotCmd);
+            JSONArray rows = new JSONArray(snap.getString("stdout"));
+            for (int i = 0; i < rows.length(); i++) {
+                JSONObject row = rows.getJSONObject(i);
+                if (tag.equals(row.optString("tag")) && "/tmp".equals(row.optString("workspace"))) moved = row;
+            }
+            if (moved == null) SystemClock.sleep(500);
+        }
+        assertNotNull("the host reports the session's workspace as /tmp after the cd", moved);
+        // Wait out two session-tree polls (5s each): the tree re-lists and re-groups.
+        awaitJsTrue("[...document.querySelectorAll('.dir-header')].some((n)=>n.textContent.includes('tmp'))", 30_000);
+        SystemClock.sleep(11_000);
+        screenshot("j25-after-cd-and-polls");
+        assertEquals("the same xterm DOM node is still mounted and visible", "mounted",
+                evalString("(() => {const n=[...document.querySelectorAll('.xterm')].find((e)=>e.offsetParent!==null);"
+                        + "return n ? String(n.__ps3146 ?? 'remounted') : 'gone';})()"));
+        assertEquals("no extra xterm instance was created", xtermBefore,
+                Integer.parseInt(evalString("String(document.querySelectorAll('.xterm').length)")));
+        assertEquals("no second PTY was opened (no re-attach)", opensBefore,
+                Integer.parseInt(evalString("String(window.__ps2954.opens.length)")));
+        assertEquals("no PTY was closed", closesBefore,
+                Integer.parseInt(evalString("String(window.__ps2954.closes.length)")));
+        assertEquals("no new native dial", dialsBefore, nativeDialCount());
+        assertTrue("the terminal still shows the typed command", terminalShows("J25_CD_DONE"));
+        Log.i(TAG, "J25_CD_ORACLE opens=" + opensBefore + " closes=" + closesBefore + " moved=" + moved.optString("workspace"));
+        // And it still takes input after the poll.
+        typeLine("echo J25_STILL_HERE");
+        awaitJsTrue(VISIBLE_TERMINAL + ".includes('J25_STILL_HERE')", 15_000);
+    }
+
+    private boolean terminalShows(String needle) throws Exception {
+        return Boolean.parseBoolean(evalString("String(" + VISIBLE_TERMINAL + ".includes(" + JSONObject.quote(needle) + "))"));
+    }
+
     protected void openAddHostForm() throws Exception {
         evalString("(() => {const b=document.querySelector('button[title=\"New window\"]')"
                 + " || [...document.querySelectorAll('button')].find(n=>n.textContent.trim()==='Add a host');"

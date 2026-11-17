@@ -138,6 +138,7 @@ LANES = (
             ("com.pocketshell.app.smoke.J21HostAddConnectJourney", frozenset({'hostAddedThroughFormConnectsToFixture','guestSshConnectsWithoutGoogleOrVaultAndTypesIntoRealHost'})),
             ("com.pocketshell.app.smoke.J11ShareUploadJourney", frozenset({"androidSingleShareReachesTheChosenSessionOnTheRealHost", "androidShareStreamsReachTheChosenSessionOnTheRealHost"})),
             ("com.pocketshell.app.smoke.J20ComposerUploadProgressJourney", frozenset({"aThreeFileUploadShowsTheBarMidFlightAndLeavesNoResidueAfterCompletion"})),
+            ("com.pocketshell.app.smoke.J25CdKeepsTerminalJourney", frozenset({"cdInsideOpenShellKeepsTheTerminalMounted"})),
         ),
     ),
     LaneContract(

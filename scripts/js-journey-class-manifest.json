@@ -24,6 +24,7 @@
     "J21HostAddConnectJourney",
     "J22ForwardServiceFgsJourney",
     "J23InlineDictationJourney",
-    "J24SettingsReachJourney"
+    "J24SettingsReachJourney",
+    "J25CdKeepsTerminalJourney"
   ]
 }
