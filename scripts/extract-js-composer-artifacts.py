@@ -45,6 +45,11 @@ EXPECTED_NAMES = REQUIRED_NAMES | OPTIONAL_NAMES
 SAFE_NAME = re.compile(r"^[A-Za-z0-9._-]{1,100}$")
 
 
+# Fractional-advance faces (bundled JetBrains Mono at 13px, #3138) let a full-width
+# row render up to ~0.1 cell past the xterm screen; a clipped/extra glyph is a whole
+# cell, so a quarter cell still catches it. Mirrors ComposerJourneySupport.java.
+ROW_SUBPIXEL_CELLS = 0.25
+
 class ExtractionFailure(ValueError):
     pass
 
@@ -303,7 +308,7 @@ def _validate_terminal_grid_fidelity(fidelity: object, stage: str, *, require_fu
             raise ExtractionFailure(f"{stage} rendered terminal rows are clipped by the xterm screen: {overflowing}")
         max_cells = float(fidelity["maxRowCells"])
         max_right = fidelity["maxRowRight"]
-        if max_cells > cols + 0.05 or max_right is None or float(max_right) > float(screen["right"]) + 0.5:
+        if max_cells > cols + ROW_SUBPIXEL_CELLS or max_right is None or float(max_right) > float(screen["right"]) + 1.5:
             raise ExtractionFailure(f"{stage} a rendered row is wider than the accepted {cols} columns")
         wrapped = fidelity["wrappedCommandRows"]
         if not isinstance(wrapped, list) or len(wrapped) < 2:
@@ -313,7 +318,7 @@ def _validate_terminal_grid_fidelity(fidelity: object, stage: str, *, require_fu
             next_glyph_cells = wrapped[index + 1]["firstGlyphCells"]
             if isinstance(next_glyph_cells, bool) or next_glyph_cells not in (1, 2):
                 raise ExtractionFailure(f"{stage} next wrapped row has no measured one- or two-cell glyph")
-            if cells < cols - next_glyph_cells - 0.05 or cells > cols + 0.05:
+            if cells < cols - next_glyph_cells - ROW_SUBPIXEL_CELLS or cells > cols + ROW_SUBPIXEL_CELLS:
                 raise ExtractionFailure(f"{stage} wrapped command row does not fill the accepted {cols} columns: {row}")
     except ExtractionFailure:
         raise
