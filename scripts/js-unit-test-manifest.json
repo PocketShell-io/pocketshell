@@ -984,7 +984,9 @@
       "suite": "Android forwards over the shared core controller",
       "tests": [
         "starts automatic forwarding on connection mount before any Ports API read and restores on generation swap",
-        "remembers auto-off and user force-off across app recreation"
+        "remembers auto-off and user force-off across app recreation",
+        "never scans the host without forwarding intent or a Ports subscriber, and defers a restore scan past connect",
+        "keeps scanning while a manual forward is live and stops once it is removed"
       ]
     },
     "tests/unit/androidAttachments.test.ts": {

@@ -28,9 +28,15 @@ export class AndroidForwards {
   private listeners = new Set<Listener>();
   private timer: ReturnType<typeof setInterval>;
   private removeStopListener: (() => void) | null = null;
-  constructor(private hub: AndroidConnectionHub, private capability: SshCapability) {
+  private pendingInitial = new Set<ReturnType<typeof setTimeout>>();
+  /**
+   * @param initialScanDelayMs a connect-time restore scan (only when remembered
+   *   forwarding intent exists) starts this long after the connection mounts, so
+   *   its ss/netstat execs never compete with the connect-to-tree navigation (#3141).
+   */
+  constructor(private hub: AndroidConnectionHub, private capability: SshCapability, private initialScanDelayMs = 2_000) {
     this.timer = setInterval(() => {
-      for (const id of this.entries.keys()) void this.refresh(id).catch(() => undefined);
+      for (const [id, entry] of this.entries) if (this.wantsScan(entry)) void this.refresh(id).catch(() => undefined);
     }, 5_000);
     if (Capacitor.getPlatform() === 'android') {
       void registerPlugin<Plugin>('SshCapability').addListener('forwardsStopped', () => {
@@ -47,6 +53,15 @@ export class AndroidForwards {
         }
       }).then((handle) => { this.removeStopListener = () => { void handle.remove(); }; });
     }
+  }
+  /**
+   * Port scanning (ss/netstat + a per-pid loop on the host) is only useful when
+   * something consumes it: automatic forwarding is on, a manual forward is
+   * wanted or live, or a JS listener (the Ports panel / forwards store) is
+   * subscribed. With none of those the host is never scanned (#3141).
+   */
+  private wantsScan(entry: Entry): boolean {
+    return entry.auto || entry.manual.length > 0 || entry.snapshot.activeForwards.length > 0 || this.listeners.size > 0;
   }
   private load(host: string): { auto: boolean; manual: number[]; off: number[]; pins: Record<number, number>; names: Record<number, string> } {
     try {
@@ -75,7 +90,8 @@ export class AndroidForwards {
     if (entry) {
       if (entry.generation === snapshot.generationId) return;
       entry.generation = snapshot.generationId;
-      void entry.owner.setConnection(ref).then(() => this.refresh(id)).catch(() => undefined);
+      const existing = entry;
+      void entry.owner.setConnection(ref).then(() => { if (this.wantsScan(existing)) return this.refresh(id); return false; }).catch(() => undefined);
     } else {
       const preferences = this.load(snapshot.hostId);
       const owner = new PortForwardController({
@@ -91,7 +107,14 @@ export class AndroidForwards {
       this.entries.set(id, entry);
       // Connection mount owns this, never the Ports screen. This is also the
       // resume/reconnect path for remembered user intent.
-      void this.refresh(id).catch(() => undefined);
+      if (this.wantsScan(entry)) {
+        const created = entry;
+        const timer = setTimeout(() => {
+          this.pendingInitial.delete(timer);
+          if (this.entries.get(id) === created) void this.refresh(id).catch(() => undefined);
+        }, this.initialScanDelayMs);
+        this.pendingInitial.add(timer);
+      }
     }
   }
   isRememberedAutoEnabled(hostId: string): boolean { return this.load(hostId).auto; }
@@ -187,10 +210,16 @@ export class AndroidForwards {
     setIntent: (id, port, intent) => this.intent(id, port, intent),
     togglePort: (id, port) => this.intent(id, port, this.entry(id).snapshot.activeForwards.some((f) => f.remotePort === port) ? 'force-off' : 'force-on'),
     isAutoEnabled: async (id) => this.entries.get(id)?.auto ?? false,
-    onStates: (listener) => { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; },
+    onStates: (listener) => {
+      const first = this.listeners.size === 0;
+      this.listeners.add(listener);
+      // The Ports panel just opened: this is the moment a scan becomes useful.
+      if (first) for (const id of this.entries.keys()) void this.refresh(id).catch(() => undefined);
+      return () => { this.listeners.delete(listener); };
+    },
   };
   async resume(): Promise<void> {
-    await Promise.allSettled([...this.entries.keys()].map((id) => this.refresh(id)));
+    await Promise.allSettled([...this.entries].filter(([, entry]) => this.wantsScan(entry)).map(([id]) => this.refresh(id)));
   }
   async close(id: string): Promise<void> {
     const entry = this.entries.get(id);
@@ -200,6 +229,8 @@ export class AndroidForwards {
   }
   dispose(): void {
     clearInterval(this.timer); this.removeStopListener?.();
+    for (const timer of this.pendingInitial) clearTimeout(timer);
+    this.pendingInitial.clear();
     for (const entry of this.entries.values()) void entry.owner.closeAll();
     this.entries.clear();
   }

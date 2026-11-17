@@ -109,10 +109,18 @@ public final class SshCapabilityPlugin extends Plugin {
         thread.setDaemon(true);
         return thread;
     });
+    /** SSH plugin calls run here, not on Capacitor's single plugin thread (#3141). */
+    private static final SshCallDispatcher CALL_DISPATCHER = SshCallDispatcher.withDaemonWorkers("pocketshell-ssh-call");
+    /** Connects are slow (up to 60-90 s) and each pins a worker: bound them so a connect storm cannot
+     * grow the pool without limit. cancelOperation runs on CALL_DISPATCHER so it always preempts. */
+    static final int MAX_CONCURRENT_CONNECTS = 8;
+    private static final SshCallDispatcher CONNECT_DISPATCHER = SshCallDispatcher.withFixedDaemonWorkers("pocketshell-ssh-connect", MAX_CONCURRENT_CONNECTS);
     private static final AtomicInteger ACTIVE_FORWARD_WORKERS = new AtomicInteger();
     private static final AtomicInteger ACTIVE_EXEC_STREAM_READERS = new AtomicInteger();
     private static volatile boolean sshProviderReady;
 
+    private final SshCallDispatcher callDispatcher = CALL_DISPATCHER;
+    private final SshCallDispatcher connectDispatcher = CONNECT_DISPATCHER;
     private final Map<String, SshConnection> connections = new ConcurrentHashMap<>();
     private final Map<String, SshPty> ptys = new ConcurrentHashMap<>();
     private final Map<String, SshForward> forwards = new ConcurrentHashMap<>();
@@ -274,7 +282,7 @@ public final class SshCapabilityPlugin extends Plugin {
      */
     @PluginMethod
     public void transportCapabilities(PluginCall call) {
-        run(call, options -> transportCapabilitiesReply(options.getString("requestId", "")));
+        run(call, "transportCapabilities", options -> transportCapabilitiesReply(options.getString("requestId", "")));
     }
 
     static JSObject transportCapabilitiesReply(String requestId) {
@@ -286,7 +294,7 @@ public final class SshCapabilityPlugin extends Plugin {
 
     @PluginMethod
     public void connect(PluginCall call) {
-        run(call, this::connectNow);
+        run(call, "connect", this::connectNow);
     }
 
     /** The connect operation behind {@link #connect}; package-visible so JVM
@@ -486,7 +494,7 @@ public final class SshCapabilityPlugin extends Plugin {
 
     @PluginMethod
     public void cancelOperation(PluginCall call) {
-        run(call, options -> {
+        run(call, "cancelOperation", options -> {
             String requestId = requiredString(options, "requestId");
             JSObject target = options.getJSObject("target");
             if (target == null) throw new PluginFailure("INVALID_ARGUMENT", "SSH cancellation target is missing.");
@@ -509,7 +517,7 @@ public final class SshCapabilityPlugin extends Plugin {
 
     @PluginMethod
     public void getConnectionState(PluginCall call) {
-        run(call, options -> {
+        run(call, "getConnectionState", options -> {
             String requestId = requiredString(options, "requestId");
             SshConnection connection = findConnection(options);
             String state = connection == null ? "closed" : connection.state;
@@ -523,7 +531,7 @@ public final class SshCapabilityPlugin extends Plugin {
 
     @PluginMethod
     public void closeConnection(PluginCall call) {
-        run(call, options -> {
+        run(call, "closeConnection", options -> {
             String requestId = requiredString(options, "requestId");
             SshConnection connection = findConnection(options);
             if (connection != null) closeConnection(connection, "closed", false);
@@ -533,7 +541,7 @@ public final class SshCapabilityPlugin extends Plugin {
 
     @PluginMethod
     public void scheduleClose(PluginCall call) {
-        run(call, options -> {
+        run(call, "scheduleClose", options -> {
             String requestId = requiredString(options, "requestId");
             SshConnection connection = requireConnection(options);
             long deadline = requiredLong(options, "deadlineEpochMs");
@@ -584,7 +592,7 @@ public final class SshCapabilityPlugin extends Plugin {
 
     @PluginMethod
     public void cancelScheduledClose(PluginCall call) {
-        run(call, options -> {
+        run(call, "cancelScheduledClose", options -> {
             String requestId = requiredString(options, "requestId");
             SshConnection connection = findConnection(options);
             boolean cancelled = false;
@@ -607,7 +615,7 @@ public final class SshCapabilityPlugin extends Plugin {
 
     @PluginMethod
     public void exec(PluginCall call) {
-        run(call, options -> {
+        run(call, "exec", options -> {
             String requestId = requiredString(options, "requestId");
             SshConnection connection = requireConnection(options);
             String command = requiredString(options, "command");
@@ -659,7 +667,7 @@ public final class SshCapabilityPlugin extends Plugin {
 
     @PluginMethod
     public void openPty(PluginCall call) {
-        run(call, options -> {
+        run(call, "openPty", options -> {
             String requestId = requiredString(options, "requestId");
             SshConnection connection = requireConnection(options);
             String command = requiredString(options, "command");
@@ -670,28 +678,61 @@ public final class SshCapabilityPlugin extends Plugin {
             if (term == null || term.isBlank() || term.length() > 128) throw new PluginFailure("INVALID_ARGUMENT", "PTY terminal type is invalid.");
             acquireChannel(connection);
             SessionChannel channel = null;
+            boolean registered = false;
             try {
                 channel = startPtySession(connection.client);
                 channel.allocatePTY(term, cols, rows, 0, 0, Collections.emptyMap());
                 Session.Command commandChannel = channel.exec(command);
                 SshPty pty = new SshPty(UUID.randomUUID().toString(), connection, channel, commandChannel);
-                ptys.put(pty.channelId, pty);
+                registered = true; // from here closePty owns the channel and its permit
+                registerPty(connection, pty);
                 return new JSObject()
                     .put("requestId", requestId)
                     .put("connectionId", connection.connectionId)
                     .put("generationId", connection.generationId)
                     .put("channelId", pty.channelId);
             } catch (Exception error) {
-                closeQuietly(channel);
-                connection.channelPermits.release();
+                if (!registered) {
+                    closeQuietly(channel);
+                    connection.channelPermits.release();
+                }
                 throw failureFor(error);
             }
         });
     }
 
+    /**
+     * Registers a freshly opened PTY, then re-checks the connection. A close
+     * that ran between the open's connected-check and this put has already
+     * scanned {@code ptys}, so nothing else would ever close this one (#3141:
+     * open/close are no longer ordered by a single thread). closePty is
+     * idempotent and returns the channel permit.
+     */
+    void registerPty(SshConnection connection, SshPty pty) throws PluginFailure {
+        ptys.put(pty.channelId, pty);
+        if (beforeRegisterRecheckForTesting != null) beforeRegisterRecheckForTesting.run();
+        if (!"connected".equals(connection.state)) {
+            closePty(pty);
+            throw new PluginFailure("CONNECTION_LOST", "SSH connection is no longer available.");
+        }
+    }
+
+    /** As {@link #registerPty}, for a local port forward (also frees its server socket and global permit). */
+    void registerForward(SshConnection connection, SshForward forward) throws PluginFailure {
+        forwards.put(forward.forwardId, forward);
+        if (beforeRegisterRecheckForTesting != null) beforeRegisterRecheckForTesting.run();
+        if (!"connected".equals(connection.state)) {
+            closeForward(forward);
+            throw new PluginFailure("CONNECTION_LOST", "SSH connection is no longer available.");
+        }
+    }
+
+    /** JVM tests: runs after a resource is registered, before the state re-check. */
+    volatile Runnable beforeRegisterRecheckForTesting;
+
     @PluginMethod
     public void readPty(PluginCall call) {
-        run(call, options -> {
+        run(call, "readPty", options -> {
             String requestId = requiredString(options, "requestId");
             SshPty pty = requirePty(options);
             int sequence = boundedInt(options, "sequence", 0, Integer.MAX_VALUE, 0);
@@ -739,7 +780,7 @@ public final class SshCapabilityPlugin extends Plugin {
 
     @PluginMethod
     public void writePty(PluginCall call) {
-        run(call, options -> {
+        run(call, "writePty", options -> {
             String requestId = requiredString(options, "requestId");
             SshPty pty = requirePty(options);
             int sequence = boundedInt(options, "sequence", 1, Integer.MAX_VALUE, 1);
@@ -768,7 +809,7 @@ public final class SshCapabilityPlugin extends Plugin {
 
     @PluginMethod
     public void resizePty(PluginCall call) {
-        run(call, options -> {
+        run(call, "resizePty", options -> {
             String requestId = requiredString(options, "requestId");
             SshPty pty = requirePty(options);
             int sequence = boundedInt(options, "sequence", 1, Integer.MAX_VALUE, 1);
@@ -789,7 +830,7 @@ public final class SshCapabilityPlugin extends Plugin {
 
     @PluginMethod
     public void closePty(PluginCall call) {
-        run(call, options -> {
+        run(call, "closePty", options -> {
             String requestId = requiredString(options, "requestId");
             String channelId = requiredString(options, "channelId");
             SshPty pty = ptys.get(channelId);
@@ -803,7 +844,7 @@ public final class SshCapabilityPlugin extends Plugin {
 
     @PluginMethod
     public void sftpRealPath(PluginCall call) {
-        run(call, options -> {
+        run(call, "sftpRealPath", options -> {
             String requestId = requiredString(options, "requestId");
             SshConnection connection = requireConnection(options);
             String path = requiredString(options, "path");
@@ -822,7 +863,7 @@ public final class SshCapabilityPlugin extends Plugin {
 
     @PluginMethod
     public void sftpList(PluginCall call) {
-        run(call, options -> {
+        run(call, "sftpList", options -> {
             String requestId = requiredString(options, "requestId");
             SshConnection connection = requireConnection(options);
             String path = requiredString(options, "path");
@@ -862,7 +903,7 @@ public final class SshCapabilityPlugin extends Plugin {
 
     @PluginMethod
     public void sftpRead(PluginCall call) {
-        run(call, options -> {
+        run(call, "sftpRead", options -> {
             String requestId = requiredString(options, "requestId");
             SshConnection connection = requireConnection(options);
             String path = requiredString(options, "path");
@@ -901,7 +942,7 @@ public final class SshCapabilityPlugin extends Plugin {
 
     @PluginMethod
     public void sftpWrite(PluginCall call) {
-        run(call, options -> {
+        run(call, "sftpWrite", options -> {
             String requestId = requiredString(options, "requestId");
             SshConnection connection = requireConnection(options);
             String path = requiredString(options, "path");
@@ -942,7 +983,7 @@ public final class SshCapabilityPlugin extends Plugin {
 
     @PluginMethod
     public void sftpWriteIfUnchanged(PluginCall call) {
-        run(call, options -> {
+        run(call, "sftpWriteIfUnchanged", options -> {
             String requestId = requiredString(options, "requestId");
             SshConnection connection = requireConnection(options);
             String path = requiredString(options, "path");
@@ -1002,7 +1043,7 @@ public final class SshCapabilityPlugin extends Plugin {
 
     @PluginMethod
     public void sftpMkdir(PluginCall call) {
-        run(call, options -> {
+        run(call, "sftpMkdir", options -> {
             String requestId = requiredString(options, "requestId");
             SshConnection connection = requireConnection(options);
             String path = requiredString(options, "path");
@@ -1027,7 +1068,7 @@ public final class SshCapabilityPlugin extends Plugin {
 
     @PluginMethod
     public void sftpRename(PluginCall call) {
-        run(call, options -> {
+        run(call, "sftpRename", options -> {
             String requestId = requiredString(options, "requestId");
             SshConnection connection = requireConnection(options);
             SFTPClient client = requireSftp(connection);
@@ -1044,7 +1085,7 @@ public final class SshCapabilityPlugin extends Plugin {
 
     @PluginMethod
     public void sftpDelete(PluginCall call) {
-        run(call, options -> {
+        run(call, "sftpDelete", options -> {
             String requestId = requiredString(options, "requestId");
             SshConnection connection = requireConnection(options);
             String path = requiredString(options, "path");
@@ -1196,7 +1237,7 @@ public final class SshCapabilityPlugin extends Plugin {
 
     @PluginMethod
     public void openPortForward(PluginCall call) {
-        run(call, options -> {
+        run(call, "openPortForward", options -> {
             String requestId = requiredString(options, "requestId");
             SshConnection connection = requireConnection(options);
             String remoteHost = requiredString(options, "remoteHost");
@@ -1219,7 +1260,7 @@ public final class SshCapabilityPlugin extends Plugin {
                 forwarder = connection.client.newLocalPortForwarder(parameters, server);
                 forwarding = new SshForward(UUID.randomUUID().toString(), connection, server, forwarder, localPort);
                 forwarding.remotePort = remotePort;
-                forwards.put(forwarding.forwardId, forwarding);
+                registerForward(connection, forwarding);
                 updateForwardService();
                 LocalPortForwarder activeForwarder = forwarder;
                 SshForward activeForwarding = forwarding;
@@ -1264,7 +1305,7 @@ public final class SshCapabilityPlugin extends Plugin {
 
     @PluginMethod
     public void closePortForward(PluginCall call) {
-        run(call, options -> {
+        run(call, "closePortForward", options -> {
             String requestId = requiredString(options, "requestId");
             String forwardId = requiredString(options, "forwardId");
             SshForward forward = forwards.get(forwardId);
@@ -1283,7 +1324,7 @@ public final class SshCapabilityPlugin extends Plugin {
 
     @PluginMethod
     public void resourceSnapshot(PluginCall call) {
-        run(call, options -> {
+        run(call, "resourceSnapshot", options -> {
             String requestId = requiredString(options, "requestId");
             return resourceSnapshotFor(requestId);
         });
@@ -1777,16 +1818,26 @@ public final class SshCapabilityPlugin extends Plugin {
         }
     }
 
-    private void run(PluginCall call, CallOperation operation) {
-        try {
-            JSObject result = operation.execute(call.getData());
-            call.resolve(result);
-        } catch (PluginFailure failure) {
-            call.reject(failure.getMessage(), failure.code, failure, failure.data);
-        } catch (Exception error) {
-            PluginFailure failure = failureFor(error);
-            call.reject(failure.getMessage(), failure.code, failure, failure.data);
-        }
+    /**
+     * Executes the call on a worker and resolves/rejects the PluginCall from
+     * it (#3141). Capacitor runs every {@code @PluginMethod} on one shared
+     * plugin thread, so SSH work must not run there: a 2 s exec used to delay
+     * unrelated plugins' calls by 2.5 s. The method's lane and pool come from
+     * the single {@link SshCallRouting} table, so ordering lives in one place.
+     */
+    void run(PluginCall call, String method, CallOperation operation) {
+        JSObject data = call.getData();
+        SshCallDispatcher dispatcher = SshCallRouting.isConnect(method) ? connectDispatcher : callDispatcher;
+        dispatcher.submit(SshCallRouting.lane(method, data), () -> {
+            try {
+                call.resolve(operation.execute(data));
+            } catch (PluginFailure failure) {
+                call.reject(failure.getMessage(), failure.code, failure, failure.data);
+            } catch (Throwable error) {
+                PluginFailure failure = failureFor(error instanceof Exception ? (Exception) error : new RuntimeException(error));
+                call.reject(failure.getMessage(), failure.code, failure, failure.data);
+            }
+        });
     }
 
     private SshConnection requireConnection(JSObject options) throws PluginFailure {
@@ -2176,7 +2227,7 @@ public final class SshCapabilityPlugin extends Plugin {
         return message.length() > 500 ? message.substring(0, 500) : message;
     }
 
-    private interface CallOperation {
+    interface CallOperation {
         JSObject execute(JSObject options) throws Exception;
     }
 

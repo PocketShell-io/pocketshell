@@ -41,6 +41,9 @@ final class EphemeralCredentials {
 
     private final Map<String, String> bindings = new LinkedHashMap<>();
     private final Map<String, byte[]> keys = new LinkedHashMap<>();
+    /** Public facts + SHA-256 of the held bytes, so an identical hold is answered without a re-parse. */
+    private final Map<String, Held> heldInfo = new LinkedHashMap<>();
+    private final Map<String, byte[]> digests = new LinkedHashMap<>();
 
     static boolean isEphemeral(String handleId) {
         return handleId != null && handleId.startsWith(HANDLE_PREFIX);
@@ -66,8 +69,43 @@ final class EphemeralCredentials {
         synchronized (keys) {
             if (keys.size() >= MAX_HELD) throw new IOException("Too many vault keys are open at once. Lock the vault and unlock it again.");
             keys.put(handleId, Arrays.copyOf(privateKey, privateKey.length));
+            Held held = new Held(handleId, parsed.algorithm, parsed.fingerprintSha256);
+            heldInfo.put(handleId, held);
+            digests.put(handleId, sha256(privateKey));
+            return held;
         }
-        return new Held(handleId, parsed.algorithm, parsed.fingerprintSha256);
+    }
+
+    /**
+     * The already-held handle for exactly this vault identity AND exactly these
+     * key bytes, or null (#3141). A hit skips the key parse, which dominated the
+     * per-connect hold cost. Invalidation is structural: {@link #release},
+     * {@link #wipeAll} (sign-out, vault lock) and a rebind to different bytes all
+     * drop the binding/digest this lookup reads, and a different key under the
+     * same identity never matches because the digest is compared.
+     */
+    Held findHeld(String accountId, String vaultId, long epoch, String keyId, byte[] privateKey) {
+        if (privateKey == null || privateKey.length == 0) return null;
+        String identity = accountId + ":" + vaultId + ":" + epoch + ":" + keyId;
+        byte[] digest = sha256(privateKey);
+        synchronized (keys) {
+            for (Map.Entry<String, String> entry : bindings.entrySet()) {
+                if (!identity.equals(entry.getValue())) continue;
+                byte[] held = digests.get(entry.getKey());
+                if (held != null && java.security.MessageDigest.isEqual(held, digest) && keys.containsKey(entry.getKey())) {
+                    return heldInfo.get(entry.getKey());
+                }
+            }
+        }
+        return null;
+    }
+
+    private static byte[] sha256(byte[] bytes) {
+        try {
+            return java.security.MessageDigest.getInstance("SHA-256").digest(bytes);
+        } catch (java.security.NoSuchAlgorithmException impossible) {
+            throw new IllegalStateException(impossible);
+        }
     }
 
     void bind(String handle, String accountId, String vaultId, long epoch, String keyId) throws IOException {
@@ -75,7 +113,15 @@ final class EphemeralCredentials {
                 || !vaultId.matches("[A-Za-z0-9_-]{22}") || epoch < 1 || keyId == null || !keyId.matches("[A-Za-z0-9_-]{22}")) throw new IOException("Invalid vault key identity.");
         synchronized (keys) {
             if (!keys.containsKey(handle)) throw new IOException("Vault key was released.");
-            bindings.put(handle, accountId + ":" + vaultId + ":" + epoch + ":" + keyId);
+            String identity = accountId + ":" + vaultId + ":" + epoch + ":" + keyId;
+            // A different key under the same identity (key rotated) replaces and
+            // zeroes the stale handle. Identical bytes (two racing cold holds)
+            // keep both: each caller was already given its own handle.
+            for (String other : new java.util.ArrayList<>(bindings.keySet())) {
+                if (other.equals(handle) || !identity.equals(bindings.get(other))) continue;
+                if (!java.security.MessageDigest.isEqual(digests.get(other), digests.get(handle))) removeLocked(other);
+            }
+            bindings.put(handle, identity);
         }
     }
 
@@ -100,12 +146,18 @@ final class EphemeralCredentials {
 
     boolean release(String handleId) {
         synchronized (keys) {
-            bindings.remove(handleId);
-            byte[] key = keys.remove(handleId);
-            if (key == null) return false;
-            Arrays.fill(key, (byte) 0);
-            return true;
+            return removeLocked(handleId);
         }
+    }
+
+    private boolean removeLocked(String handleId) {
+        bindings.remove(handleId);
+        heldInfo.remove(handleId);
+        digests.remove(handleId);
+        byte[] key = keys.remove(handleId);
+        if (key == null) return false;
+        Arrays.fill(key, (byte) 0);
+        return true;
     }
 
     /** Vault locked, account signed out: every held key is zeroed and forgotten. */
@@ -115,6 +167,8 @@ final class EphemeralCredentials {
             for (byte[] key : keys.values()) Arrays.fill(key, (byte) 0);
             keys.clear();
             bindings.clear();
+            heldInfo.clear();
+            digests.clear();
             return count;
         }
     }

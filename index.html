@@ -8,7 +8,10 @@
     <title>PocketShell</title>
     <style>
       html, body { margin: 0; min-height: 100%; background: #0d1117; color: #e6edf3; font: 15px system-ui, sans-serif; }
-      .boot-fallback { margin: 24px; padding: 16px; border: 1px solid #f85149; border-radius: 10px; color: #ffb4ab; background: #211518; }
+      /* Invisible on a normal start (the app replaces it within ~0.5 s); pure CSS so it still
+         reveals when no script ever runs. Shown only after 5 s without a mount (#3141). */
+      @keyframes boot-fallback-reveal { to { visibility: visible; } }
+      .boot-fallback { visibility: hidden; animation: boot-fallback-reveal 0s linear 5s forwards; margin: 24px; padding: 16px; border: 1px solid #f85149; border-radius: 10px; color: #ffb4ab; background: #211518; }
     </style>
   </head>
   <body>
