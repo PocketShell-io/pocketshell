@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia';
-import { parseFontSize } from '@ui/fonts';
+import { parseFontSize, TERMINAL_FONT_SIZE_COMPACT_DEFAULT } from '@ui/fonts';
 import { parseThemeChoice, THEME_CHOICE_DEFAULT } from '@ui/themes';
 
 /**
@@ -36,7 +36,8 @@ export interface AppSettings {
 
 export const DEFAULT_APP_SETTINGS: Readonly<AppSettings> = {
   themeChoice: THEME_CHOICE_DEFAULT,
-  terminalFontSize: 16,
+  // The phone's compact default: >= 50 columns at 412dp (#3138). A stored size is kept.
+  terminalFontSize: TERMINAL_FONT_SIZE_COMPACT_DEFAULT,
   voiceLanguage: VOICE_LANGUAGE_AUTO,
   voiceSilenceSeconds: VOICE_SILENCE_DEFAULT_SECONDS,
 };

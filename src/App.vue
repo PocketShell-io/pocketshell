@@ -22,7 +22,7 @@ import {
   type TerminalKeyId,
 } from '@pocketshell/core';
 import AppIcon from '@ui/components/AppIcon.vue';
-import { fontCssVariables } from '@ui/fonts';
+import { BUNDLED_MONO_STACK, fontCssVariables } from '@ui/fonts';
 import { resolveTheme } from '@ui/themes';
 import HostKeyTrustPrompt from '@ui/app/components/HostKeyTrustPrompt.vue';
 import { hostKeyAnswer, hostKeyCard, hostKeyRefusalMessage } from './session/hostKeyCard';
@@ -165,7 +165,7 @@ const terminalFontFamily = computed(() => fontCssVariables({
   monospaceFontFamily: null,
   terminalFontSize: appSettings.terminalFontSize,
   editorFontSize: 13,
-}, 'ui-monospace, monospace')['--font-mono']);
+}, BUNDLED_MONO_STACK)['--font-mono']);
 const backButtonReady = ref(!Capacitor.isNativePlatform());
 const backButtonEvents = ref(0);
 const keyboardVisible = ref(false);
@@ -1556,7 +1556,7 @@ watchEffect(() => {
     monospaceFontFamily: null,
     terminalFontSize: appSettings.terminalFontSize,
     editorFontSize: 13,
-  }, 'ui-monospace, monospace');
+  }, BUNDLED_MONO_STACK);
   for (const [name, value] of Object.entries(fontVariables)) root.style.setProperty(name, value);
   // Keep five measured xterm rows visible with the default 8px viewport inset
   // and a little room for Android/WebView font metric rounding.

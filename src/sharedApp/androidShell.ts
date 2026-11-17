@@ -7,12 +7,13 @@
  * here — the WebView resizes for the IME. Native navigation clearance is
  * bound separately because Android WebView does not expose it through env().
  */
+import { BUNDLED_MONO_STACK } from '@ui/fonts';
 import { writeAppInsets, type AppInsets, type InsetTarget } from '@ui/app/insets';
 import type { KeyboardInsetsState } from '@/native/keyboardInsets';
 import { createKeyboardInsetsStateSync } from '@/native/keyboardInsetsState';
 
-/** No Consolas on a phone: the platform's own monospace. */
-export const ANDROID_MONO_FALLBACK = 'ui-monospace, monospace';
+/** No Consolas on a phone: the bundled JetBrains Mono, then the platform's own monospace (#3138). */
+export const ANDROID_MONO_FALLBACK = BUNDLED_MONO_STACK;
 
 export const ANDROID_INSETS: AppInsets = {
   top: 'env(safe-area-inset-top, 0px)',

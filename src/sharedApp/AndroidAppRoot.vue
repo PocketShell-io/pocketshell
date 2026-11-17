@@ -10,8 +10,6 @@ import { useSyncStore } from '@ui/app/stores/sync';
 import AccountHostKeyGate from './AccountHostKeyGate.vue';
 import { androidVault, vaultSync } from './platform';
 
-defineProps<{ monoFallback?: string }>();
-
 const sync = useSyncStore();
 
 // One passphrase (contract #2): an unlocked vault hands the account's sync
@@ -30,7 +28,7 @@ watch(
 </script>
 
 <template>
-  <AppRoot :mono-fallback="monoFallback" />
+  <AppRoot />
   <AccountHostKeyGate />
   <AndroidAttachmentBridge />
 </template>

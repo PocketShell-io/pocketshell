@@ -17,6 +17,7 @@ import { googleSync } from '@/native/googleSync';
 import { bindAndroidAuthLoss } from '@/platform/android/authLoss';
 import { androidPlatform, keyVaultPlatform, lockAndroidVaultAfterAuthLoss } from './platform';
 import { androidTerminalInputAdapter } from '@/platform/android/terminalImeInput';
+import { bundledOnlyFontProfile, provideFontProfile } from '@ui/app/fontProfile';
 import { ANDROID_MONO_FALLBACK, applyAndroidInsets, bindAndroidBottomInsets } from './androidShell';
 import { keyboardInsets } from '@/native/keyboardInsets';
 import VaultSettingsSection from '@ui/app/components/vault/VaultSettingsSection.vue';
@@ -27,6 +28,9 @@ import VaultSettingsSection from '@ui/app/components/vault/VaultSettingsSection.
  */
 export function mountSharedApp(target: string | Element): void {
   provideApi(androidPlatform.api);
+  // The phone bundles one monospace face and has no installed fonts to offer:
+  // the terminal's fallback tail and the Settings picker both follow this (#3138).
+  provideFontProfile(bundledOnlyFontProfile(ANDROID_MONO_FALLBACK));
   // The account key vault (key-vault W4): core's shared unlock sheet, which
   // AppRoot mounts, over the phone's store and Keystore-sealed remember.
   const vault = provideKeyVault(keyVaultPlatform)!;
@@ -43,7 +47,7 @@ export function mountSharedApp(target: string | Element): void {
   applyAndroidInsets();
   // The shared app root (theme and typography watchers, diag strip, outlet),
   // the same component desktop and web mount, plus the phone's own gates.
-  const app = createApp(AndroidAppRoot, { monoFallback: ANDROID_MONO_FALLBACK });
+  const app = createApp(AndroidAppRoot);
   app.onUnmount(bindAndroidBottomInsets(keyboardInsets));
   app.config.errorHandler = (err): void => {
     recordDiagError('render', err);
