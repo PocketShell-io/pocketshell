@@ -34,6 +34,9 @@ JS-first packaged Android lanes:
                     session list/attach/I/O/resize/reconnect, and the
                     pin-mismatch, 4401, 4404 and offline refusals (Docker;
                     needs --gateway-src, a suffix containing "gwlane"; #3086)
+  s1-layout         Mobile layout class proof at 412x915dp and 360x800dp: 48px
+                    hit targets under pointer:coarse and workspace bottom
+                    containment with non-zero bar insets (agents lane; #3120)
 
 Each run requires an explicit per-worktree --suffix TOKEN. Docker lanes also
 require their fixture's port; lifecycle additionally requires its container
@@ -53,6 +56,8 @@ Examples:
   scripts/connected-test.sh durable-storage --suffix i2993 --run-id js2993-local
   scripts/connected-test.sh account-sync --suffix i3020 --run-id js3020-local
   scripts/connected-test.sh account-picker --suffix i3063 --run-id js3063-local
+  scripts/agents-pool.sh up 2245
+  scripts/connected-test.sh s1-layout --suffix i3120 --port 2245
   scripts/connected-test.sh gateway-docker --suffix i3086gwlane --run-id gw3086-local \
     --gateway-src ~/git/pocketshell-gateway
 
@@ -108,8 +113,11 @@ case "$LANE" in
   gateway-docker)
     TARGET="$ROOT_DIR/scripts/connected-js-gateway-docker.sh"
     ;;
+  s1-layout)
+    TARGET="$ROOT_DIR/scripts/connected-js-s1-layout.sh"
+    ;;
   *)
-    fail "unknown JS-first connected lane '$LANE'; choose smoke, lifecycle, composer-docker, hotkeys-docker, key-vault-docker, durable-storage, account-sync, account-picker, or gateway-docker"
+    fail "unknown JS-first connected lane '$LANE'; choose smoke, lifecycle, composer-docker, hotkeys-docker, key-vault-docker, durable-storage, account-sync, account-picker, gateway-docker, or s1-layout"
     ;;
 esac
 
