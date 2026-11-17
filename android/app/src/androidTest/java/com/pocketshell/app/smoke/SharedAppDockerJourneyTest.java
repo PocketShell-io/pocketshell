@@ -1304,7 +1304,7 @@ public abstract class SharedAppDockerJourneyTest {
      * same xterm DOM node, the same transport.
      */
     public void cdInsideOpenShellKeepsTheTerminalMounted() throws Exception {
-        String run = "j25-" + Long.toString(System.currentTimeMillis(), 36);
+        String run = "j28-" + Long.toString(System.currentTimeMillis(), 36);
         connectFixtureAndAttach(run);
         installRecoveryRecorder();
         JSONObject live = latestLiveJournalEntry();
@@ -1316,14 +1316,14 @@ public abstract class SharedAppDockerJourneyTest {
         int closesBefore = Integer.parseInt(evalString("String(window.__ps2954.closes.length)"));
         int dialsBefore = nativeDialCount();
         int xtermBefore = Integer.parseInt(evalString("String(document.querySelectorAll('.xterm').length)"));
-        screenshot("j25-before-cd");
-        typeLine("cd /tmp && echo J25_CD_DONE");
-        awaitJsTrue(VISIBLE_TERMINAL + ".includes('J25_CD_DONE')", 15_000);
+        screenshot("j28-before-cd");
+        typeLine("cd /tmp && echo J28_CD_DONE");
+        awaitJsTrue(VISIBLE_TERMINAL + ".includes('J28_CD_DONE')", 15_000);
         // Host oracle: the session's aplexer workspace follows the cwd (this is the premise).
         String snapshotCmd = "PATH=\"$HOME/.local/bin:$PATH\" a --json snapshot";
         JSONObject moved = null;
         for (int attempt = 0; attempt < 20 && moved == null; attempt++) {
-            JSONObject snap = awaitNativeExec("j25-snap-" + run + "-" + attempt, live.getString("transportId"),
+            JSONObject snap = awaitNativeExec("j28-snap-" + run + "-" + attempt, live.getString("transportId"),
                     live.getString("generationId"), snapshotCmd);
             JSONArray rows = new JSONArray(snap.getString("stdout"));
             for (int i = 0; i < rows.length(); i++) {
@@ -1336,7 +1336,7 @@ public abstract class SharedAppDockerJourneyTest {
         // Wait out two session-tree polls (5s each): the tree re-lists and re-groups.
         awaitJsTrue("[...document.querySelectorAll('.dir-header')].some((n)=>n.textContent.includes('tmp'))", 30_000);
         SystemClock.sleep(11_000);
-        screenshot("j25-after-cd-and-polls");
+        screenshot("j28-after-cd-and-polls");
         assertEquals("the same xterm DOM node is still mounted and visible", "mounted",
                 evalString("(() => {const n=[...document.querySelectorAll('.xterm')].find((e)=>e.offsetParent!==null);"
                         + "return n ? String(n.__ps3146 ?? 'remounted') : 'gone';})()"));
@@ -1347,11 +1347,11 @@ public abstract class SharedAppDockerJourneyTest {
         assertEquals("no PTY was closed", closesBefore,
                 Integer.parseInt(evalString("String(window.__ps2954.closes.length)")));
         assertEquals("no new native dial", dialsBefore, nativeDialCount());
-        assertTrue("the terminal still shows the typed command", terminalShows("J25_CD_DONE"));
-        Log.i(TAG, "J25_CD_ORACLE opens=" + opensBefore + " closes=" + closesBefore + " moved=" + moved.optString("workspace"));
+        assertTrue("the terminal still shows the typed command", terminalShows("J28_CD_DONE"));
+        Log.i(TAG, "J28_CD_ORACLE opens=" + opensBefore + " closes=" + closesBefore + " moved=" + moved.optString("workspace"));
         // And it still takes input after the poll.
-        typeLine("echo J25_STILL_HERE");
-        awaitJsTrue(VISIBLE_TERMINAL + ".includes('J25_STILL_HERE')", 15_000);
+        typeLine("echo J28_STILL_HERE");
+        awaitJsTrue(VISIBLE_TERMINAL + ".includes('J28_STILL_HERE')", 15_000);
     }
 
     private boolean terminalShows(String needle) throws Exception {

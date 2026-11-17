@@ -29,7 +29,7 @@ REQUIRED_CLASS = "com.pocketshell.app.smoke.J01ConnectAndTrustJourney"
 METHOD_CLASSES = {'aThreeFileUploadShowsTheBarMidFlightAndLeavesNoResidueAfterCompletion': 'com.pocketshell.app.smoke.J20ComposerUploadProgressJourney',
  'androidShareStreamsReachTheChosenSessionOnTheRealHost': 'com.pocketshell.app.smoke.J11ShareUploadJourney',
  'androidSingleShareReachesTheChosenSessionOnTheRealHost': 'com.pocketshell.app.smoke.J11ShareUploadJourney',
- 'cdInsideOpenShellKeepsTheTerminalMounted': 'com.pocketshell.app.smoke.J25CdKeepsTerminalJourney',
+ 'cdInsideOpenShellKeepsTheTerminalMounted': 'com.pocketshell.app.smoke.J28CdKeepsTerminalJourney',
  'changedHostKeyIsRefusedWithVisibleMessage': 'com.pocketshell.app.smoke.J01ConnectAndTrustJourney',
  'firstContactHostKeyAsksAndHonoursRejectOnceAndAlways': 'com.pocketshell.app.smoke.J01ConnectAndTrustJourney',
  'hostAddedThroughFormConnectsToFixture': 'com.pocketshell.app.smoke.J21HostAddConnectJourney',
