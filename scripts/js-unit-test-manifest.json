@@ -1030,6 +1030,12 @@
         "loads protected revision floors and supplies them to authenticated descriptor verification"
       ]
     },
+    "tests/unit/androidDesktopChrome.test.ts": {
+      "suite": "Android desktop-chrome capability (#3139)",
+      "tests": [
+        "declares app.desktopChrome === false so the shared Settings hides desktop-only controls and copy"
+      ]
+    },
     "tests/unit/androidFreshShell.test.ts": {
       "suite": "Android fresh server terminal adapters",
       "tests": [

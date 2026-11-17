@@ -645,6 +645,9 @@ export function createAndroidPlatform(deps: AndroidApiDeps): AndroidPlatform {
       // (bindLifecycle above). Feeding the shared store's resume probe too
       // would start a second reconnect decision on the same event (D28).
       onResumed: () => () => undefined,
+      // No window zoom chords, OS-theme follow, Electron menu or hardware
+      // chord table on a phone: Settings hides them (#3139).
+      desktopChrome: false,
     },
   };
 
