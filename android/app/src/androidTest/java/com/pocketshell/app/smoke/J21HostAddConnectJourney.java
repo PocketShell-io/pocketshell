@@ -16,7 +16,7 @@ public class J21HostAddConnectJourney extends SharedAppDockerJourneyTest {
     private final AtomicInteger googleCalls=new AtomicInteger();
     private final AtomicInteger accountHttp=new AtomicInteger();
 
-    @Before @Override public void launchSharedApp() {
+    @Before @Override public void launchSharedApp() throws Exception {
         Context context=InstrumentationRegistry.getInstrumentation().getTargetContext();
         context.deleteSharedPreferences("pocketshell-sync-auth");
         GoogleSyncEnvironment.installForTesting(activity -> new com.pocketshell.app.GoogleSyncSession.SignInProvider() {
@@ -82,8 +82,8 @@ public class J21HostAddConnectJourney extends SharedAppDockerJourneyTest {
         // Exercise the supported Reload control while the real native SSH
         // promise is pending; never replace a store snapshot through JS.
         evalString("(()=>{const row=[...document.querySelectorAll('.host-row')].find(n=>n.textContent.includes("+org.json.JSONObject.quote(name)+"));"
-            +"if(!row)throw new Error('guest fixture row missing');row.click();const reload=document.querySelector('button[aria-label=\"Reload hosts\"]');"
-            +"if(!reload||reload.disabled)throw new Error('Reload hosts must be reachable while dialing');reload.click();return 'dial-and-reload';})()");
+            +"if(!row)throw new Error('guest fixture row missing');"+JsVisibility.clickNode("row","guest fixture row")+"const reload=document.querySelector('button[aria-label=\"Reload hosts\"]');"
+            +"if(!reload||reload.disabled)throw new Error('Reload hosts must be reachable while dialing');"+JsVisibility.clickNode("reload","Reload hosts")+"return 'dial-and-reload';})()");
     }
 
     private void captureGuestTrace(String stage) throws Exception {

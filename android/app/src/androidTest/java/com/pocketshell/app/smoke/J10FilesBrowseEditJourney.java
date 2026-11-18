@@ -769,7 +769,7 @@ public final class J10FilesBrowseEditJourney {
                 + " + '; loading=' + (document.querySelector('[data-testid=file-loading]')?.textContent.trim() ?? 'none')"
                 + " + '; status=' + (document.querySelector('[data-testid=file-status]')?.textContent.trim() ?? 'none')"
                 + " + '; error=' + (document.querySelector('[data-testid=file-error]')?.textContent.trim() ?? 'none'));"
-                + "node.click();return 'clicked';} catch (error) {return 'click failed: ' + error.message;}})()");
+                + JsVisibility.clickNode("node", selector) + "return 'clicked';} catch (error) {return 'click failed: ' + error.message;}})()");
         assertEquals("packaged file UI click on " + selector, "clicked", outcome);
     }
 

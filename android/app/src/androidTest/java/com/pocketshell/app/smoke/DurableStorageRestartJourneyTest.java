@@ -281,9 +281,7 @@ public final class DurableStorageRestartJourneyTest {
     }
 
     private void click(String selector) throws Exception {
-        evalString("(() => {const node = document.querySelector(" + JSONObject.quote(selector) + ");"
-                + "if (!node) throw new Error('missing ' + " + JSONObject.quote(selector) + ");"
-                + "node.click(); return 'clicked';})()");
+        JsVisibility.expectClicked(evalString(JsVisibility.click("document.querySelector(" + JSONObject.quote(selector) + ")")));
     }
 
     private void awaitJsTrue(String expression) throws Exception {

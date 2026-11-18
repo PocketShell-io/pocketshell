@@ -374,7 +374,8 @@ public abstract class SshKeyVaultDockerJourneyTest {
         setValue("[data-testid=ssh-key-paste-text]", pastedKey);
         awaitJsTrue("!document.querySelector('[data-testid=import-pasted-ssh-key]').disabled");
         assertEquals("the pasted private key must leave the field as Import is pressed", "",
-            evalString("(() => {document.querySelector('[data-testid=import-pasted-ssh-key]').click();"
+            evalString("(() => {const __b=document.querySelector('[data-testid=import-pasted-ssh-key]');"
+                + JsVisibility.clickNode("__b", "import pasted key")
                 + "return document.querySelector('[data-testid=ssh-key-paste-text]')?.value ?? '';})()"));
         awaitJsTrue("document.querySelector('.app-shell')?.dataset.route === 'home' && !!document.querySelector('[data-testid=ssh-key-selection]')?.value");
         String pastedHandle = evalString("document.querySelector('[data-testid=ssh-key-selection]').value");
@@ -833,9 +834,7 @@ public abstract class SshKeyVaultDockerJourneyTest {
     }
 
     private void click(String selector) throws Exception {
-        evalString("(() => {const node=document.querySelector(" + JSONObject.quote(selector) + ");"
-            + "if(!node) throw new Error('missing ' + " + JSONObject.quote(selector) + ");"
-            + "node.click(); return 'clicked';})()");
+        JsVisibility.expectClicked(evalString(JsVisibility.click("document.querySelector(" + JSONObject.quote(selector) + ")")));
     }
 
     private void awaitJsTrue(String expression) throws Exception {
@@ -868,7 +867,7 @@ public abstract class SshKeyVaultDockerJourneyTest {
         });
         assertTrue("timed out evaluating packaged key-management UI", latch.await(JS_TIMEOUT_SECONDS, TimeUnit.SECONDS));
         if (result.get() == null || "null".equals(result.get())) throw new JSONException("JavaScript returned null: " + expression);
-        return result.get();
+        return JsVisibility.failOnGuard(result.get());
     }
 
     private static WebView findWebView(android.view.View view) {

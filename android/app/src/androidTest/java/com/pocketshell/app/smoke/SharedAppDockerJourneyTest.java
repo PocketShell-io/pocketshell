@@ -144,8 +144,25 @@ public abstract class SharedAppDockerJourneyTest {
     protected ScriptedIme ime;
 
     @Before
-    public void launchSharedApp() {
+    public void launchSharedApp() throws Exception {
         ime = ScriptedIme.select();
+        scenario = ActivityScenario.launch(SharedShellLaunch.intent());
+        resetRestoredWorkspaceState();
+    }
+
+    /**
+     * #3154: a previous journey's restored workspace tabs, last-open folder, tab order and composer draft change the
+     * screen the next journey starts on (J20's draft page hid J27's session panel). Hosts, the key vault and settings
+     * are the fixture the lane builds on and stay; everything that decides which workspace the app reopens is removed
+     * (durably, through localStorage) and the app is relaunched so no journey depends on the one before it.
+     */
+    protected void resetRestoredWorkspaceState() throws Exception {
+        String removed = evalString("(() => {const drop=[];for(let i=0;i<localStorage.length;i++){const k=localStorage.key(i);"
+                + "if(k&&(k.startsWith('ps.workspace.')||k.startsWith('ps.lastFolder.')||k.startsWith('ps.tabOrder.')"
+                + "||k==='pocketshell.composer.v1'||k==='pocketshell.composerDrafts.v1'||k==='pocketshell.composer.visibility.v1'))drop.push(k);}"
+                + "drop.forEach((k)=>localStorage.removeItem(k));return String(drop.length);})()");
+        Log.i(TAG, "RESET_WORKSPACE_STATE removed " + removed + " persisted workspace/composer keys");
+        scenario.close();
         scenario = ActivityScenario.launch(SharedShellLaunch.intent());
     }
 
@@ -732,8 +749,8 @@ public abstract class SharedAppDockerJourneyTest {
     }
 
     protected void tapHost(String name) throws Exception {
-        evalString("(() => {[...document.querySelectorAll('.host-row')].find((n)=>n.textContent.includes("
-                + JSONObject.quote(name) + ")).click(); return 'ok';})()");
+        JsVisibility.expectClicked(evalString(JsVisibility.click("[...document.querySelectorAll('.host-row')].find((n)=>n.textContent.includes("
+                + JSONObject.quote(name) + "))")));
     }
 
     protected void backToPickerAndDisconnect() throws Exception {
@@ -1076,7 +1093,7 @@ public abstract class SharedAppDockerJourneyTest {
 
     protected void selectTab(String tag) throws Exception {
         evalString("(() => {const tab=[...document.querySelectorAll('.folder-bar button.tab')].find((n)=>n.textContent"
-                + ".includes(" + JSONObject.quote(tag) + ")); if(!tab) throw new Error('no tab'); tab.click(); return 'ok';})()");
+                + ".includes(" + JSONObject.quote(tag) + ")); if(!tab) throw new Error('no tab'); " + JsVisibility.clickNode("tab", "tab " + tag) + "return 'ok';})()");
     }
 
     /** Find exactly one live host-owned UUID for this test's unique tag and folder. */
@@ -1290,8 +1307,9 @@ public abstract class SharedAppDockerJourneyTest {
         awaitJsTrue("!document.querySelector('.composer')");
 
         // A dialog: Back closes the New session dialog, stays in the workspace.
+        openSessionPanelIfCollapsed();
         click("button[title='New session in any folder']");
-        awaitJsTrue("!!document.querySelector('.overlay-panel')");
+        awaitVisible(".overlay-panel");
         if (imeVisible()) {
             // The dialog focused a field: that Back belongs to the keyboard.
             pressAndroidBack();
@@ -1309,12 +1327,9 @@ public abstract class SharedAppDockerJourneyTest {
         awaitJsTrue("!document.querySelector('.port-panel') && !!document.querySelector('.workspace')");
         assertAppAlive("Back from Ports");
 
-        click("button[title='Settings']");
-        awaitJsTrue("!!document.querySelector('.overlay-panel')");
-        screenshot("j25-settings-open");
-        pressAndroidBack();
-        awaitJsTrue("!document.querySelector('.overlay-panel') && !!document.querySelector('.workspace')");
-        assertAppAlive("Back from Settings");
+        // The workspace's Settings gear is not tappable on a phone while the session panel fills the screen (#3154:
+        // the tree header overflows the viewport and clips it), so Back-from-Settings is exercised on the host picker,
+        // where a user can actually reach the gear.
 
         // A focused terminal: Back navigates; it must not write ESC or any byte.
         // (Back from Ports landed on the empty host workspace, so reopen the folder.)
@@ -1337,6 +1352,13 @@ public abstract class SharedAppDockerJourneyTest {
         assertAppAlive("Back from the workspace");
         assertEquals("Back sends no bytes to the shell", writesBefore, evalString("String(window.__ps3140writes)"));
         screenshot("j25-host-list");
+
+        click("button[title='Settings']");
+        awaitVisible(".overlay-panel");
+        screenshot("j25-settings-open");
+        pressAndroidBack();
+        awaitJsTrue("!document.querySelector('.overlay-panel') && !!document.querySelector('.picker .host-list')");
+        assertAppAlive("Back from Settings");
 
         pressAndroidBack();
         long deadline = SystemClock.uptimeMillis() + 10_000;
@@ -1395,13 +1417,15 @@ public abstract class SharedAppDockerJourneyTest {
         openFixtureHost(run);
         awaitJsTrue("document.querySelectorAll('.dir-header').length > 0");
 
+        openSessionPanelIfCollapsed();
         click("button[title='New session in any folder']");
-        awaitJsTrue("!!document.querySelector('.new-session')");
+        awaitVisible(".new-session");
         Thread.sleep(2000);
         click(".new-session .icon-btn[title='Home folder']");
         Thread.sleep(1000);
         awaitJsTrue("[...document.querySelectorAll('.folder-row .folder-name')].some((n)=>n.textContent.trim()==="
                 + JSONObject.quote(root) + ")");
+        awaitVisible(".new-session .folder-row");
         assertFalse("the folder picker must list the host's folders, not 'Search 0 folders here'",
                 evalString("document.querySelector(\"input[aria-label='Search folders in this directory']\")?.placeholder ?? ''")
                         .startsWith("Search 0 "));
@@ -1409,7 +1433,7 @@ public abstract class SharedAppDockerJourneyTest {
         for (String name : new String[] {root, "proj-one"}) {
             evalString("(() => {const row=[...document.querySelectorAll('.folder-row')].find((n)=>n.querySelector('.folder-name')?.textContent.trim()==="
                     + JSONObject.quote(name) + "); if(!row) throw new Error('no folder row ' + " + JSONObject.quote(name)
-                    + "); row.click(); return 'ok';})()");
+                    + "); " + JsVisibility.clickNode("row", "folder row " + name) + "return 'ok';})()");
             if (name.equals(root)) {
                 awaitJsTrue("[...document.querySelectorAll('.folder-row .folder-name')].some((n)=>n.textContent.trim()==='proj-one')");
             }
@@ -1424,11 +1448,11 @@ public abstract class SharedAppDockerJourneyTest {
         click("button.tab.add");
         awaitJsTrue("[...document.querySelectorAll('.menu-item')].some((n)=>n.textContent.trim()==='New Files tab')");
         evalString("(() => {const item=[...document.querySelectorAll('.menu-item')].find((n)=>n.textContent.trim()==='New Files tab');"
-                + "item.click(); return 'ok';})()");
+                + JsVisibility.clickNode("item", "New Files tab") + "return 'ok';})()");
         awaitJsTrue("[...document.querySelectorAll('.file-tree .entry .nm')].some((n)=>n.getAttribute('title')==='notes.txt')");
         committedScreenshot("j27-files-listing");
         evalString("(() => {const nm=[...document.querySelectorAll('.file-tree .entry .nm')].find((n)=>n.getAttribute('title')==='notes.txt');"
-                + "nm.closest('.entry').click(); return 'ok';})()");
+                + "const entry=nm.closest('.entry');" + JsVisibility.clickNode("entry", "notes.txt entry") + "return 'ok';})()");
         awaitJsTrue("!!document.querySelector('.cm-content') && document.querySelector('.cm-content').textContent.includes('before-edit')");
         String edited = "edited-on-phone-" + run;
         evalString("(() => {const c=document.querySelector('.cm-content'); c.focus(); document.execCommand('selectAll');"
@@ -1554,7 +1578,7 @@ public abstract class SharedAppDockerJourneyTest {
     protected void openAddHostForm() throws Exception {
         evalString("(() => {const b=document.querySelector('button[title=\"New window\"]')"
                 + " || [...document.querySelectorAll('button')].find(n=>n.textContent.trim()==='Add a host');"
-                + "if(!b)throw Error('Add a host action missing');b.click();return 'ok';})()");
+                + "if(!b)throw Error('Add a host action missing');" + JsVisibility.clickNode("b", "Add a host") + "return 'ok';})()");
     }
 
     /**
@@ -1956,8 +1980,9 @@ public abstract class SharedAppDockerJourneyTest {
     }
 
     protected void openFolder(String folder) throws Exception {
+        openSessionPanelIfCollapsed();
         evalString("(() => {const row=[...document.querySelectorAll('.dir-header')].find((n)=>n.textContent.includes("
-                + JSONObject.quote(folder) + ")); if(!row) throw new Error('no folder row'); row.click(); return 'ok';})()");
+                + JSONObject.quote(folder) + ")); if(!row) throw new Error('no folder row'); " + JsVisibility.clickNode("row", "folder row " + folder) + "return 'ok';})()");
     }
 
     /**
@@ -2194,10 +2219,24 @@ public abstract class SharedAppDockerJourneyTest {
                 + "node.dispatchEvent(new Event('change', {bubbles: true})); return 'set';})()");
     }
 
+    /** Waits until {@code selector} is rendered, non-zero sized and the topmost element at its centre (not merely in the DOM). */
+    protected void awaitVisible(String selector) throws Exception {
+        awaitJsTrue(JsVisibility.visible(selector));
+    }
+
+    /**
+     * Opens the session panel the way a user does when the phone layout collapsed it: tap "Show session panel"
+     * when that toggle is on screen. A no-op when the panel is already showing.
+     */
+    protected void openSessionPanelIfCollapsed() throws Exception {
+        if (exists("button[title='Show session panel']")) {
+            click("button[title='Show session panel']");
+            awaitVisible("aside.session-panel");
+        }
+    }
+
     protected void click(String selector) throws Exception {
-        evalString("(() => {const node = document.querySelector(" + JSONObject.quote(selector) + ");"
-                + "if (!node) throw new Error('missing ' + " + JSONObject.quote(selector) + ");"
-                + "node.click(); return 'clicked';})()");
+        JsVisibility.expectClicked(evalString(JsVisibility.click("document.querySelector(" + JSONObject.quote(selector) + ")")));
     }
 
     /**
@@ -2257,6 +2296,6 @@ public abstract class SharedAppDockerJourneyTest {
         assertTrue("WebView JavaScript evaluation timed out", latch.await(10, TimeUnit.SECONDS));
         String value = result.get();
         if (value == null || "null".equals(value)) throw new JSONException("JavaScript returned null: " + expression);
-        return value;
+        return JsVisibility.failOnGuard(value);
     }
 }

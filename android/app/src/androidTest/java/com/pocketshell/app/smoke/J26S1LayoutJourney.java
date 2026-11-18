@@ -284,7 +284,7 @@ public class J26S1LayoutJourney extends SharedAppDockerJourneyTest {
      */
     private void measureSettings() throws Exception {
         awaitJsTrue("document.querySelector('" + SETTINGS_BUTTON + "') !== null");
-        evalString("(() => {document.querySelector('" + SETTINGS_BUTTON + "').click();return 'ok';})()");
+        JsVisibility.expectClicked(evalString(JsVisibility.click("document.querySelector('" + SETTINGS_BUTTON + "')")));
         awaitJsTrue("document.querySelector('" + SETTINGS_DIALOG + "') !== null"
                 + " && document.querySelector('" + SETTINGS_DIALOG + " [role=tablist][aria-label=\"Settings sections\"]') !== null");
         SystemClock.sleep(700);
@@ -297,7 +297,7 @@ public class J26S1LayoutJourney extends SharedAppDockerJourneyTest {
         // Close with the dialog's own Close control (OverlayPanel button[title=Close]), not the Android BACK key.
         String close = SETTINGS_DIALOG + " button[title=Close]";
         awaitJsTrue("document.querySelector('" + close + "') !== null");
-        evalString("(() => {document.querySelector('" + close + "').click();return 'ok';})()");
+        JsVisibility.expectClicked(evalString(JsVisibility.click("document.querySelector('" + close + "')")));
         awaitJsTrue("document.querySelector('" + SETTINGS_DIALOG + "') === null && !!document.querySelector('.host-list, .empty')");
         assertTrue("host list not reachable after closing the settings dialog with its Close control",
                 new JSONObject(evalString("JSON.stringify({ok:!!document.querySelector('.host-list, .empty')})")).getBoolean("ok"));
@@ -416,7 +416,7 @@ public class J26S1LayoutJourney extends SharedAppDockerJourneyTest {
         openFolder(folder);
         awaitJsTrue(VISIBLE_TERMINAL + ".includes('$')");
         SystemClock.sleep(1_500);
-        evalString("(() => {document.querySelector('button[aria-label=\"Close the prompt panel\"]')?.click();return 'ok';})()");
+        JsVisibility.expectClicked(evalString(JsVisibility.clickIfPresent("document.querySelector('button[aria-label=\"Close the prompt panel\"]')")));
         SystemClock.sleep(500);
         step("workspace");
         measureHits("3-workspace");
