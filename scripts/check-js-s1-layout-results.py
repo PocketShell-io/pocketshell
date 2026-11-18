@@ -4,6 +4,13 @@
 --results-dir holds junit-<label>/TEST-*.xml and layout-<label>.json for each of
 412x915 and 360x800. Each width must execute J26S1LayoutJourney exactly once,
 pass, and leave a non-empty evidence JSON whose measured counts are > 0 (G3).
+
+Terminal density and glyphs (#3157): each width must also carry the host PTY's
+column count equal to the laid-out grid, side gutters <= 2 CSS px, a symbol probe
+that ran (> 0 characters) with no .notdef (tofu), the Claude screen screenshot, and
+a phone size set in Settings (11.5) that applies live and survives an activity
+restart while the desktop size stays 16;
+the 412 class must fit 55-60 columns with the left rail removed.
 """
 import argparse
 import json
@@ -20,6 +27,39 @@ SCREENS = ("1-hosts", "2-session-tree", "3-workspace", "5-settings")
 REQUIRED_KINDS = {"1-hosts": ("host-row",), "2-session-tree": ("dir-header", "session-leaf")}
 LAYOUT_SCREENS = ("2-session-tree", "3-workspace", "4-workspace-ime-up")
 IME_BEHAVIOURS = ("layout-viewport-resized", "visual-viewport-resized", "no-resize-native-ime-bound")
+MAX_GUTTER = 2.0 + 0.5  # 2 CSS px plus the journey's sub-pixel slack
+COLUMN_RANGE = (55, 60)
+
+
+def validate_terminal(path, data, label):
+    cols = data.get("3b-terminal.columns")
+    glyphs = data.get("3b-terminal.glyphs")
+    if not isinstance(cols, dict) or not isinstance(glyphs, dict):
+        raise ValueError(f"{path}: no terminal column/glyph measurement (#3157)")
+    host = cols.get("hostCols", 0)
+    if not isinstance(host, int) or host <= 0:
+        raise ValueError(f"{path}: no host PTY column count")
+    if host != cols.get("geometry", {}).get("domCols") or host != cols.get("columnsWithRail"):
+        raise ValueError(f"{path}: host PTY columns {host} differ from the laid-out grid")
+    for side in ("leftGutter", "rightGutter"):
+        if not isinstance(cols.get(side), (int, float)) or cols[side] > MAX_GUTTER:
+            raise ValueError(f"{path}: {side} {cols.get(side)} exceeds 2 CSS px")
+    if label.startswith("412"):
+        lo, hi = COLUMN_RANGE
+        if not lo <= cols.get("columnsWithoutRail", 0) <= hi:
+            raise ValueError(f"{path}: {cols.get('columnsWithoutRail')} columns without the rail, want {lo}-{hi}")
+    if not isinstance(glyphs.get("probed"), int) or glyphs["probed"] <= 0:
+        raise ValueError(f"{path}: the glyph probe drew nothing")
+    if glyphs.get("tofu") != []:
+        raise ValueError(f"{path}: symbols drawn as tofu: {glyphs.get('tofu')}")
+    persist = data.get("6-phone-size.persist")
+    if not isinstance(persist, dict):
+        raise ValueError(f"{path}: no phone-size persistence measurement (#3157)")
+    expected = {"shownBefore": "12", "step": "0.5", "storedAfterChange": 11.5, "liveFontAfterChange": "11.5px",
+                "storedAfterRestart": 11.5, "shownAfterRestart": "11.5", "desktopSizeAfterRestart": 16}
+    for key, value in expected.items():
+        if persist.get(key) != value:
+            raise ValueError(f"{path}: phone size {key} is {persist.get(key)!r}, want {value!r}")
 
 
 def validate_junit(directory):
@@ -95,6 +135,7 @@ def validate_evidence(path, label):
                 raise ValueError(f"{path}: {screen} has no named IME behaviour")
             if not native.get("imeVisible") or native.get("imeBottomPx", 0) <= 0:
                 raise ValueError(f"{path}: {screen} IME was not visible")
+    validate_terminal(path, data, label)
 
 
 def validate_results(directory):
@@ -103,6 +144,8 @@ def validate_results(directory):
         validate_evidence(directory / f"layout-{label}.json", label)
         if not list(directory.glob(f"s1-{label}-*.png")):
             raise ValueError(f"no screenshot saved for {label}")
+        if not list(directory.glob(f"s1-{label}-3b-claude*.png")):
+            raise ValueError(f"no Claude screen screenshot saved for {label}")
 
 
 def _junit(directory, tests="1", extra=None, name=REQUIRED_METHOD):
@@ -116,7 +159,7 @@ def _junit(directory, tests="1", extra=None, name=REQUIRED_METHOD):
 
 
 def _evidence(path, label, small=False, zero=False, nonav=False, noleaf=False, nosettings=False, noime=False,
-              zeroinset=False, covered=False, nolast=False, marker=None, notop=False):
+              zeroinset=False, covered=False, nolast=False, marker=None, notop=False, terminal=None):
     counts = {"icon-btn": 3, "host-row": 1, "dir-header": 1, "session-leaf": 0 if noleaf else 1}
     if zero:
         counts = {k: 0 for k in counts}
@@ -141,12 +184,39 @@ def _evidence(path, label, small=False, zero=False, nonav=False, noleaf=False, n
         if s == "4-workspace-ime-up" and not noime:
             entry["imeBehaviour"] = "no-resize-native-ime-bound"
         data[s + ".layout"] = entry
+    if terminal != "missing":
+        columns = {"hostCols": 49, "geometry": {"domCols": 49}, "columnsWithRail": 49, "columnsWithoutRail": 56,
+                   "leftGutter": 2, "rightGutter": 2}
+        glyphs = {"probed": 36, "tofu": []}
+        if terminal == "narrow":
+            columns["columnsWithoutRail"] = 33
+        elif terminal == "mismatch":
+            columns["hostCols"] = 48
+        elif terminal == "gutter":
+            columns["rightGutter"] = 18
+        elif terminal == "tofu":
+            glyphs["tofu"] = ["\u23f5 U+23F5"]
+        elif terminal == "unprobed":
+            glyphs["probed"] = 0
+        data["3b-terminal.columns"] = columns
+        data["3b-terminal.glyphs"] = glyphs
+        if terminal != "no-persist":
+            persist = {"shownBefore": "12", "step": "0.5", "storedAfterChange": 11.5, "liveFontAfterChange": "11.5px",
+                       "storedAfterRestart": 11.5, "shownAfterRestart": "11.5", "desktopSizeAfterRestart": 16}
+            if terminal == "lost-on-restart":
+                persist["storedAfterRestart"] = 12
+            elif terminal == "stale-default":
+                persist["shownBefore"] = "16"
+            data["6-phone-size.persist"] = persist
     path.write_text(json.dumps(data))
 
 
 def self_test():
     probes = ["pass", "failure", "skipped", "wrong-method", "count-mismatch", "no-evidence", "small", "zero", "no-shot", "missing-width",
-              "no-leaf", "no-settings", "no-ime-behaviour", "zero-inset", "covered", "no-last-control", "nav-absent-explicit", "nav-marker-missing", "nav-false-but-present", "nav-true-but-zero", "zero-top-inset"]
+              "no-leaf", "no-settings", "no-ime-behaviour", "zero-inset", "covered", "no-last-control", "nav-absent-explicit", "nav-marker-missing", "nav-false-but-present", "nav-true-but-zero", "zero-top-inset",
+              "terminal-missing", "terminal-narrow", "terminal-mismatch", "terminal-gutter", "terminal-tofu", "terminal-unprobed",
+              "terminal-no-persist", "terminal-lost-on-restart", "terminal-stale-default",
+              "no-claude-shot"]
     with tempfile.TemporaryDirectory(prefix="s1-layout-guard-") as temp:
         for index, probe in enumerate(probes):
             d = Path(temp) / str(index)
@@ -162,9 +232,12 @@ def self_test():
                               noleaf=probe == "no-leaf", nosettings=probe == "no-settings", noime=probe == "no-ime-behaviour",
                               zeroinset=probe == "zero-inset", covered=probe == "covered", nolast=probe == "no-last-control",
                               marker={"nav-marker-missing": "missing", "nav-false-but-present": "false-with-nav", "nav-true-but-zero": "true-no-nav"}.get(probe),
-                              notop=probe == "zero-top-inset")
+                              notop=probe == "zero-top-inset",
+                              terminal=probe[len("terminal-"):] if probe.startswith("terminal-") else None)
                 if probe != "no-shot":
                     (d / f"s1-{label}-3-workspace.png").write_bytes(b"png")
+                if probe not in ("no-shot", "no-claude-shot"):
+                    (d / f"s1-{label}-3b-claude.png").write_bytes(b"png")
             try:
                 validate_results(d)
                 ok = True

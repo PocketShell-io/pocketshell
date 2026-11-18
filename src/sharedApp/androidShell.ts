@@ -7,13 +7,19 @@
  * here — the WebView resizes for the IME. Native navigation clearance is
  * bound separately because Android WebView does not expose it through env().
  */
-import { BUNDLED_MONO_STACK } from '@ui/fonts';
+import { BUNDLED_MONO_STACK, withSymbolFallback } from '@ui/fonts';
 import { writeAppInsets, type AppInsets, type InsetTarget } from '@ui/app/insets';
 import type { KeyboardInsetsState } from '@/native/keyboardInsets';
 import { createKeyboardInsetsStateSync } from '@/native/keyboardInsetsState';
 
-/** No Consolas on a phone: the bundled JetBrains Mono, then the platform's own monospace (#3138). */
-export const ANDROID_MONO_FALLBACK = BUNDLED_MONO_STACK;
+/**
+ * No Consolas on a phone: the bundled JetBrains Mono, its symbol fallback, then
+ * the platform's own monospace (#3138, #3157). Android has no system glyph for
+ * Claude Code's ⏵ ✻ ⎿ ⧉ at ANY width, so the fallback is in every Android
+ * layout — a phone held sideways is not compact and would show tofu otherwise.
+ * Android-only: the desktop/web stacks in core are untouched (D44).
+ */
+export const ANDROID_MONO_FALLBACK = withSymbolFallback(BUNDLED_MONO_STACK);
 
 export const ANDROID_INSETS: AppInsets = {
   top: 'var(--safe-area-inset-top, env(safe-area-inset-top, 0px))',
