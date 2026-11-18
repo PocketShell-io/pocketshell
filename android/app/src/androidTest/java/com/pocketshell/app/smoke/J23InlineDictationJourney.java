@@ -4018,7 +4018,7 @@ public final class J23InlineDictationJourney {
         long deadline = SystemClock.uptimeMillis() + timeoutMillis;
         String last = "<not evaluated>";
         while (SystemClock.uptimeMillis() < deadline) {
-            last = JsVisibility.pollRaw(this::evalRaw, expression);
+            last = evalRaw(expression);
             if ("true".equals(last)) {
                 if (traceTranscribing) Log.i("PS2897Prompt", "transcribing DOM condition returned true");
                 return;
@@ -4026,7 +4026,7 @@ public final class J23InlineDictationJourney {
             Thread.sleep(60);
         }
         throw new AssertionError("WebView condition did not become true: " + expression
-                + " (last=" + last + "; page=" + JsVisibility.pageText(this::evalRaw) + ")");
+                + " (last=" + last + "; page=" + evalString("document.body.innerText") + ")");
     }
 
     private String evalString(String expression) throws Exception {
