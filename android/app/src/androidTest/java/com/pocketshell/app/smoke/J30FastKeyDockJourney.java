@@ -12,6 +12,7 @@ import android.view.MotionEvent;
 import android.view.WindowInsets;
 import android.view.inputmethod.InputMethodManager;
 import android.webkit.WebView;
+import androidx.lifecycle.Lifecycle;
 import androidx.test.platform.app.InstrumentationRegistry;
 import com.pocketshell.app.ime.ScriptedIme;
 import java.util.ArrayList;
@@ -70,6 +71,9 @@ import org.junit.Test;
  *       every bottom-bar tap on gesture navigation does that (review round 7).
  *       On three-button navigation, or with the launcher disabled (the lane),
  *       the check still runs but there is no live control.</li>
+ *   <li>#3201: with the keyboard up on the focused terminal, the app is sent
+ *       to the background and brought back {@link #RESUME_CYCLES} times; the
+ *       keyboard must stay down after every return (#3126).</li>
  * </ul>
  */
 public class J30FastKeyDockJourney extends SharedAppDockerJourneyTest {
@@ -228,7 +232,87 @@ public class J30FastKeyDockJourney extends SharedAppDockerJourneyTest {
         assertTerminalKeepsFocus("after the dock answered the prompt with the keyboard open");
         assertAppResumed("after every dock tap");
         committedScreenshot("j30-approval-answered-ime-open");
+
+        // ---- phase 3 (#3201): leaving and coming back never raises the keyboard
+        evidence.put("resumeCycles", resumeNeverRaisesTheKeyboard());
         Log.i(TAG, "J30 evidence " + evidence);
+    }
+
+    /** Background/resume cycles; each one starts with the keyboard up on the focused terminal. */
+    static final int RESUME_CYCLES = 8;
+    /** How long after the window is focused again a server-side IME restore is watched for. */
+    private static final long RESUME_IME_WATCH_MS = 3_000;
+
+    /**
+     * #3201: with the soft keyboard up on the focused terminal, the app goes to
+     * the background and comes back. The keyboard must stay down after every
+     * return (maintainer rule, #3126: resume must not raise the keyboard).
+     *
+     * <p>Android decides this in the system server when the window gets focus
+     * back: with {@code SOFT_INPUT_STATE_UNSPECIFIED} it re-shows the IME
+     * ({@code ImeTracker ... ORIGIN_SERVER reason SHOW_RESTORE_IME_VISIBILITY})
+     * whenever the page's editor is already attached at that moment, and hides
+     * it when it is not -- a race the app does not control, red ~2 in 7 in J23.
+     * One cycle passes most of the time on a broken app; {@link #RESUME_CYCLES}
+     * cycles make the race show. Each cycle watches the window insets and the
+     * input method service for {@link #RESUME_IME_WATCH_MS} after the window
+     * has focus again, so a restore that lands late still fails.
+     */
+    private JSONArray resumeNeverRaisesTheKeyboard() throws Exception {
+        JSONArray cycles = new JSONArray();
+        for (int cycle = 1; cycle <= RESUME_CYCLES; cycle++) {
+            if (!nativeState().getBoolean("imeVisible")) {
+                focusTerminalForIme();
+                awaitImeVisible(true);
+            }
+            assertTerminalKeepsFocus("before background/resume cycle " + cycle);
+            scenario.moveToState(Lifecycle.State.CREATED);
+            scenario.moveToState(Lifecycle.State.RESUMED);
+            awaitWindowFocus("resume cycle " + cycle);
+            long watchUntil = SystemClock.uptimeMillis() + RESUME_IME_WATCH_MS;
+            boolean insetsShown = false;
+            while (SystemClock.uptimeMillis() < watchUntil) {
+                if (imeInsetsVisible()) {
+                    insetsShown = true;
+                    break;
+                }
+                SystemClock.sleep(100);
+            }
+            JSONObject after = nativeState();
+            String activeElement = evalString("document.activeElement?.tagName + '.' + String(document.activeElement?.className ?? '')");
+            JSONObject record = new JSONObject().put("cycle", cycle).put("insetsShownAfterResume", insetsShown)
+                    .put("imeServiceShown", after.getBoolean("imeServiceShown"))
+                    .put("keyboardCss", after.getDouble("keyboardCss")).put("activeElement", activeElement);
+            cycles.put(record);
+            Log.i(TAG, "PS3201Resume " + record);
+            if (insetsShown || !after.getBoolean("imeClosed")) {
+                screenshot("j30-resume-raised-keyboard");
+                throw new AssertionError("resume cycle " + cycle + " of " + RESUME_CYCLES
+                        + " brought the soft keyboard back (#3201/#3126): " + record + " native=" + after
+                        + " " + ScriptedIme.inputMethodState());
+            }
+        }
+        return cycles;
+    }
+
+    private boolean imeInsetsVisible() {
+        boolean[] visible = new boolean[1];
+        scenario.onActivity(activity -> {
+            WindowInsets insets = activity.getWindow().getDecorView().getRootWindowInsets();
+            visible[0] = insets != null && insets.isVisible(WindowInsets.Type.ime());
+        });
+        return visible[0];
+    }
+
+    private void awaitWindowFocus(String when) {
+        long deadline = SystemClock.uptimeMillis() + 15_000;
+        boolean[] focused = new boolean[1];
+        while (SystemClock.uptimeMillis() < deadline) {
+            scenario.onActivity(activity -> focused[0] = activity.hasWindowFocus());
+            if (focused[0]) return;
+            SystemClock.sleep(100);
+        }
+        throw new AssertionError("the app window never got focus back after " + when);
     }
 
     /** 2 (More, 123), Esc (home), Shift+Tab (More), then ^D (More, Ctrl) ends the reader. */

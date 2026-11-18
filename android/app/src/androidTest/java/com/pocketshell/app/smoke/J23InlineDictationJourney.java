@@ -100,7 +100,6 @@ public final class J23InlineDictationJourney {
     }
 
     @Test
-    @Ignore("quarantined: #3201, expires 2026-12-02 — IME stays visible after CREATED->RESUMED at the post-resume awaitImeVisible(false); ~2 in 7 lanes, main run 44398074303")
     public void fastKeysStayReachableAndWriteExactBytesAcrossImeBackAndReconnect() throws Exception {
         assertTrue("fast-key screen assertions require Android API 35+", Build.VERSION.SDK_INT >= 35);
         var arguments = InstrumentationRegistry.getArguments();

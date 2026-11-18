@@ -23,7 +23,12 @@
             android:theme="@style/AppTheme.NoActionBarLaunch"
             android:launchMode="singleTask"
             android:exported="true"
-            android:windowSoftInputMode="adjustResize">
+            android:windowSoftInputMode="stateAlwaysHidden|adjustResize">
+            <!-- stateAlwaysHidden (#3201, #3126): coming back to the app must never
+                 raise the keyboard. With the unspecified state Android's input method
+                 service re-shows it on its own (SHOW_RESTORE_IME_VISIBILITY) whenever
+                 the page's focused editor is already attached when the window gets
+                 focus back, a race the app does not control. Only a tap opens it. -->
 
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />

@@ -21,4 +21,3 @@
 # places, and a reason that says why it is still broken) — never let a row sit
 # expired.
 
-com.pocketshell.app.smoke.J23InlineDictationJourney#fastKeysStayReachableAndWriteExactBytesAcrossImeBackAndReconnect	#3201	2026-11-18	2026-12-02	AssertionError 'Android IME visibility did not become false' at the post-resume awaitImeVisible(false) (J23 ~L897, after scenario CREATED->RESUMED with the IME up and focus on xterm's helper textarea) — main run 44398074303 (250c73b, mobile group), PR #3155 run 44267418754 twice, #3158 lanes ~2/7, identical signature; J30 keeps running and must pass; filed #3201 2026-11-18
