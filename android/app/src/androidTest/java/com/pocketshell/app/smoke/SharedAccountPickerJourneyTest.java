@@ -89,6 +89,13 @@ public final class SharedAccountPickerJourneyTest {
     private static final String ACCOUNT_HOSTS_KEY = "pocketshell.sync.account-hosts.v1";
     private static final String SHARED_SETTINGS_KEY = "pocketshell.settings.v1";
     private static final String AUTH_PREFS = "pocketshell-sync-auth";
+    /** The shared picker's last-known trusted server list (core trustedServersCache.ts). */
+    private static final String TRUSTED_CACHE_KEY = "pocketshell.trustedServers.v1";
+    /** The maintainer's two saved servers, in the order the phone showed them first (#3189, 12:53). */
+    private static final List<String> SAVED_SERVER_ORDER = List.of("host-desktop-fp4op26-venv", "Hetzner");
+    private static final String SERVER_ROWS = "JSON.stringify([...document.querySelectorAll("
+            + "'[data-testid=trusted-servers] [data-testid=trusted-server-connect]')].map((row) => "
+            + "(row.querySelector('.server-name') ?? row).textContent.trim()))";
 
     /** The account as the desktop wrote it: hetzner carries fields only the desktop owns. */
     private static JSONObject desktopAccount() throws Exception {
@@ -102,6 +109,8 @@ public final class SharedAccountPickerJourneyTest {
     }
 
     private ActivityScenario<MainActivity> scenario;
+    private OfflineFirstSyncEdges.Backend offlineBackend;
+    private OfflineFirstSyncEdges.Google offlineGoogle;
     private String runId;
     private ScreenshotGuard.Frame lastScreenshot;
     private FakeSyncBackend backend;
@@ -123,9 +132,10 @@ public final class SharedAccountPickerJourneyTest {
 
     @After
     public void restore() {
+        if (offlineBackend != null) offlineBackend.release();
         if (scenario != null) {
             try {
-                evalRaw("['" + HOSTS_KEY + "','" + ACCOUNT_HOSTS_KEY + "','" + SHARED_SETTINGS_KEY
+                evalRaw("['" + HOSTS_KEY + "','" + ACCOUNT_HOSTS_KEY + "','" + SHARED_SETTINGS_KEY + "','" + TRUSTED_CACHE_KEY
                         + "'].forEach((key) => localStorage.removeItem(key)); 'reset'");
             } catch (Throwable ignored) {
                 // The activity may already be gone after a failure.
@@ -260,6 +270,380 @@ public final class SharedAccountPickerJourneyTest {
         assertFalse("no decrypted account address in WebView storage",
                 evalString("JSON.stringify(Object.entries(localStorage))").contains("höfn.internal"));
         assertNoTokenInLogcat();
+    }
+
+    // ---- #3189: offline-first saved servers -----------------------------------
+
+    /**
+     * #3189 (maintainer, Pixel 7a): saved servers were listed but the app sat
+     * on "Checking your Google account…". With the sync endpoint stalled, the
+     * saved rows render and a tap starts opening the row at once, with no
+     * Checking step anywhere.
+     */
+    @Test
+    public void offlineFirstSavedServersOpenAtOnceWhileSyncIsStalled() throws Exception {
+        assertTrue("packaged account journey runs on API 35+", Build.VERSION.SDK_INT >= 35);
+        signInThenRelaunchWithSavedServers(OfflineFirstSyncEdges.Mode.STALLED);
+        watchForCheckingText();
+        awaitJsTrue(SERVER_ROWS + " === " + JSONObject.quote(new JSONArray(SAVED_SERVER_ORDER).toString()));
+        awaitStalledSync();
+        assertNoCheckingText("saved rows painted");
+        installTapTiming();
+        tapDomCenter("[data-testid=trusted-servers] li:nth-child(2) [data-testid=trusted-server-connect]");
+        awaitJsTrue("window.__offlineFirst3189.connecting !== undefined && window.__offlineFirst3189.down !== undefined", 5_000);
+        double tapToConnecting = Double.parseDouble(evalString(
+                "String(window.__offlineFirst3189.connecting - window.__offlineFirst3189.down)"));
+        double fingerHold = Double.parseDouble(evalString(
+                "String(window.__offlineFirst3189.down - (window.__offlineFirst3189.pressed ?? window.__offlineFirst3189.down))"));
+        assertTrue("a tap starts opening the row within 300 ms, took " + tapToConnecting + " ms", tapToConnecting <= 300);
+        assertEquals("the opening row is the tapped one", "Hetzner", evalString(
+                "document.querySelector('[data-testid=trusted-server-connect][data-state=connecting] .server-name')?.textContent.trim() ?? null"));
+        int stalled = offlineBackend.stalledNow.get();
+        assertTrue("the open did not wait for the stalled sync (still in flight)", stalled > 0);
+        assertNoCheckingText("row opening");
+        captureScreenshot("offline-first-stalled-connecting.png", "[data-testid=trusted-server-connecting]");
+        assertNoCheckingText("after the screenshot");
+        tapDomCenter("[data-testid=trusted-server-cancel]");
+        awaitJsTrue("!document.querySelector('[data-testid=trusted-server-connect][data-state=connecting]')");
+        Log.i(TAG, "OFFLINE_FIRST " + new JSONObject().put("scenario", "stalled")
+                .put("rows", new JSONArray(evalString(SERVER_ROWS)))
+                .put("tapToConnectingMs", tapToConnecting).put("pointerDownToClickMs", fingerHold).put("checkingSeen", false)
+                .put("stalledSyncRequests", stalled));
+    }
+
+    /**
+     * #3189: the sync service timing out shows "Not synced · retry" on the
+     * chip and plain words in the list — never an exception class — retries on
+     * its own and from the chip, and keeps the rows in their order.
+     */
+    @Test
+    public void offlineFirstFailingSyncIsQuietRetriesAndKeepsOrder() throws Exception {
+        assertTrue("packaged account journey runs on API 35+", Build.VERSION.SDK_INT >= 35);
+        signInThenRelaunchWithSavedServers(OfflineFirstSyncEdges.Mode.FAILING);
+        String order = JSONObject.quote(new JSONArray(SAVED_SERVER_ORDER).toString());
+        awaitJsTrue(SERVER_ROWS + " === " + order);
+        // Wait for the failure to surface, whichever way this build shows it.
+        awaitJsTrue("!!document.querySelector('[role=alert], [data-testid=servers-sync-issue]')");
+        assertNoExceptionInDom("after the failed sync");
+        awaitJsTrue("document.querySelector('[data-testid=account-chip]')?.dataset.syncPhase === 'offline'");
+        String chipText = evalString("document.querySelector('[data-testid=account-chip-state]').textContent.trim()");
+        assertEquals("Not synced · retry", chipText);
+        JSONObject chipGeometry = assertAccountStateReadable("Not synced · retry");
+        awaitJsTrue(SERVER_ROWS + " === " + order);
+        // Any sync request counts: since #3189 the retry re-runs the vault refresh, not GET /me.
+        int before = offlineBackend.requests.get();
+        // The first automatic retry is due 30 s after the failure (backoff 30 s, 1 min, 5 min, 15 min).
+        long deadline = SystemClock.uptimeMillis() + 40_000;
+        while (offlineBackend.requests.get() <= before && SystemClock.uptimeMillis() < deadline) Thread.sleep(100);
+        int autoRetries = offlineBackend.requests.get() - before;
+        assertTrue("a failed sync retries on its own", autoRetries > 0);
+        int beforeChip = offlineBackend.requests.get();
+        tapDomCenter("[data-testid=account-chip]");
+        deadline = SystemClock.uptimeMillis() + 5_000;
+        while (offlineBackend.requests.get() <= beforeChip && SystemClock.uptimeMillis() < deadline) Thread.sleep(50);
+        assertTrue("the chip retries at once", offlineBackend.requests.get() > beforeChip);
+        awaitJsTrue("!!document.querySelector('[data-testid=trusted-servers]')"
+                + " && !document.querySelector('[data-testid=android-account]')");
+        // Opening a row while not synced says so in plain words.
+        tapDomCenter("[data-testid=trusted-servers] li:nth-child(2) [data-testid=trusted-server-connect]");
+        awaitJsTrue("document.querySelector('[data-testid=trusted-servers] [role=alert]')?.textContent.includes(\"Couldn't open Hetzner\") === true");
+        assertNoExceptionInDom("after opening a row");
+        awaitJsTrue(SERVER_ROWS + " === " + order);
+        captureScreenshot("offline-first-not-synced.png", "[data-testid=servers-sync-issue]");
+        Log.i(TAG, "OFFLINE_FIRST " + new JSONObject().put("scenario", "failing")
+                .put("rows", new JSONArray(evalString(SERVER_ROWS)))
+                .put("exceptionInDom", false).put("chipPhase", "offline").put("chipText", chipText)
+                .put("chipReadable", true).put("chipGeometry", chipGeometry)
+                .put("autoRetries", autoRetries).put("chipRetry", true));
+    }
+
+    /**
+     * #3189: the account was revoked server-side. The saved rows and this
+     * device's hosts stay listed and openable, a re-sign-in is offered, and
+     * nothing is deleted.
+     */
+    @Test
+    public void offlineFirstRevokedAccountKeepsServersAndAsksToSignInAgain() throws Exception {
+        assertTrue("packaged account journey runs on API 35+", Build.VERSION.SDK_INT >= 35);
+        signInThenRelaunchWithSavedServers(OfflineFirstSyncEdges.Mode.REVOKED);
+        String order = JSONObject.quote(new JSONArray(SAVED_SERVER_ORDER).toString());
+        awaitJsTrue("!!document.querySelector('[data-testid=server-reauth]')");
+        assertTrue("the revocation was learned from the sync service", offlineBackend.refused.get() > 0);
+        awaitJsTrue(SERVER_ROWS + " === " + order);
+        assertEquals("nothing deleted: the saved list survives", 2, new JSONObject(evalString(
+                "localStorage.getItem('" + TRUSTED_CACHE_KEY + "')")).getJSONArray("servers").length());
+        awaitJsTrue("document.querySelector('[data-testid=account-chip]')?.dataset.syncPhase === 'reauth'");
+        // This device's own hosts stay listed and openable.
+        awaitJsTrue("[...document.querySelectorAll('.picker .host-row')].some((row) => row.textContent.includes('phone-box') && !row.disabled)");
+        captureScreenshot("offline-first-reauth.png", "[data-testid=server-reauth]");
+        tapDomCenter(".picker .host-row");
+        // The local row opens. This fixture host has no key on the phone, so the open always ends at the
+        // key chooser for it: wait for that real end state (not the dial banner that comes first), then
+        // back out of it and require both the chooser and the dial to be gone.
+        awaitJsTrue("document.querySelector('[data-testid=account-host-key-gate]')?.textContent.includes('phone-box') === true"
+                + " && !!document.querySelector('[data-testid=account-host-key-cancel]')", 30_000);
+        tapDomCenter("[data-testid=account-host-key-cancel]");
+        awaitJsTrue("!document.querySelector('[data-testid=account-host-key-gate]')");
+        evalRaw("document.querySelector('.picker .auto-banner .btn-ghost')?.click(); 'settled'");
+        awaitJsTrue("!document.querySelector('.picker .auto-banner') && !document.querySelector('[data-testid=account-host-key-gate]')");
+        assertEquals("the chip says signed out", "Signed out",
+                evalString("document.querySelector('[data-testid=account-chip-state]').textContent.trim()"));
+        JSONObject chipGeometry = assertAccountStateReadable("Signed out");
+        assertEquals("a silent check that finds the account gone opens no sign-in UI", 0, offlineGoogle.launches.get());
+        // The banner's Sign in opens Google's sheet exactly once; the saved rows stay throughout.
+        tapDomCenter("[data-testid=server-reauth-sign-in]");
+        long deadline = SystemClock.uptimeMillis() + 10_000;
+        while (offlineGoogle.launches.get() == 0 && SystemClock.uptimeMillis() < deadline) Thread.sleep(50);
+        awaitJsTrue("!document.querySelector('[data-testid=server-reauth]')");
+        Thread.sleep(2_000);
+        assertEquals("tapping Sign in opens sign-in exactly once", 1, offlineGoogle.launches.get());
+        awaitJsTrue(SERVER_ROWS + " === " + order);
+        assertEquals("still nothing deleted after the re-sign-in", 2, new JSONObject(evalString(
+                "localStorage.getItem('" + TRUSTED_CACHE_KEY + "')")).getJSONArray("servers").length());
+        Log.i(TAG, "OFFLINE_FIRST " + new JSONObject().put("scenario", "revoked")
+                .put("rows", new JSONArray(evalString(SERVER_ROWS)))
+                .put("reauthPrompt", true).put("cacheKept", true).put("localRowOpened", true).put("signInOnTap", true)
+                .put("chipReadable", true).put("chipGeometry", chipGeometry));
+    }
+
+    /**
+     * #3189 P0 (maintainer, Pixel 7a): returning from another app started a
+     * Google "Signing you in" sheet that re-appeared every 1-2 s. Background
+     * the app with a token close to expiry, revoke it server-side, return, and
+     * stay 60 s: no sign-in UI at all, the chip reads "Signed out", one
+     * non-blocking banner, and only its tap opens sign-in — exactly once.
+     */
+    @Test
+    public void offlineFirstResumeWithARevokedTokenNeverOpensSignIn() throws Exception {
+        assertTrue("packaged account journey runs on API 35+", Build.VERSION.SDK_INT >= 35);
+        // Five minutes left: inside the window the old resume handler pre-renewed in.
+        signInThenRelaunchWithSavedServers(OfflineFirstSyncEdges.Mode.FAILING, 300L);
+        String order = JSONObject.quote(new JSONArray(SAVED_SERVER_ORDER).toString());
+        awaitJsTrue(SERVER_ROWS + " === " + order);
+        // To another app and back, with the account revoked meanwhile.
+        scenario.moveToState(androidx.lifecycle.Lifecycle.State.CREATED);
+        offlineBackend.revokedToken = offlineGoogle.token;
+        offlineBackend.mode = OfflineFirstSyncEdges.Mode.REVOKED;
+        offlineGoogle.issueOnNextLaunch = true;
+        int launchesBeforeResume = offlineGoogle.launches.get();
+        Thread.sleep(2_000);
+        scenario.moveToState(androidx.lifecycle.Lifecycle.State.RESUMED);
+        long resumedAt = SystemClock.uptimeMillis();
+        int peak = 0;
+        while (SystemClock.uptimeMillis() - resumedAt < 60_000) {
+            peak = Math.max(peak, offlineGoogle.launches.get() - launchesBeforeResume);
+            assertEquals("resume never opens sign-in UI (after " + (SystemClock.uptimeMillis() - resumedAt) + " ms)", 0, peak);
+            Thread.sleep(500);
+        }
+        awaitJsTrue("document.querySelector('[data-testid=account-chip]')?.dataset.syncPhase === 'reauth'");
+        String chipText = evalString("document.querySelector('[data-testid=account-chip-state]').textContent.trim()");
+        assertEquals("Signed out", chipText);
+        JSONObject chipGeometry = assertAccountStateReadable("Signed out");
+        awaitJsTrue("document.querySelectorAll('[data-testid=server-reauth]').length === 1");
+        awaitJsTrue(SERVER_ROWS + " === " + order);
+        int meAfterResume = offlineBackend.meRequests.get();
+        tapDomCenter("[data-testid=server-reauth-sign-in]");
+        long deadline = SystemClock.uptimeMillis() + 10_000;
+        while (offlineGoogle.launches.get() == launchesBeforeResume && SystemClock.uptimeMillis() < deadline) Thread.sleep(50);
+        awaitJsTrue("!document.querySelector('[data-testid=server-reauth]')");
+        Thread.sleep(3_000);
+        int tapLaunches = offlineGoogle.launches.get() - launchesBeforeResume;
+        assertEquals("the banner tap opens sign-in exactly once", 1, tapLaunches);
+        // The signed-out screen itself is the revoked scenario's screenshot; this one is after the one sign-in.
+        captureScreenshot("offline-first-resume-after-sign-in.png", "[data-testid=trusted-servers]");
+        Log.i(TAG, "OFFLINE_FIRST " + new JSONObject().put("scenario", "resume")
+                .put("rows", new JSONArray(evalString(SERVER_ROWS)))
+                .put("signInLaunchesAfterResume", peak).put("watchedMs", 60_000).put("chipText", chipText)
+                .put("syncChecksAfterResume", meAfterResume).put("bannerTapLaunches", tapLaunches)
+                .put("chipReadable", true).put("chipGeometry", chipGeometry));
+    }
+
+    /**
+     * #3189 (the phone's SocketTimeoutException): the production sync transport, Android's real HTTP
+     * connection pool, against an endpoint whose pooled keep-alive socket silently dies. A dead pooled
+     * socket used to cost the full 15 s read timeout and then fail. Now it costs at most the short first
+     * deadline before a fresh connection answers, and after the app sat idle the first request takes a
+     * fresh connection at once.
+     */
+    @Test
+    public void offlineFirstSyncTransportGetsPastADeadKeepAliveSocketQuickly() throws Exception {
+        assertTrue("packaged account journey runs on API 35+", Build.VERSION.SDK_INT >= 35);
+        javax.net.ssl.SSLSocketFactory previousFactory = javax.net.ssl.HttpsURLConnection.getDefaultSSLSocketFactory();
+        javax.net.ssl.HostnameVerifier previousVerifier = javax.net.ssl.HttpsURLConnection.getDefaultHostnameVerifier();
+        try (DeadSocketHttpsServer server = new DeadSocketHttpsServer()) {
+            // Trust only the test server's own certificate, for this test only.
+            javax.net.ssl.HttpsURLConnection.setDefaultSSLSocketFactory(server.context.getSocketFactory());
+            javax.net.ssl.HttpsURLConnection.setDefaultHostnameVerifier((host, session) -> true);
+            String url = "https://" + activeNetworkIpv4() + ":" + server.port() + "/me";
+            GoogleSyncSession.Transport transport = syncTransport();
+            Map<String, String> headers = Collections.singletonMap("Accept", "application/json");
+            assertEquals(200, transport.send("GET", url, headers, null).status);
+            assertEquals("the first answer leaves one pooled socket", 1, server.connections.get());
+            // The pooled socket is now dead: the next GET is swallowed on it.
+            long started = SystemClock.uptimeMillis();
+            assertEquals(200, transport.send("GET", url, headers, null).status);
+            long staleSocketMs = SystemClock.uptimeMillis() - started;
+            assertEquals("the dead socket really swallowed a request", 1, server.swallowed.get());
+            assertTrue("a dead pooled socket costs well under 15 s, took " + staleSocketMs + " ms", staleSocketMs < 7_000);
+            // In another app for a while: the first request back must not even try the old socket.
+            Thread.sleep(31_000);
+            int swallowedBefore = server.swallowed.get();
+            started = SystemClock.uptimeMillis();
+            assertEquals(200, transport.send("GET", url, headers, null).status);
+            long afterIdleMs = SystemClock.uptimeMillis() - started;
+            assertEquals("after idle the old socket is not tried at all", swallowedBefore, server.swallowed.get());
+            assertTrue("after idle the first request answers at once, took " + afterIdleMs + " ms", afterIdleMs < 3_000);
+            Log.i(TAG, "OFFLINE_FIRST " + new JSONObject().put("scenario", "deadsocket")
+                    .put("rows", new JSONArray(SAVED_SERVER_ORDER))
+                    .put("staleSocketMs", staleSocketMs).put("afterIdleMs", afterIdleMs)
+                    .put("connections", server.connections.get()).put("swallowed", server.swallowed.get()));
+        } finally {
+            javax.net.ssl.HttpsURLConnection.setDefaultSSLSocketFactory(previousFactory);
+            javax.net.ssl.HttpsURLConnection.setDefaultHostnameVerifier(previousVerifier);
+        }
+    }
+
+    /**
+     * B1 (#3189 review): the account state must be readable on the phone, not just present in the DOM.
+     * At the maintainer's 411 dp and again at 360 dp (the display really resized), the full words are
+     * on screen: nothing clipped (scrollWidth <= clientWidth), inside the viewport, and the element is
+     * what a finger at its centre would hit.
+     */
+    private JSONObject assertAccountStateReadable(String expected) throws Exception {
+        JSONObject at411 = accountStateGeometry(expected);
+        String size = shell("wm size").trim();
+        try {
+            shell("wm size 945x2100"); // 360 dp at the emulator's 420 dpi
+            awaitJsTrue("Math.round(innerWidth) === 360", 20_000);
+            JSONObject at360 = accountStateGeometry(expected);
+            return new JSONObject().put("w411", at411).put("w360", at360).put("display", size);
+        } finally {
+            shell("wm size reset");
+            awaitJsTrue("Math.round(innerWidth) > 400", 20_000);
+        }
+    }
+
+    private JSONObject accountStateGeometry(String expected) throws Exception {
+        awaitJsTrue("document.querySelector('[data-testid=account-chip-state]')?.textContent.trim() === " + JSONObject.quote(expected));
+        JSONObject g = new JSONObject(evalString("JSON.stringify((() => {"
+                + "const n = document.querySelector('[data-testid=account-chip-state]');"
+                + "const t = n.querySelector('.account-state-text') ?? n;"
+                + "const r = n.getBoundingClientRect(), rt = t.getBoundingClientRect(), cs = getComputedStyle(n);"
+                + "const hitNode = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);"
+                + "return {text: t.textContent.trim(), scrollWidth: t.scrollWidth, clientWidth: t.clientWidth,"
+                + " left: rt.left, right: rt.right, top: r.top, bottom: r.bottom, innerWidth, innerHeight,"
+                + " visible: cs.display !== 'none' && cs.visibility === 'visible' && Number(cs.opacity) > 0,"
+                + " hit: !!hitNode && n.contains(hitNode)};})())"));
+        String where = "account state at " + g.getInt("innerWidth") + " dp: " + g;
+        assertEquals(where, expected, g.getString("text"));
+        assertTrue(where, g.getBoolean("visible") && g.getBoolean("hit"));
+        assertTrue("not clipped, " + where, g.getInt("clientWidth") > 0 && g.getInt("scrollWidth") <= g.getInt("clientWidth"));
+        assertTrue("inside the viewport, " + where, g.getDouble("left") >= 0 && g.getDouble("right") <= g.getDouble("innerWidth")
+                && g.getDouble("top") >= 0 && g.getDouble("bottom") <= g.getDouble("innerHeight"));
+        return g;
+    }
+
+    /** The production sync transport (GoogleSyncEnvironment's non-test path). */
+    private GoogleSyncSession.Transport syncTransport() {
+        return com.pocketshell.app.HttpSyncTransport.forSync(targetContext());
+    }
+
+    /** This device's address on its active network: the transport binds every socket to that network. */
+    private String activeNetworkIpv4() {
+        android.net.ConnectivityManager connectivity = (android.net.ConnectivityManager)
+                targetContext().getSystemService(Context.CONNECTIVITY_SERVICE);
+        android.net.LinkProperties link = connectivity.getLinkProperties(connectivity.getActiveNetwork());
+        assertNotNull("the emulator has an active network", link);
+        for (android.net.LinkAddress address : link.getLinkAddresses()) {
+            if (address.getAddress() instanceof java.net.Inet4Address) return address.getAddress().getHostAddress();
+        }
+        throw new AssertionError("no IPv4 address on the active network");
+    }
+
+    /**
+     * Sign in through the shared picker (the sync endpoint stalled, so nothing
+     * verifies), leave the saved server list a previous session would have
+     * cached, then close the app and launch it again with the sync endpoint in
+     * {@code mode}.
+     */
+    private void signInThenRelaunchWithSavedServers(OfflineFirstSyncEdges.Mode mode) throws Exception {
+        signInThenRelaunchWithSavedServers(mode, 3600L);
+    }
+
+    private void signInThenRelaunchWithSavedServers(OfflineFirstSyncEdges.Mode mode, long tokenLifetimeSeconds) throws Exception {
+        offlineGoogle = new OfflineFirstSyncEdges.Google();
+        offlineGoogle.lifetimeSeconds = tokenLifetimeSeconds;
+        offlineGoogle.token = offlineGoogle.mint();
+        offlineBackend = new OfflineFirstSyncEdges.Backend(OfflineFirstSyncEdges.Mode.STALLED);
+        GoogleSyncEnvironment.installForTesting(activity -> {
+            offlineGoogle.activity = activity;
+            return offlineGoogle;
+        }, offlineBackend);
+        launchSharedWithLocalHosts(new JSONArray().put(savedHost("phone-box", "192.168.1.9", 2200, "me")));
+        awaitJsTrue("!!document.querySelector('[data-testid=server-google-login]:not([disabled])')");
+        tapDomCenter("[data-testid=server-google-login]");
+        // Signed in: the chip may already read "Not synced · retry" when the sync is failing.
+        awaitJsTrue("!!document.querySelector('.picker .header-actions .account-action.signed-in')");
+        assertEquals("one account chooser, from the tap", 1, offlineGoogle.launches.get());
+        offlineGoogle.launches.set(0);
+        JSONArray servers = new JSONArray();
+        for (int index = 0; index < SAVED_SERVER_ORDER.size(); index += 1) {
+            servers.put(new JSONObject().put("accountId", OfflineFirstSyncEdges.ACCOUNT_ID).put("vaultId", "journey-vault")
+                    .put("epoch", 1).put("revision", 1).put("serverUrl", "wss://gateway.invalid")
+                    .put("deviceId", "journey-device-" + index).put("hostAlias", SAVED_SERVER_ORDER.get(index)).put("status", "active"));
+        }
+        String cache = new JSONObject().put("email", OfflineFirstSyncEdges.EMAIL)
+                .put("accountId", OfflineFirstSyncEdges.ACCOUNT_ID).put("servers", servers).toString();
+        evalRaw("localStorage.setItem('" + TRUSTED_CACHE_KEY + "', " + JSONObject.quote(cache) + "); 'cached'");
+        scenario.close();
+        scenario = null;
+        offlineBackend.mode = mode;
+        if (mode == OfflineFirstSyncEdges.Mode.REVOKED) {
+            offlineBackend.revokedToken = offlineGoogle.token;
+            offlineGoogle.issueOnNextLaunch = true;
+        }
+        scenario = ActivityScenario.launch(SharedShellLaunch.intent());
+        awaitJsTrue("!!document.querySelector('.picker .header-actions')", 45_000);
+    }
+
+    /** Record any "Checking your Google account" text from now on, even if it disappears again. */
+    private void watchForCheckingText() throws Exception {
+        evalRaw("(() => {window.__offlineFirst3189 = {checking: false};"
+                + "const look = () => {if ((document.body?.innerText ?? '').includes('Checking your Google account')) window.__offlineFirst3189.checking = true;};"
+                + "look(); new MutationObserver(look).observe(document.body, {subtree: true, childList: true, characterData: true});"
+                + "return 'watching';})()");
+    }
+
+    private void assertNoCheckingText(String when) throws Exception {
+        assertEquals("no Checking your Google account step (" + when + ")", "false",
+                evalRaw("String(window.__offlineFirst3189.checking || (document.body?.innerText ?? '').includes('Checking your Google account'))")
+                        .replace("\"", ""));
+    }
+
+    private void awaitStalledSync() throws Exception {
+        long deadline = SystemClock.uptimeMillis() + WAIT_TIMEOUT_MILLIS;
+        while (offlineBackend.stalledNow.get() == 0 && SystemClock.uptimeMillis() < deadline) Thread.sleep(50);
+        assertTrue("the background sync reached the stalled endpoint", offlineBackend.stalledNow.get() > 0);
+    }
+
+    /**
+     * Page-clock timestamps: the completed tap (its click, when the app can first act on it) and the first
+     * frame a row is marked opening. The finger's down-to-up hold is the injector's, not the app's, so it is
+     * recorded separately (pressed) and not counted.
+     */
+    private void installTapTiming() throws Exception {
+        evalRaw("(() => {const t = window.__offlineFirst3189;"
+                + "document.addEventListener('pointerdown', (e) => {if (t.pressed === undefined && e.target.closest('[data-testid=trusted-server-connect]')) t.pressed = performance.now();}, true);"
+                + "document.addEventListener('click', (e) => {if (t.down === undefined && e.target.closest('[data-testid=trusted-server-connect]')) t.down = performance.now();}, true);"
+                + "const seen = () => {if (t.down !== undefined && t.connecting === undefined && document.querySelector('[data-testid=trusted-server-connect][data-state=connecting]')) t.connecting = performance.now();};"
+                + "new MutationObserver(seen).observe(document.body, {subtree: true, childList: true, attributes: true});"
+                + "return 'timing';})()");
+    }
+
+    private void assertNoExceptionInDom(String when) throws Exception {
+        String found = evalString("(() => {const html = document.body.outerHTML; const m = html.match(/[A-Za-z]*(Exception|Error)\\b/);"
+                + " return m ? m[0] : '';})()");
+        assertEquals("no exception class name in the DOM (" + when + ")", "", found);
     }
 
     /** Local saved rows remain usable; account decryption grants no row or address authority. */
@@ -499,8 +883,8 @@ public final class SharedAccountPickerJourneyTest {
         }
 
         @Override
-        public String obtainIdToken(boolean interactiveRequest) throws SyncAuthException {
-            if (interactiveRequest) interactive.incrementAndGet();
+        public String obtainIdToken() throws SyncAuthException {
+            interactive.incrementAndGet();
             return token;
         }
 

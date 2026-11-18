@@ -20,7 +20,7 @@ public class J21HostAddConnectJourney extends SharedAppDockerJourneyTest {
         Context context=InstrumentationRegistry.getInstrumentation().getTargetContext();
         context.deleteSharedPreferences("pocketshell-sync-auth");
         GoogleSyncEnvironment.installForTesting(activity -> new com.pocketshell.app.GoogleSyncSession.SignInProvider() {
-            @Override public String obtainIdToken(boolean interactive) throws SyncAuthException {
+            @Override public String obtainIdToken() throws SyncAuthException {
                 googleCalls.incrementAndGet();
                 throw new SyncAuthException(SyncAuthException.UNAVAILABLE,"Guest journey must not sign in.");
             }

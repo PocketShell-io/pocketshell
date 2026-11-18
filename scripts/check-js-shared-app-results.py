@@ -52,6 +52,7 @@ METHOD_CLASSES = {'aThreeFileUploadShowsTheBarMidFlightAndLeavesNoResidueAfterCo
  'firstContactHostKeyAsksAndHonoursRejectOnceAndAlways': 'com.pocketshell.app.smoke.J01ConnectAndTrustJourney',
  'hostAddedThroughFormConnectsToFixture': 'com.pocketshell.app.smoke.J21HostAddConnectJourney',
  'guestSshConnectsWithoutGoogleOrVaultAndTypesIntoRealHost': 'com.pocketshell.app.smoke.J21HostAddConnectJourney',
+ 'resumeOnATerminalNeverOpensSignInWhileTheSilentPathFails': 'com.pocketshell.app.smoke.J33ResumeNeverSignsInJourney',
  'hostFormSubmitRemainsReachableWithTheIme': 'com.pocketshell.app.smoke.J19HostFormImeJourney',
  'scrollTerminalDoesNotSendInputBytes': 'com.pocketshell.app.smoke.J15TerminalScrollJourney',
  'sharedAppListsAttachesAndTypesIntoFixtureSession': 'com.pocketshell.app.smoke.J02SessionTreeListJourney',

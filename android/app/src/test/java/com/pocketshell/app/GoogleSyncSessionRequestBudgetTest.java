@@ -81,11 +81,11 @@ public final class GoogleSyncSessionRequestBudgetTest {
         now = NOW + 29;
         session.verifiedAccountId();
         assertEquals("still inside the token's usable life", 1, transport.count("/me"));
-        provider.tokens.add(token("sub-1", NOW + 3600, "S2"));
         now = NOW + 31;
-        session.verifiedAccountId();
-        assertEquals("the cache ended with the token", 2, transport.count("/me"));
-        assertEquals("the expired token was renewed once", 1, provider.calls);
+        try { session.verifiedAccountId(); fail("the cache ended with the token"); }
+        catch (SyncAuthException expected) { assertEquals(SyncAuthException.NOT_SIGNED_IN, expected.code); }
+        assertEquals("an expired token is not spent", 1, transport.count("/me"));
+        assertEquals("and never silently renewed (#3189)", 0, provider.calls);
     }
 
     /** A request in flight before sign-out must not write a renewed token back after it. */
@@ -103,22 +103,16 @@ public final class GoogleSyncSessionRequestBudgetTest {
         assertFalse(session.status().signedIn);
     }
 
-    @Test public void foregroundPreRenewalFailuresNeverDropTheSignIn() throws Exception {
-        store.value = token("sub-1", NOW + 100, "NEAR");
-        String stored = store.value;
-        provider.failure = new SyncAuthException(SyncAuthException.FAILED, "silent timeout");
-        session.renewIfExpiringWithin(600);
-        provider.failure = null;
-        provider.runtime = new IllegalStateException("activity finishing");
-        session.renewIfExpiringWithin(600);
-        provider.runtime = null;
-        provider.tokens.add(token("sub-2", NOW + 3600, "OTHER"));
-        session.renewIfExpiringWithin(600);
-        assertEquals("sign-in untouched by any failed or foreign pre-renewal", stored, store.value);
-        assertTrue(session.status().signedIn);
-        provider.tokens.add(token("sub-1", NOW + 3600, "FRESH"));
-        session.renewIfExpiringWithin(600);
-        assertEquals(token("sub-1", NOW + 3600, "FRESH"), store.value);
+    /**
+     * #3189: an expiring or expired token is never renewed behind the user's back. Nothing in this
+     * class may call the provider except signIn(); an expired token at a request ends the session.
+     */
+    @Test public void anExpiredTokenNeverCallsTheProviderAndEndsTheSessionVisibly() throws Exception {
+        store.value = token("sub-1", NOW - 10, "EXPIRED");
+        try { session.verifiedAccountId(); fail("an expired token cannot verify"); }
+        catch (SyncAuthException expected) { assertEquals(SyncAuthException.NOT_SIGNED_IN, expected.code); }
+        assertEquals("no Credential Manager call outside the user's tap", 0, provider.calls);
+        assertFalse(session.status().signedIn);
     }
 
     /** Account A's /me is in flight when B signs in: nothing of A's may be cached for or dropped from B. */
@@ -149,16 +143,17 @@ public final class GoogleSyncSessionRequestBudgetTest {
         assertEquals(token("sub-C", NOW + 3600, "C"), store.value);
     }
 
-    @Test public void twoConcurrent401sRenewOnce() throws Exception {
+    /** #3189: concurrent 401s end the session once; neither reaches the provider. */
+    @Test public void twoConcurrent401sSignOutWithoutAnyRenewal() throws Exception {
         transport.barrierFor("/settings/main", 2);
         provider.tokens.add(token("sub-1", NOW + 3600, "RENEWED"));
         Thread one = transport.async(() -> session.request("GET", "main", null));
         Thread two = transport.async2(() -> session.request("GET", "main", null));
         one.join();
         two.join();
-        assertEquals("both 401s share one renewal", 1, provider.calls);
-        assertEquals(token("sub-1", NOW + 3600, "RENEWED"), store.value);
-        assertEquals(4, transport.count("/settings/main"));
+        assertEquals("no Credential Manager call", 0, provider.calls);
+        assertEquals(null, store.value);
+        assertEquals(2, transport.count("/settings/main"));
     }
 
     @Test public void accountChangeMidOperationIsStillRefused() throws Exception {
@@ -197,11 +192,11 @@ public final class GoogleSyncSessionRequestBudgetTest {
         session.verifiedAccountId();
         assertEquals("a second sign-in re-verifies", 3, transport.count("/me"));
         transport.responses.add(new GoogleSyncSession.Response(401, ""));
-        transport.responses.add(new GoogleSyncSession.Response(200, "{}"));
-        provider.tokens.add(token("sub-1", NOW + 3600, "A4"));
-        session.request("GET", "main", null);
-        session.verifiedAccountId();
-        assertEquals(4, transport.count("/me"));
+        try { session.request("GET", "main", null); fail("a 401 ends the session (#3189)"); }
+        catch (SyncAuthException expected) { assertEquals(SyncAuthException.NOT_SIGNED_IN, expected.code); }
+        try { session.verifiedAccountId(); fail("the cached identity went with it"); }
+        catch (SyncAuthException expected) { assertEquals(SyncAuthException.NOT_SIGNED_IN, expected.code); }
+        assertEquals(3, transport.count("/me"));
     }
 
     private static String token(String subject, long exp, String signature) {
@@ -225,7 +220,7 @@ public final class GoogleSyncSessionRequestBudgetTest {
         volatile int calls;
         SyncAuthException failure;
         RuntimeException runtime;
-        @Override public synchronized String obtainIdToken(boolean interactive) throws SyncAuthException {
+        @Override public synchronized String obtainIdToken() throws SyncAuthException {
             calls++;
             if (runtime != null) throw runtime;
             if (failure != null) throw failure;

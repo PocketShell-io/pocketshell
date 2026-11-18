@@ -340,6 +340,8 @@ rm -rf -- "$vault_dir"
 
 pocketshell_android_input_preflight "$ADB" "$ANDROID_SERIAL" "$ARTIFACTS_DIR/input-preflight.txt" \
   || { pocketshell_android_capture_input_diagnostics "$ADB" "$ANDROID_SERIAL" "$ARTIFACTS_DIR/failure-diagnostics"; fail "Android input preflight failed on $ANDROID_SERIAL; see $ARTIFACTS_DIR/input-preflight.txt"; }
+# Nine journeys: the default 256 KiB ring drops the early receipts (#3189).
+pocketshell_run_without_avd_lock_fd "$ADB" -s "$ANDROID_SERIAL" logcat -G 16M >/dev/null 2>&1 || true
 pocketshell_run_without_avd_lock_fd "$ADB" -s "$ANDROID_SERIAL" logcat -c >/dev/null 2>&1 || true
 
 RESULTS_DIR="$ROOT_DIR/android/app/build/outputs/androidTest-results/connected/debug"
@@ -365,7 +367,7 @@ shopt -u nullglob
 pocketshell_run_without_avd_lock_fd "$ADB" -s "$ANDROID_SERIAL" logcat -d -v threadtime > "$ARTIFACTS_DIR/logcat.txt" 2>&1 || true
 pocketshell_run_without_avd_lock_fd "$ADB" -s "$ANDROID_SERIAL" exec-out screencap -p > "$ARTIFACTS_DIR/final-screen.png" 2>/dev/null || true
 mkdir -p "$ARTIFACTS_DIR/screenshots"
-for shot in account-direct-picker account-direct-trust account-direct-terminal account-direct-resumed-terminal account-direct-gateway-terminal account-direct-returned-terminal pin-mismatch device-offline terminal-io vault-unlocked-gateway-hosts vault-gateway-connected after-reconnect trusted-vault-servers trusted-vault-terminal trusted-vault-tampered trusted-vault-foreign authloss-initial-terminal authloss-login-required authloss-unlock-cancelled authloss-recovered-terminal onboarding-before-google onboarding-account-unavailable onboarding-wrong-phrase onboarding-existing-terminal onboarding-create-first-vault onboarding-create-unavailable onboarding-created-empty-servers onboarding-created-vault-reopened; do
+for shot in me-stalled-terminal account-direct-picker account-direct-trust account-direct-terminal account-direct-resumed-terminal account-direct-gateway-terminal account-direct-returned-terminal pin-mismatch device-offline terminal-io vault-unlocked-gateway-hosts vault-gateway-connected after-reconnect trusted-vault-servers trusted-vault-terminal trusted-vault-tampered trusted-vault-foreign authloss-initial-terminal authloss-login-required authloss-unlock-cancelled authloss-recovered-terminal onboarding-before-google onboarding-account-unavailable onboarding-wrong-phrase onboarding-existing-terminal onboarding-create-first-vault onboarding-create-unavailable onboarding-created-empty-servers onboarding-created-vault-reopened; do
   pocketshell_run_without_avd_lock_fd "$ADB" -s "$ANDROID_SERIAL" pull "/data/local/tmp/gwlane-$shot.png" "$ARTIFACTS_DIR/screenshots/$shot.png" >/dev/null 2>&1 || true
   pocketshell_run_without_avd_lock_fd "$ADB" -s "$ANDROID_SERIAL" shell rm -f "/data/local/tmp/gwlane-$shot.png" >/dev/null 2>&1 || true
 done

@@ -24,7 +24,7 @@ class GatewaySyncSession {
         this(new GoogleSyncSession(
                 new EncryptedSyncTokenStore(context),
                 GoogleSyncEnvironment.signIn(activity),
-                GoogleSyncEnvironment.transport(),
+                GoogleSyncEnvironment.transport(context),
                 GoogleSyncConfig.SYNC_API_URL,
                 () -> System.currentTimeMillis() / 1000L));
     }

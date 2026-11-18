@@ -32,8 +32,10 @@ export interface GoogleSyncNative {
   signIn(): Promise<GoogleSyncStatus>;
   signOut(): Promise<GoogleSyncStatus>;
   request(request: GoogleSyncRequest): Promise<GoogleSyncHttpResponse>;
-  /** Verified public account identity; no token crosses the boundary. */
+  /** The stored credential's public account identity, no network (#3189); no token crosses the boundary. */
   accountId?(): Promise<unknown>;
+  /** The same identity as the backend authorizer verifies it (GET /me); a background refresh only. */
+  verifyAccount?(): Promise<unknown>;
   /** Confirmed native auth loss; consumer cleanup is awaited before request rejection. */
   onAuthLost?(listener: () => void | Promise<void>): () => void;
 }
@@ -51,6 +53,7 @@ export const GOOGLE_SYNC_ERROR_CODES = [
 
 type NativeGoogleSyncPlugin = Plugin & {
   accountId(): Promise<unknown>;
+  verifyAccount(): Promise<unknown>;
   status(): Promise<unknown>;
   signIn(): Promise<unknown>;
   signOut(): Promise<unknown>;
@@ -142,6 +145,7 @@ export function createGoogleSyncNative(plugin: NativeGoogleSyncPlugin): GoogleSy
     },
     signOut: async () => { generation++; observedSignedIn = false; loss = null; return parseGoogleSyncStatus(await plugin.signOut()); },
     accountId: () => guarded(() => plugin.accountId()),
+    verifyAccount: () => guarded(() => plugin.verifyAccount()),
     request: (request) => guarded(async () => parseGoogleSyncResponse(await plugin.request({ ...request }))),
     onAuthLost: (listener) => { listeners.add(listener); return () => listeners.delete(listener); },
   };
@@ -150,12 +154,25 @@ export function createGoogleSyncNative(plugin: NativeGoogleSyncPlugin): GoogleSy
 const nativeGoogleSyncPlugin = registerPlugin<NativeGoogleSyncPlugin>('GoogleSync');
 export const googleSync: GoogleSyncNative = createGoogleSyncNative(nativeGoogleSyncPlugin);
 
-/** Native verifies the subject through the backend authorizer. No JWT or email-derived identity. */
-export async function verifiedGoogleAccountId(): Promise<string | null> {
-  if (!(await googleSync.status()).signedIn) return null;
-  const reply = await googleSync.accountId!();
+function parseAccountId(reply: unknown): string {
   if (!isRecord(reply) || typeof reply.accountId !== 'string' || !/^google:[0-9A-Za-z_-]{1,128}$/.test(reply.accountId)) {
     throw new Error('The signed-in account could not be verified.');
   }
   return reply.accountId;
+}
+
+/**
+ * The account a saved server opens with (#3189): the stored credential's subject, read natively with no
+ * network, so opening never waits on GET /me. Every request still carries the credential itself; a 401
+ * from the gateway or sync service ends the session (signed out). No JWT or email-derived identity.
+ */
+export async function googleAccountId(): Promise<string | null> {
+  if (!(await googleSync.status()).signedIn) return null;
+  return parseAccountId(await googleSync.accountId!());
+}
+
+/** The background identity refresh: the backend authorizer's answer (GET /me). Never on the open path. */
+export async function verifyGoogleAccount(): Promise<string | null> {
+  if (!(await googleSync.status()).signedIn) return null;
+  return parseAccountId(await googleSync.verifyAccount!());
 }

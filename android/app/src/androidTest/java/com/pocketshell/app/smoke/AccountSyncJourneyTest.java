@@ -477,8 +477,8 @@ public final class AccountSyncJourneyTest {
         }
 
         @Override
-        public String obtainIdToken(boolean interactiveRequest) throws SyncAuthException {
-            if (interactiveRequest) interactive.incrementAndGet();
+        public String obtainIdToken() throws SyncAuthException {
+            interactive.incrementAndGet();
             if (failure != null) throw failure;
             return token;
         }

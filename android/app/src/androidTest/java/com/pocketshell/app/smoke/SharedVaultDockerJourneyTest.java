@@ -124,7 +124,7 @@ public final class SharedVaultDockerJourneyTest {
         if (scenario != null) {
             try {
                 evalRaw("Object.keys(localStorage).filter((key) => key.startsWith('pocketshell.ssh.host-key.')"
-                        + " || ['" + HOSTS_KEY + "','" + SHARED_SETTINGS_KEY + "'].includes(key))"
+                        + " || ['" + HOSTS_KEY + "','" + SHARED_SETTINGS_KEY + "','pocketshell.trustedServers.v1'].includes(key))"
                         + ".forEach((key) => localStorage.removeItem(key)); 'reset'");
             } catch (Throwable ignored) {
                 // The activity may already be gone after a failure.
@@ -253,7 +253,13 @@ public final class SharedVaultDockerJourneyTest {
                         }
                     }
                 }));
-        awaitJsTrue("!!document.querySelector('[data-testid=server-google-login]')", 60_000);
+        // #3189 keeps a saved list after a lost sign-in; a no-account start drops one an earlier journey left.
+        awaitJsTrue("!!document.querySelector('[data-testid=server-google-login]')"
+                + " || !!document.querySelector('[data-testid=server-reauth]')", 60_000);
+        if ("true".equals(evalRaw("String(!!document.querySelector('[data-testid=server-reauth]'))").replace("\"", ""))) {
+            evalRaw("localStorage.removeItem('pocketshell.trustedServers.v1'); location.reload(); 'reload'");
+            awaitJsTrue("!!document.querySelector('[data-testid=server-google-login]')", 60_000);
+        }
         evalRaw("localStorage.removeItem('" + SHARED_SETTINGS_KEY + "'); localStorage.setItem('" + HOSTS_KEY + "','[]');"
                 + " localStorage.removeItem('ps.lastFolder.gw-dev'); localStorage.removeItem('ps.lastFolder.gw-missing'); 'empty'");
         tapDomCenter("[data-testid=server-google-login]");

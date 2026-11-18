@@ -102,6 +102,9 @@ mkdir -p "$ARTIFACTS_DIR/instrumentation-results" "$ARTIFACTS_DIR/device-screens
 pocketshell_android_apply_lane_settings "$ADB" "$ANDROID_SERIAL" "$ARTIFACTS_DIR/lane-settings.txt" \
   || fail "could not apply the lane input settings on $ANDROID_SERIAL"
 # Same-run logcat only: the checker must not read an earlier run's lines.
+# The default 256 KiB ring drops the first journeys' evidence lines before the
+# last one ends (#3189: six journeys, the stalled scenario's line rotated out).
+pocketshell_run_without_avd_lock_fd "$ADB" -s "$ANDROID_SERIAL" logcat -G 16M >/dev/null 2>&1 || true
 pocketshell_run_without_avd_lock_fd "$ADB" -s "$ANDROID_SERIAL" logcat -c >/dev/null 2>&1 || true
 
 SCREENSHOT_DIR="/sdcard/Pictures/PocketShell/JsAccountPicker/$RUN_ID"
