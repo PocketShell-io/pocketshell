@@ -1119,6 +1119,7 @@ public abstract class ComposerJourneySupport {
 
     private void verifyNestedAndroidBackKeepsLiveSession() throws Exception {
         awaitJsTrue("document.querySelector('.app-shell')?.dataset.backButtonReady === 'true'");
+        dismissComposerSheetIfOpen();
         click("button[aria-label='Settings']");
         awaitJsTrue("document.querySelector('.app-shell')?.dataset.route === 'settings'");
         click("[data-testid=open-terminal-settings]");
@@ -1174,6 +1175,7 @@ public abstract class ComposerJourneySupport {
 
     private void chooseThemeFromLiveSession(String theme) throws Exception {
         hideImeUntilStableWithoutEditableFocus();
+        dismissComposerSheetIfOpen();
         click("button[aria-label='Settings']");
         awaitJsTrue("document.querySelector('.app-shell')?.dataset.route === 'settings'"
                 + " && !!document.querySelector('[data-testid=setting-theme]')");
@@ -1842,14 +1844,19 @@ public abstract class ComposerJourneySupport {
         awaitJsTrue(match + " !== undefined");
     }
 
-    private void attachSession(String suffixName) throws Exception {
-        // A composer sheet restored open after a restart is a modal bottom sheet whose scrim
-        // covers the navigation (S4a); dismiss it the way a user does, with a scrim tap. The
-        // draft is persisted, so reopening the composer below restores it.
+    /** A modal composer sheet's scrim covers the app bar (S4a); a user dismisses it before navigating. The draft persists. */
+    private void dismissComposerSheetIfOpen() throws Exception {
         if ("true".equals(evalRaw("!!document.querySelector('[data-testid=prompt-composer-scrim]')"))) {
             tapScrimAboveComposerSheet();
             awaitJsTrue("!document.querySelector('[data-testid=prompt-composer]')", 10_000);
         }
+    }
+
+    private void attachSession(String suffixName) throws Exception {
+        // A composer sheet restored open after a restart is a modal bottom sheet whose scrim
+        // covers the navigation (S4a); dismiss it the way a user does, with a scrim tap. The
+        // draft is persisted, so reopening the composer below restores it.
+        dismissComposerSheetIfOpen();
         if (!"sessions".equals(evalRaw("document.querySelector('.app-shell')?.dataset.homeSurface ?? ''"))) {
             click("[data-testid=open-sessions]");
         }

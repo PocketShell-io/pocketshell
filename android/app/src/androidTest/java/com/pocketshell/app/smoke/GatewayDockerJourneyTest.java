@@ -1154,10 +1154,25 @@ public final class GatewayDockerJourneyTest {
         return error;
     }
 
+    /**
+     * Taps the host's Connect button. The visibility guard returns 'FAILED: ...' without clicking when the
+     * button is missing, hidden or covered (a list still refreshing, a sheet still sliding), and that string
+     * used to be dropped, so the journey went on to wait for a dial that never started. Retry until the
+     * click lands, then fail with the page-side reason.
+     */
     void tapHost(String name) throws Exception {
-        evalRaw("(() => {const button=[...document.querySelectorAll('[data-testid=trusted-server-connect]')].find((n)=>"
+        String script = "(() => {const button=[...document.querySelectorAll('[data-testid=trusted-server-connect]')].find((n)=>"
                 + "n.textContent.includes(" + JSONObject.quote(name) + "));"
-                + "if(!button) throw new Error('no trusted server'); " + JsVisibility.clickNode("button", "trusted server " + name) + "return 'ok';})()");
+                + "if(!button) return 'FAILED: no trusted server ' + " + JSONObject.quote(name) + ";"
+                + JsVisibility.clickNode("button", "trusted server " + name) + "return 'ok';})()";
+        long deadline = SystemClock.uptimeMillis() + 15_000;
+        String raw;
+        do {
+            raw = evalRaw(script);
+            if ("\"ok\"".equals(raw)) return;
+            Thread.sleep(250);
+        } while (SystemClock.uptimeMillis() < deadline);
+        throw new AssertionError("tapHost never clicked " + name + ": " + raw);
     }
 
     void typeCommand(String command) throws Exception {
