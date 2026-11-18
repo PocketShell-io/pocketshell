@@ -103,7 +103,11 @@ run_case() {
   fi
   local creates kills
   creates="$(grep -c 'sessions create' "$calls" || true)"
-  kills="$(grep -c 'sessions kill' "$calls" || true)"
+  # The J27 (#3105) folder sessions are created by the app under test, so their
+  # cleanup is one loop over the seeded workspace rather than a per-fixture kill.
+  kills="$(grep 'sessions kill' "$calls" | grep -vc 'proj-one' || true)"
+  grep -q 'sessions kill.*proj-one\|proj-one.*sessions kill' "$calls" \
+    || { cat "$calls" >&2; fail "$name: the J27 app-created sessions must be killed on exit"; }
   (( creates > 0 )) || { cat "$calls" >&2; fail "$name: the runner never created its fixture sessions"; }
   if [[ "$kills" != "$creates" ]]; then
     cat "$calls" >&2
