@@ -56,6 +56,7 @@ export function createTrustedMockAccount(google: DevPlugin, ssh: DevPlugin, keys
   };
   const request = google.methods.request;
   google.methods.accountId = async () => { await signedIn(); return { accountId: DEV_TRUSTED_ACCOUNT }; };
+  google.methods.verifyAccount = google.methods.accountId;
   google.methods.request = async options => {
     await signedIn();
     if (options.endpoint === 'vault/status' || options.endpoint === 'vault/verify') return { status: 404, body: '{}' };

@@ -21,7 +21,7 @@ import { createLocalTrustStore } from '@/platform/android/trustStore';
 import { ADD_HOST_ROUTE, openAccountRoute, openAddHostRoute } from './router';
 import { createAccountHostKeyPrompt } from './accountHostKey';
 import { createAndroidTrustedHosts } from '@/platform/android/trustedHosts';
-import { googleSync, verifiedGoogleAccountId } from '@/native/googleSync';
+import { googleAccountId, googleSync, verifyGoogleAccount } from '@/native/googleSync';
 import { vaultNative } from '@/native/vaultNative';
 import { openExternalUrl } from '@/platform/androidAppInfo';
 import { createAndroidVault } from '@/vault/androidVault';
@@ -93,23 +93,25 @@ const vaultStore = createAndroidVaultStore(googleSync, () => vaultAccount);
  * it?" sending the user to the web's reset. Installed by main.ts next to
  * provideApi.
  */
-const trustedHosts = createAndroidTrustedHosts({ store: vaultStore, accountId: verifiedGoogleAccountId,
+const trustedHosts = createAndroidTrustedHosts({ store: vaultStore, accountId: googleAccountId,
   native: nativeGatewayPairing, hosts: androidHosts });
 export const keyVaultPlatform: KeyVaultPlatform = {
-  accountId: verifiedGoogleAccountId,
+  accountId: googleAccountId,
+  // #3189: identity is refreshed with the backend in the background, never before an open.
+  verifyAccount: verifyGoogleAccount,
   canCreate: true,
   onLock: () => androidVault.lock(),
   cancelAccountPreparation: () => {vaultPreparation++;},
   async prepareAccount() {
     const started = ++vaultPreparation;
     const current = () => {if(started !== vaultPreparation) throw new Error('Account setup was cancelled.');};
-    const accountId = await verifiedGoogleAccountId();
+    const accountId = await googleAccountId();
     current();
     if (!accountId) throw new Error('Sign in with Google first.');
     if (vaultAccount !== accountId) {await androidVault.lock();current();vaultAccount = accountId;}
     const state = await androidVault.refresh();
     current();
-    if (await verifiedGoogleAccountId() !== accountId) throw new Error('Your account changed. Sign in again.');
+    if (await googleAccountId() !== accountId) throw new Error('Your account changed. Sign in again.');
     current();
     if (state !== 'locked' && state !== 'unlocked' && state !== 'absent') throw new Error('Sign in with Google first.');
     return {accountId,state};
@@ -126,7 +128,7 @@ export const androidVault = createAndroidVault({
   core: createStoreVaultCore(vaultStore),
   native: vaultNative,
   scope: vaultScope,
-  accountId: verifiedGoogleAccountId,
+  accountId: googleAccountId,
   askUnlock: (hostLabel) => requestVaultUnlock('connect', hostLabel),
   onUnlocked: async (syncPassphrase) => {
     if (!syncPassphrase) return;

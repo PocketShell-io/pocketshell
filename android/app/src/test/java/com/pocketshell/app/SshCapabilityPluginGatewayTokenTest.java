@@ -110,8 +110,9 @@ public final class SshCapabilityPluginGatewayTokenTest {
     }
 
     @Test public void noBridgeMethodCanYieldAToken() {
-        // GoogleSync exposes the verified public account identity, never its token.
-        assertEquals(Set.of("status", "signIn", "signOut", "request", "accountId"), pluginMethods(GoogleSyncPlugin.class));
+        // GoogleSync exposes the public account identity (from the stored credential, and as the backend
+        // verifies it: #3189's verifyAccount), never its token.
+        assertEquals(Set.of("status", "signIn", "signOut", "request", "accountId", "verifyAccount"), pluginMethods(GoogleSyncPlugin.class));
         // ... the pairing/directory bridge exposes public metadata, never tokens ...
         assertEquals(Set.of("list", "pair", "remove", "devices", "serverUrl", "installTrustedHost", "trustedRevisions", "saveTrustedRevision"), pluginMethods(GatewayPairingPlugin.class));
         // ... and the SSH plugin's bridge surface is pinned, so a future
@@ -135,7 +136,7 @@ public final class SshCapabilityPluginGatewayTokenTest {
             public void write(String token) { }
             public void clear() { }
         }, new GoogleSyncSession.SignInProvider() {
-            public String obtainIdToken(boolean interactive) throws SyncAuthException {
+            public String obtainIdToken() throws SyncAuthException {
                 throw new SyncAuthException(SyncAuthException.FAILED, "no");
             }
 

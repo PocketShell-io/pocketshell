@@ -140,6 +140,7 @@ LANES = (
             ("com.pocketshell.app.smoke.J15TerminalScrollJourney", frozenset({'scrollTerminalDoesNotSendInputBytes'})),
             ("com.pocketshell.app.smoke.J19HostFormImeJourney", frozenset({'tunnelFormSubmitRemainsReachableWithTheIme', 'hostFormSubmitRemainsReachableWithTheIme'})),
             ("com.pocketshell.app.smoke.J21HostAddConnectJourney", frozenset({'hostAddedThroughFormConnectsToFixture','guestSshConnectsWithoutGoogleOrVaultAndTypesIntoRealHost'})),
+            ("com.pocketshell.app.smoke.J33ResumeNeverSignsInJourney", frozenset({'resumeOnATerminalNeverOpensSignInWhileTheSilentPathFails'})),
             ("com.pocketshell.app.smoke.J25AndroidBackJourney", frozenset({'androidBackWalksSubviewsThenHostListThenBackgrounds'})),
             ("com.pocketshell.app.smoke.J11ShareUploadJourney", frozenset({"androidSingleShareReachesTheChosenSessionOnTheRealHost", "androidShareStreamsReachTheChosenSessionOnTheRealHost"})),
             ("com.pocketshell.app.smoke.J20ComposerUploadProgressJourney", frozenset({"aThreeFileUploadShowsTheBarMidFlightAndLeavesNoResidueAfterCompletion"})),
@@ -209,6 +210,11 @@ LANES = (
             {
                 "sharedTrustedPickerNeverAdoptsUntrustedAccountRowsAfterSignInOrSettingsSync",
                 "legacyHomeListsAccountHostsAgainAfterRestartOnceUnlocked",
+                "offlineFirstSavedServersOpenAtOnceWhileSyncIsStalled",
+                "offlineFirstFailingSyncIsQuietRetriesAndKeepsOrder",
+                "offlineFirstRevokedAccountKeepsServersAndAsksToSignInAgain",
+                "offlineFirstResumeWithARevokedTokenNeverOpensSignIn",
+                "offlineFirstSyncTransportGetsPastADeadKeepAliveSocketQuickly",
             }
         ),
     ),
@@ -224,6 +230,7 @@ LANES = (
                 "dialsTheGatewayHostWithTheAccountVaultKeyAfterOneUnlockAndNoKeyPicker",
                 "connectsTrustedVaultServerWithoutManualPairingAndCreatesHomeTerminal",
                 "recoversNativeAuthLossWithoutSignOutAndPreservesVaultTrustBeforeRealTerminal",
+                "opensATrustedServerToARealTerminalWhileTheIdentityCheckIsStalled",
                 "onboardingExistingVaultRequiresGoogleThenRejectsWrongPhraseBeforeOneUnlockAndRealTerminal",
                 "onboardingCreatesMissingVaultAtomicallyInAppAndReopensItWithoutWeb",
                 "usesAccountOnlyDirectSshAlongsideTrustedGatewayForRealTerminals",

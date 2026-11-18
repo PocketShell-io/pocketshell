@@ -62,11 +62,10 @@ public final class GoogleSyncSession {
     /** Mints a Google ID token. Production: Credential Manager. */
     public interface SignInProvider {
         /**
-         * @param interactive true for the user's "Sign in with Google" tap;
-         *     false for a silent renewal of an expired token with the account
-         *     already authorized (no chooser).
+         * Google's account chooser, on the user's own "Sign in" tap only. There is
+         * no silent variant (#3189): every Credential Manager call can show UI.
          */
-        String obtainIdToken(boolean interactive) throws SyncAuthException;
+        String obtainIdToken() throws SyncAuthException;
 
         /** Forget the authorized account in Credential Manager; best effort. */
         void clearCredentialState();
@@ -103,6 +102,12 @@ public final class GoogleSyncSession {
     private final Transport transport;
     private final String apiBaseUrl;
     private final LongSupplier nowEpochSeconds;
+
+    /** The plain-words transport failure; the exception class rides in {@link SyncAuthException#detail}. */
+    static final String NETWORK_MESSAGE = "PocketShell sync can't be reached right now.";
+
+    /** An expired, refused or revoked sign-in (#3189): shown as signed out, never renewed silently. */
+    static final String SIGNED_OUT_MESSAGE = "You're signed out. Sign in to sync your servers.";
 
     /** A verified identity is reused for at most this long, and never past the ID token's own expiry. */
     static final long VERIFIED_IDENTITY_TTL_SECONDS = 60L;
@@ -142,6 +147,21 @@ public final class GoogleSyncSession {
     }
 
     /**
+     * The account opening a saved server uses (issue #3189): the subject of the stored ID token, the
+     * credential every gateway and sync request carries. No network: the open never waits on {@code /me}.
+     * An expired token ends the session here exactly as at a request ({@link #signedOut()}), and a
+     * revoked one is refused by the first authenticated request (401), which ends it too.
+     * {@link #verifiedAccountId()} still checks the subject with the backend, in the background.
+     */
+    String currentAccountId() throws SyncAuthException {
+        synchronized (authentication) {
+            GoogleIdToken token = usableToken();
+            if (!token.subject.matches("[0-9A-Za-z_-]{1,128}")) throw invalid();
+            return "google:" + token.subject;
+        }
+    }
+
+    /**
      * Verify this native Google subject with the fixed backend authorizer before exposing public identity.
      * A successful verification is reused for up to {@link #VERIFIED_IDENTITY_TTL_SECONDS} (and never past the
      * stored token's expiry) while the stored subject is unchanged; sign-in, sign-out, any 401 and any dropped
@@ -162,7 +182,7 @@ public final class GoogleSyncSession {
             }
             generation = authentication.identityGeneration;
             epoch = authentication.credentialEpoch;
-            if (token.isExpired(now)) token = renew(token);
+            if (token.isExpired(now)) token = signedOut();
         }
         Response response = send("GET", "/me", null, token);
         if (response.status == 401) {
@@ -200,28 +220,6 @@ public final class GoogleSyncSession {
                         after.expiresAtEpochSeconds - GoogleSyncConfig.EXPIRY_SKEW_SECONDS);
             }
             return "google:" + before;
-        }
-    }
-
-    /**
-     * Renew the ID token ahead of the first action when it expires within {@code withinSeconds}, so the
-     * silent renewal is off the user's critical path (issue #3137). Best effort: failures surface on the
-     * next real request exactly as before.
-     */
-    void renewIfExpiringWithin(long withinSeconds) {
-        synchronized (authentication) {
-            long started = System.nanoTime();
-            try {
-                GoogleIdToken token = storedToken();
-                if (token == null || token.expiresAtEpochSeconds - nowEpochSeconds.getAsLong() > withinSeconds) return;
-                GoogleIdToken next = GoogleIdToken.parse(provider.obtainIdToken(false));
-                if (next.subject.equals(token.subject) && !next.isExpired(nowEpochSeconds.getAsLong())) write(next.token);
-            } catch (SyncAuthException | RuntimeException ignored) {
-                // Never authoritative: silent timeouts, a missing/finishing activity and generic provider
-                // errors all leave the stored sign-in alone. Only a server 401 on a real request drops it.
-            } finally {
-                timing("token pre-renewal " + (System.nanoTime() - started) / 1_000_000L + "ms");
-            }
         }
     }
 
@@ -287,7 +285,7 @@ public final class GoogleSyncSession {
     /** The interactive sign-in: choose an account, store its ID token. */
     Status signIn() throws SyncAuthException {
         synchronized (authentication) {
-            GoogleIdToken token = GoogleIdToken.parse(provider.obtainIdToken(true));
+            GoogleIdToken token = GoogleIdToken.parse(provider.obtainIdToken());
             authentication.forgetIdentity();
             authentication.credentialEpoch++;
             write(token.token);
@@ -364,7 +362,7 @@ public final class GoogleSyncSession {
         GoogleIdToken stored = storedToken();
         if (stored != null && !stored.token.equals(used.token) && stored.subject.equals(used.subject)
                 && !stored.isExpired(nowEpochSeconds.getAsLong())) return stored;
-        return renew(used);
+        return signedOut();
     }
 
     /** Account-bound vault IO remains on the original subject across asynchronous KDF work. */
@@ -442,44 +440,32 @@ public final class GoogleSyncSession {
             timing("backend " + method + " " + path + " failed " + (System.nanoTime() - started) / 1_000_000L + "ms");
             // The transport's message can name the host; it never carries the
             // header, but keep only the class so no future change can leak one.
-            throw new SyncAuthException(SyncAuthException.NETWORK,
-                    "The sync service could not be reached (" + error.getClass().getSimpleName() + ").");
+            // The class is a detail behind "Copy details", never the message (#3189).
+            throw new SyncAuthException(SyncAuthException.NETWORK, NETWORK_MESSAGE,
+                    error.getClass().getSimpleName() + " on " + method + " " + path);
         }
     }
 
     private GoogleIdToken usableToken() throws SyncAuthException {
         GoogleIdToken token = storedToken();
         if (token == null) throw new SyncAuthException(SyncAuthException.NOT_SIGNED_IN, "Sign in with Google first.");
-        return token.isExpired(nowEpochSeconds.getAsLong()) ? renew(token) : token;
+        return token.isExpired(nowEpochSeconds.getAsLong()) ? signedOut() : token;
     }
 
-    /** Silently renew for the same Google account, or drop the sign-in. */
-    private GoogleIdToken renew(GoogleIdToken previous) throws SyncAuthException {
-        long started = System.nanoTime();
-        try {
-            return renewUntimed(previous);
-        } finally {
-            timing("token renewal " + (System.nanoTime() - started) / 1_000_000L + "ms");
-        }
-    }
-
-    private GoogleIdToken renewUntimed(GoogleIdToken previous) throws SyncAuthException {
-        GoogleIdToken next;
-        try {
-            next = GoogleIdToken.parse(provider.obtainIdToken(false));
-        } catch (SyncAuthException error) {
-            // Cancellation/offline failure does not establish lost authorization.
-            // Keep the account record for explicit retry, without retrying automatically.
-            if (SyncAuthException.CANCELLED.equals(error.code) || SyncAuthException.NETWORK.equals(error.code)) throw error;
-            dropExpired();
-            throw new SyncAuthException(SyncAuthException.NOT_SIGNED_IN, "Your Google sign-in could not be renewed. Sign in again.");
-        }
-        if (!next.subject.equals(previous.subject) || next.isExpired(nowEpochSeconds.getAsLong())) {
-            dropExpired();
-            throw new SyncAuthException(SyncAuthException.NOT_SIGNED_IN, "Your Google sign-in could not be renewed. Sign in again.");
-        }
-        write(next.token);
-        return next;
+    /**
+     * Issue #3189: an expired or refused token is never renewed behind the
+     * user's back. Every Credential Manager call can show UI (even the
+     * "silent" auto-select option shows a "Signing you in" sheet), and one
+     * fired from resume pauses and resumes the activity, which used to fire
+     * the next one: a sign-in sheet looping over the terminal. So a request
+     * that finds the token unusable ends the session visibly instead: the
+     * record is dropped and the caller gets NOT_SIGNED_IN, which the app shows
+     * as "Signed out" with a Sign in banner. Sign-in UI only ever comes from
+     * {@link #signIn()}, on the user's own tap.
+     */
+    private GoogleIdToken signedOut() throws SyncAuthException {
+        dropExpired();
+        throw new SyncAuthException(SyncAuthException.NOT_SIGNED_IN, SIGNED_OUT_MESSAGE);
     }
 
     private void dropExpired() {

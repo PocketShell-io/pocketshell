@@ -18,7 +18,7 @@ public final class GoogleSyncEnvironmentTest {
 
     @Test public void packagedFakeEdgesRemainExplicitAndPaired() {
         GoogleSyncSession.SignInProvider fake = new GoogleSyncSession.SignInProvider() {
-            @Override public String obtainIdToken(boolean interactive) { return "fixture"; }
+            @Override public String obtainIdToken() { return "fixture"; }
             @Override public void clearCredentialState() { }
         };
         GoogleSyncEnvironment.installForTesting(activity -> fake,

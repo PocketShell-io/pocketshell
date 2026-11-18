@@ -40,12 +40,13 @@ REQUIRED_METHODS = frozenset(
         "dialsTheGatewayHostWithTheAccountVaultKeyAfterOneUnlockAndNoKeyPicker",
         "connectsTrustedVaultServerWithoutManualPairingAndCreatesHomeTerminal",
         "recoversNativeAuthLossWithoutSignOutAndPreservesVaultTrustBeforeRealTerminal",
+        "opensATrustedServerToARealTerminalWhileTheIdentityCheckIsStalled",
         "onboardingExistingVaultRequiresGoogleThenRejectsWrongPhraseBeforeOneUnlockAndRealTerminal",
         "onboardingCreatesMissingVaultAtomicallyInAppAndReopensItWithoutWeb",
                 "usesAccountOnlyDirectSshAlongsideTrustedGatewayForRealTerminals",
     }
 )
-SELF_TEST_CASES = 40
+SELF_TEST_CASES = 43
 
 
 class GateFailure(ValueError):
@@ -204,6 +205,7 @@ def validate_host(host_dir: Path) -> dict:
     if not any(matching_onboarding_file(reply) for reply in _phase(entries,"host-file","onboarding-io")):
         raise GateFailure("the onboarding terminal never produced its run-bound independent host file")
     validate_onboarding_runtime(host_dir.parent)
+    validate_me_stalled_runtime(host_dir.parent)
 
     files = {
         reply["name"]: reply["content"].strip()
@@ -292,7 +294,7 @@ def validate_authloss_runtime(artifacts: Path) -> None:
     if len(receipts) != 1:
         raise GateFailure("exactly one native auth-loss custody receipt is required")
     row = receipts[0]
-    expected = {"losses":3,"silentFailures":3,"interactive":4,"gatewayChallenges":1,"signOuts":0,"cloudWrites":0,"floor":1,
+    expected = {"losses":3,"backgroundSignIns":0,"interactive":4,"gatewayChallenges":1,"signOuts":0,"cloudWrites":0,"floor":1,
                 "encryptedSlotsUnchanged":True,"protectedBytesSurviveLoss":True,"rememberBytesUnchanged":True,"scopeStable":True,
                 "rememberedReauths":3,"manualLockConfirmed":True,"pureLossByteIntervals":3,"reauthTrustChecks":3,
                 "freshLeaseBeforeBrokerLoss":True,"brokerDialUsesFreshLease":True,"staleLeaseRefusedBeforeBroker":True}
@@ -309,10 +311,34 @@ def validate_authloss_runtime(artifacts: Path) -> None:
             raise GateFailure(f"native auth-loss screenshot is missing or invalid: {name}")
 
 
+# #3189: a tap reaches the native gateway dial without GET /me, well inside this bound.
+ME_STALLED_TAP_TO_DIAL_MAX_MS = 5_000
+
+
+def validate_me_stalled_runtime(artifacts: Path) -> dict:
+    """#3189 review B2: the open never waits on /me; the receipt and the terminal screenshot prove it."""
+    path = artifacts / "logcat.txt"
+    if not path.is_file():
+        raise GateFailure("identity-stalled open log is missing")
+    rows = [json.loads(line.split("ME_STALLED_OPEN ", 1)[1])
+            for line in path.read_text(encoding="utf-8", errors="replace").splitlines() if "ME_STALLED_OPEN " in line]
+    if len(rows) != 1:
+        raise GateFailure("exactly one ME_STALLED_OPEN receipt is required")
+    row = rows[0]
+    tap = row.get("tapToDialMs")
+    if (type(tap) is not int or not 0 <= tap < ME_STALLED_TAP_TO_DIAL_MAX_MS or row.get("meHeldAtDial") is not True
+            or row.get("terminalWhileMeHeld") is not True or row.get("meAnswers") != 0):
+        raise GateFailure(f"the open waited on /me or was slow: {row}")
+    frame = artifacts / "screenshots" / "me-stalled-terminal.png"
+    if not frame.is_file() or frame.stat().st_size < 1024 or not frame.read_bytes().startswith(b"\x89PNG\r\n\x1a\n"):
+        raise GateFailure("identity-stalled terminal screenshot is missing or invalid")
+    return row
+
+
 def validate_onboarding_runtime(artifacts: Path) -> None:
     text=(artifacts/"logcat.txt").read_text(encoding="utf-8",errors="replace")
     for label,expected in (
-        ("ONBOARDING_EXISTING",{"unlockGates":1,"createGates":0,"interactive":2,"wrongPhraseRefused":True,"accountFailureNoGate":True,"nativeLockConfirmed":True,"cloudWrites":0}),
+        ("ONBOARDING_EXISTING",{"unlockGates":1,"createGates":0,"interactive":1,"wrongPhraseRefused":True,"identityCheckOffOpenPath":True,"nativeLockConfirmed":True,"cloudWrites":0}),
         ("ONBOARDING_CREATED",{"epoch":3,"initializations":1,"initializeAttempts":2,"createGates":2,"unlockGates":1,"interactive":2,
                                "ciphertextPreserved":True,"plaintextUploaded":False,"emptyServers":True}),
     ):
@@ -410,7 +436,7 @@ def _write_host(directory: Path, **overrides) -> None:
     ])
     if overrides.get("direct_file_missing"):
         entries = [e for e in entries if e["request"].get("op") != "direct-host-file"]
-    receipt = {"losses":3,"silentFailures":3,"interactive":4,"gatewayChallenges":1,"signOuts":0,"cloudWrites":0,"floor":1,
+    receipt = {"losses":3,"backgroundSignIns":0,"interactive":4,"gatewayChallenges":1,"signOuts":0,"cloudWrites":0,"floor":1,
                "encryptedSlotsUnchanged":True,"protectedBytesSurviveLoss":not overrides.get("authloss_custody_bad",False),
                "rememberBytesUnchanged":True,"scopeStable":True,"beforeDropDials":1,"preTapDials":overrides.get("authloss_pre_tap_dials",2),"finalDials":3,
                "recoveryPhaseBeforeTap":"lost","rememberedReauths":3,"manualLockConfirmed":True,
@@ -427,11 +453,13 @@ def _write_host(directory: Path, **overrides) -> None:
          "reply":{"ok":True,"name":"gwlane-onboarding-io-r.txt","content":overrides.get("onboarding_content","GWONBOARD42_r\n"),"exists":True,"type":"regular","readExitCode":0}},
     ])
     with (directory.parent/"logcat.txt").open("a") as log:
-        log.write("ONBOARDING_EXISTING "+json.dumps({"unlockGates":overrides.get("onboarding_unlock_gates",1),"createGates":0,"interactive":2,
-                  "wrongPhraseRefused":True,"accountFailureNoGate":True,"nativeLockConfirmed":True,"cloudWrites":0})+"\n")
+        log.write("ONBOARDING_EXISTING "+json.dumps({"unlockGates":overrides.get("onboarding_unlock_gates",1),"createGates":0,"interactive":1,
+                  "wrongPhraseRefused":True,"identityCheckOffOpenPath":True,"nativeLockConfirmed":True,"cloudWrites":0})+"\n")
         log.write("ONBOARDING_CREATED "+json.dumps({"epoch":3,"initializations":overrides.get("onboarding_initializations",1),"initializeAttempts":2,
                   "createGates":2,"unlockGates":1,"interactive":2,"ciphertextPreserved":True,"plaintextUploaded":False,"emptyServers":True})+"\n")
         log.write("ONBOARDING_VISIBLE_TERMINAL GWONBOARD42_r\n")
+        log.write("ME_STALLED_OPEN " + json.dumps({"tapToDialMs": overrides.get("me_tap_to_dial", 900), "meHeldAtDial": True,
+                  "terminalWhileMeHeld": overrides.get("me_terminal_while_held", True), "meAnswers": 0}) + "\n")
     if not overrides.get("direct_receipt_missing"):
         with (directory.parent / "logcat.txt").open("a") as log:
             log.write('ACCOUNT_DIRECT_VISIBLE_TERMINAL "ACDIRECT42_r\\n$"\n')
@@ -439,6 +467,7 @@ def _write_host(directory: Path, **overrides) -> None:
                 "normalTofu": True, "vaultCredential": True, "hostFile": "gwlane-account-direct-r.txt"}) + "\n")
     shots = directory.parent / "screenshots"
     shots.mkdir(exist_ok=True)
+    (shots / "me-stalled-terminal.png").write_bytes(b"\x89PNG\r\n\x1a\n" + b"x" * 1024)
     for name in ("authloss-initial-terminal", "authloss-login-required", "authloss-unlock-cancelled", "authloss-recovered-terminal"):
         (shots / f"{name}.png").write_bytes(b"\x89PNG\r\n\x1a\n" + b"x" * 1024)
     for name in ("onboarding-before-google","onboarding-account-unavailable","onboarding-wrong-phrase","onboarding-existing-terminal",
@@ -485,7 +514,7 @@ def self_test() -> int:
         h.mkdir()
         _write_xml(r, sorted(REQUIRED_METHODS))
         _write_host(h)
-        assert validate_results(r) == 8
+        assert validate_results(r) == 9
         validate_host(h)
         cases += 1
     expect_fail("missing method", results={"methods": sorted(REQUIRED_METHODS)[:1]})
@@ -527,6 +556,9 @@ def self_test() -> int:
     expect_fail("post-direct Gateway uses a foreign key", host={"direct_gateway_fp": "SHA256:" + "x" * 43})
     expect_fail("direct SSH runtime receipt absent", host={"direct_receipt_missing": True})
     expect_fail("direct SSH terminal screenshot absent", host={"direct_shot_missing": True})
+    expect_fail("an open that waited on /me is refused", host={"me_tap_to_dial": 15_400})
+    expect_fail("a terminal only after /me answered is refused", host={"me_terminal_while_held": False})
+    expect_fail("the identity-stalled method omitted", results={"methods": [m for m in sorted(REQUIRED_METHODS) if m != "opensATrustedServerToARealTerminalWhileTheIdentityCheckIsStalled"]})
     if cases != SELF_TEST_CASES:
         raise AssertionError(f"ran {cases} self-test cases, expected {SELF_TEST_CASES}")
     print(f"PASS: gateway result checker self-test ({cases} cases)")

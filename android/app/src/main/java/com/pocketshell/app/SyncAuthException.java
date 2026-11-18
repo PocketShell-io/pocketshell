@@ -22,9 +22,19 @@ public final class SyncAuthException extends Exception {
     public static final String INVALID_REQUEST = "SYNC_INVALID_REQUEST";
 
     public final String code;
+    /**
+     * Diagnostic detail for "Copy details" (issue #3189), e.g. the transport
+     * exception's class. Never shown as the message, never a token or URL.
+     */
+    public final String detail;
 
     public SyncAuthException(String code, String message) {
+        this(code, message, null);
+    }
+
+    public SyncAuthException(String code, String message, String detail) {
         super(message);
         this.code = code;
+        this.detail = detail;
     }
 }

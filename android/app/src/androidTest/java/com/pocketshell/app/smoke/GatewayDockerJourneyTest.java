@@ -156,7 +156,7 @@ public final class GatewayDockerJourneyTest {
         } finally {
             if (scenario != null) {
                 try {
-                    evalRaw("['" + HOSTS_KEY + "','" + SHARED_SETTINGS_KEY + "'].forEach((key) => localStorage.removeItem(key)); 'reset'");
+                    evalRaw("['" + HOSTS_KEY + "','" + SHARED_SETTINGS_KEY + "','pocketshell.trustedServers.v1'].forEach((key) => localStorage.removeItem(key)); 'reset'");
                 } catch (Throwable ignored) {
                     // The activity may already be gone after a failure.
                 }
@@ -399,7 +399,7 @@ public final class GatewayDockerJourneyTest {
                 .put("publicKey", fixture.getString("publicKey")).put("phase", "trusted-authorize"));
         selectVariant("beforeRegistration");
         scenario = ActivityScenario.launch(SharedShellLaunch.intent());
-        awaitJsTrue("!!document.querySelector('[data-testid=server-google-login]')", 60_000);
+        awaitFreshSignedOutPicker();
         evalRaw("localStorage.setItem('" + HOSTS_KEY + "','[]'); localStorage.removeItem('ps.lastFolder.gw-dev'); localStorage.removeItem('ps.lastFolder.gw-missing'); 'empty'");
         click("[data-testid=server-google-login]");
         awaitJsTrue("!!document.querySelector('[data-testid=vault-unlock-gate]')", 60_000);
@@ -583,6 +583,55 @@ public final class GatewayDockerJourneyTest {
                 .put("returnedHostFile", returnFile).put("returnReusedNativeTransport", true));
     }
 
+    /**
+     * #3189 review B2: opening a saved server never waits on the backend identity check. Signed in with
+     * the vault remembered, the app is relaunched cold with GET /me held open on the sync service (every
+     * other route answers). A tap on the server reaches the native gateway dial and a real terminal while
+     * /me is still held; the tap-to-dial time is measured from page timestamps.
+     */
+    @Test
+    public void opensATrustedServerToARealTerminalWhileTheIdentityCheckIsStalled() throws Exception {
+        selectVariant("active");
+        String fingerprint = authorizeVault("me-stalled-authorize");
+        launchSignedInLocked();
+        click("[data-testid=vault-unlock-remember]");
+        awaitJsTrue("document.querySelector('[data-testid=vault-unlock-remember]')?.checked === true");
+        submitAuthLossVaultPhrase();
+        awaitJsTrue("!!document.querySelector('[data-testid=trusted-server-connect]:not([disabled])')", 120_000);
+        // Past the 60 s in-memory identity reuse, so the relaunch's background check really goes to /me.
+        Thread.sleep(62_000L);
+        backend.meGate = new java.util.concurrent.CountDownLatch(1);
+        try {
+            int meReadsBefore = backend.meReads;
+            scenario.close();
+            scenario = ActivityScenario.launch(SharedShellLaunch.intent());
+            awaitJsTrue("!!document.querySelector('[data-testid=trusted-server-connect]:not([disabled])')", 120_000);
+            long heldDeadline = SystemClock.uptimeMillis() + 30_000;
+            while (backend.meHeld.get() == 0 && SystemClock.uptimeMillis() < heldDeadline) Thread.sleep(50);
+            assertTrue("the relaunch's identity check is held at /me", backend.meHeld.get() > 0);
+            installDialRecorder();
+            int mark = controller(new JSONObject().put("op", "mark")).getInt("mark");
+            evalRaw("window.__meStalledTapAt = Date.now(); 'marked'");
+            tapHost(DEVICE_HOST);
+            awaitJsTrue("(window.__gwDials?.length ?? 0) > 0", 60_000);
+            long tapToDialMs = Long.parseLong(evalString("String(window.__gwDials[0].at - window.__meStalledTapAt)"));
+            assertTrue("/me is still held when the dial starts", backend.meHeld.get() > 0);
+            assertTrue("a tap reaches the native gateway dial without /me, took " + tapToDialMs + " ms", tapToDialMs < 5_000);
+            awaitJsTrue(VISIBLE_TERMINAL + ".includes('$')", 120_000);
+            boolean terminalWhileMeHeld = backend.meHeld.get() > 0;
+            assertTrue("a real terminal while /me is still held", terminalWhileMeHeld);
+            assertEquals("no /me answer was needed to open", meReadsBefore, backend.meReads);
+            assertTrue("the real SSH server accepted the vault key", acceptedFingerprints(sshdSince(mark, "me-stalled-connect")).contains(fingerprint));
+            screenshot("me-stalled-terminal");
+            Log.i(TAG, "ME_STALLED_OPEN " + new JSONObject().put("tapToDialMs", tapToDialMs)
+                    .put("meHeldAtDial", true).put("terminalWhileMeHeld", terminalWhileMeHeld).put("meAnswers", backend.meReads - meReadsBefore));
+        } finally {
+            java.util.concurrent.CountDownLatch gate = backend.meGate;
+            backend.meGate = null;
+            if (gate != null) gate.countDown();
+        }
+    }
+
     /** Real native expiry/renewal rejection, shared cleanup, same-vault reauthentication and PTY recovery. */
     @Test
     public void onboardingExistingVaultRequiresGoogleThenRejectsWrongPhraseBeforeOneUnlockAndRealTerminal() throws Exception {
@@ -591,18 +640,23 @@ public final class GatewayDockerJourneyTest {
         String ciphertext=backend.vaultSlots.toString();
         backend.unavailableMe=true;
         scenario=ActivityScenario.launch(SharedShellLaunch.intent());
-        awaitJsTrue("!!document.querySelector('[data-testid=server-google-login]')",60_000);
+        awaitFreshSignedOutPicker();
         observeOnboardingGates();
         assertFalse("no vault secret before Google",exists("[data-testid=vault-unlock-gate]"));
         screenshot("onboarding-before-google");
+        int vaultHeaderReadsBefore = (int) new java.util.ArrayList<>(backend.reads).stream().filter("/settings/vault"::equals).count();
         click("[data-testid=server-google-login]");
-        awaitJsTrue("!!document.querySelector('.trusted-servers [role=alert]')",60_000);
-        assertFalse("failed account verification cannot ask for vault secrets",exists("[data-testid=vault-unlock-gate]"));
+        // #3189 review B2 (maintainer decision): the backend identity check (/me) is off the open path.
+        // With /me unavailable the vault still asks for its passphrase, because the sync service itself
+        // accepted the signed-in credential on the authenticated vault header read; the failed identity
+        // check is the quiet, retrying "not synced" state behind it, not an alert and not a block.
+        awaitJsTrue("!!document.querySelector('[data-testid=vault-unlock-form]')",60_000);
+        assertEquals("the vault form needed no /me answer", 0, backend.meReads);
+        assertTrue("the vault form follows the sync service accepting the credential (its authenticated vault header read)",
+                new java.util.ArrayList<>(backend.reads).stream().filter("/settings/vault"::equals).count() > vaultHeaderReadsBefore);
+        awaitJsTrue("document.querySelector('[data-testid=account-chip]')?.dataset.syncPhase === 'offline'",60_000);
         screenshot("onboarding-account-unavailable");
         backend.unavailableMe=false;
-        click("[data-testid=server-google-login]");
-        awaitJsTrue("!!document.querySelector('[data-testid=vault-unlock-form]')",60_000);
-        assertTrue("the account was backend-verified before the vault form",backend.meReads>0);
         setValue("[data-testid=vault-unlock-passphrase]","this is the wrong vault phrase");
         click("[data-testid=vault-unlock-submit]");
         awaitJsTrue("document.querySelector('[data-testid=vault-unlock-error]')?.textContent.includes(\"didn't unlock\")",120_000);
@@ -633,18 +687,18 @@ public final class GatewayDockerJourneyTest {
         InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK);
         awaitJsTrue("!document.querySelector('.overlay-panel[aria-label=Settings]')");
         assertEquals("existing-vault onboarding has no cloud writes",0,backend.writes);
-        assertEquals("Google first, retried once after a real account-service failure",2,google.interactiveCalls);
+        assertEquals("Google once; the account-service failure is retried without a second chooser (#3189)",1,google.interactiveCalls);
         assertEveryDialWentThroughTheGateway(nativeDials());
         Log.i(TAG,"ONBOARDING_EXISTING "+new JSONObject().put("unlockGates",onboardingGates().getInt("unlock"))
                 .put("createGates",onboardingGates().getInt("create")).put("interactive",google.interactiveCalls)
-                .put("wrongPhraseRefused",true).put("accountFailureNoGate",true).put("nativeLockConfirmed",true).put("cloudWrites",backend.writes).put("hostFile",host.getString("name")));
+                .put("wrongPhraseRefused",true).put("identityCheckOffOpenPath",true).put("nativeLockConfirmed",true).put("cloudWrites",backend.writes).put("hostFile",host.getString("name")));
     }
 
     @Test
     public void onboardingCreatesMissingVaultAtomicallyInAppAndReopensItWithoutWeb() throws Exception {
         backend.atomicInitialization=true;backend.vaultEpoch=3;backend.vaultSlots=new JSONObject();backend.seed(null);
         scenario=ActivityScenario.launch(SharedShellLaunch.intent());
-        awaitJsTrue("!!document.querySelector('[data-testid=server-google-login]')",60_000);
+        awaitFreshSignedOutPicker();
         observeOnboardingGates();
         assertFalse("new accounts do not first ask for an existing phrase",exists("[data-testid=vault-unlock-gate]"));
         click("[data-testid=server-google-login]");
@@ -736,12 +790,12 @@ public final class GatewayDockerJourneyTest {
         // A verified identity is reused for 60 seconds (#3137), so a Refresh only
         // crosses real native account verification (/me) once that reuse window has lapsed.
         Thread.sleep(62_000L); // GoogleSyncSession.VERIFIED_IDENTITY_TTL_SECONDS (60s) + margin
-        // A normal Refresh crosses real native account verification and triggers silent renewal.
-        google.silentRenewFailure = true;
+        // A normal Refresh meets a refused credential: the session ends, shown as signed out (#3189).
+        int signInsBeforeLoss1 = google.interactiveCalls;
         backend.rejectNext("/me");
         refreshServers();
         awaitAuthLossGoogleAction();
-        assertEquals("exactly one native provider renewal failed", 1, google.silentFailures);
+        assertEquals("a refused token opens no sign-in UI by itself (#3189)", signInsBeforeLoss1, google.interactiveCalls);
         assertEquals("the /me challenge was consumed", 1, backend.authChallenges);
         assertEquals("loss must not change encrypted account slots", ciphertext, backend.vaultSlots.toString());
         assertEquals("loss must not delete or rewrite protected custody", protectedBytes.toString(), authLossProtectedBytes().toString());
@@ -750,8 +804,8 @@ public final class GatewayDockerJourneyTest {
 
         // The selected Remember policy legitimately unlocks silently after verified Google reauthentication.
         int recallsBefore=rememberedRecalls();
-        click("[data-testid=server-google-login]");
-        awaitJsTrue("!!document.querySelector('[data-testid=trusted-server-connect]:not([disabled])')",120_000);
+        click("[data-testid=server-reauth-sign-in]");
+        awaitJsTrue("!!document.querySelector('[data-testid=trusted-servers-list] [data-testid=trusted-server-connect]:not([disabled])')",120_000);
         assertFalse("remembered reauthentication does not add a passphrase sheet",exists("[data-testid=vault-unlock-gate]"));
         assertTrue("the actual native recall returned the remembered record",rememberedRecalls()>recallsBefore);
         int rememberedReauths=1;
@@ -762,17 +816,18 @@ public final class GatewayDockerJourneyTest {
         // A normal authenticated directory load may save an unchanged floor
         // with fresh encryption. Compare raw bytes only within a pure-loss
         // interval, and separately require the same logical trust after login.
+        awaitJsTrue("document.querySelector('[data-testid=account-chip]')?.dataset.syncPhase === 'synced'", 120_000);
         JSONObject beforeUnlockLoss=authLossProtectedBytes();
         lockVaultThroughSettings();
         assertEquals("explicit user Lock preserves the sealed remember bytes",protectedBytes.getString("pocketshell_vault_device_v1"),authLossProtectedBytes().getString("pocketshell_vault_device_v1"));
         assertEquals("explicit user Lock preserves this interval's complete protected custody",beforeUnlockLoss.toString(),authLossProtectedBytes().toString());
         click("[data-testid=vault-unlock]");
         awaitJsTrue("!!document.querySelector('[data-testid=vault-unlock-gate]')",60_000);
-        google.silentRenewFailure = true;
+        int signInsBeforeLoss2 = google.interactiveCalls;
         backend.rejectNext("/vault/status");
         submitAuthLossVaultPhrase();
         awaitAuthLossGoogleAction();
-        assertEquals("the pending unlock's actual native renewal failed", 2, google.silentFailures);
+        assertEquals("the pending unlock's loss opens no sign-in UI by itself (#3189)", signInsBeforeLoss2, google.interactiveCalls);
         assertEquals("both one-shot native HTTP challenges were consumed", 2, backend.authChallenges);
         assertEquals("pending unlock loss preserves all ciphertext", ciphertext, backend.vaultSlots.toString());
         assertEquals("pending unlock loss preserves protected custody bytes", beforeUnlockLoss.toString(), authLossProtectedBytes().toString());
@@ -782,8 +837,8 @@ public final class GatewayDockerJourneyTest {
         awaitJsTrue("!document.querySelector('.overlay-panel[aria-label=Settings]')");
 
         recallsBefore=rememberedRecalls();
-        click("[data-testid=server-google-login]");
-        awaitJsTrue("!!document.querySelector('[data-testid=trusted-server-connect]:not([disabled])')",120_000);
+        click("[data-testid=server-reauth-sign-in]");
+        awaitJsTrue("!!document.querySelector('[data-testid=trusted-servers-list] [data-testid=trusted-server-connect]:not([disabled])')",120_000);
         assertTrue("native remembered unlock after pending-form auth loss",rememberedRecalls()>recallsBefore);
         rememberedReauths++;
         assertEquals("three normal same-account Google logins, no manual sign-out", 3, google.interactiveCalls);
@@ -808,7 +863,7 @@ public final class GatewayDockerJourneyTest {
         boolean staleLeaseRefusedBeforeBroker="GATEWAY_UNPAIRED".equals(evalString("window.__gwDialResults.at(-1)?.code??''"));
         assertTrue("wiped old lease is refused before any broker request",staleLeaseRefusedBeforeBroker);
         assertEquals("stale lease refusal cannot consume the later broker challenge",0,backend.gatewayAuthChallenges);
-        assertEquals("stale lease refusal cannot trigger an extra Google renewal",2,google.silentFailures);
+        assertEquals("stale lease refusal opens no sign-in UI",3,google.interactiveCalls);
         assertEquals("stale lease refusal preserves all protected bytes",beforeStaleRefusal.toString(),authLossProtectedBytes().toString());
         // The same explicit server click a user makes from the lost picker
         // now resolves credentials, before the separate broker-owned loss.
@@ -823,10 +878,13 @@ public final class GatewayDockerJourneyTest {
         assertEquals("explicit server resume keeps the same account, vault, epoch, descriptor and floor",binding.toString(),authLossPublicTrust().toString());
         assertEquals("explicit server resume preserves the original sealed remember blob",protectedBytes.getString("pocketshell_vault_device_v1"),authLossProtectedBytes().getString("pocketshell_vault_device_v1"));
         assertEquals("explicit server resume preserves every encrypted cloud slot",ciphertext,backend.vaultSlots.toString());
+        // The picker's own load after "Back to hosts" may re-save the unchanged floor with fresh
+        // encryption; take this pure-loss interval's snapshot only once that load has settled (#3189 chip phase).
+        awaitJsTrue("document.querySelector('[data-testid=account-chip]')?.dataset.syncPhase === 'synced'", 120_000);
         JSONObject beforeGatewayLoss=authLossProtectedBytes();
         int beforeDropDials = nativeDials().length();
         int recoveryMark = controller(new JSONObject().put("op", "mark")).getInt("mark");
-        google.silentRenewFailure = true;
+        int signInsBeforeLoss3 = google.interactiveCalls;
         backend.rejectNext("/gateway/token");
         assertTrue("existing fixture stream-drop completed", controller(new JSONObject().put("op", "drop")
                 .put("phase", "authloss-recovery")).getBoolean("dropped"));
@@ -843,17 +901,17 @@ public final class GatewayDockerJourneyTest {
                 .put("leaseLifecycle",new JSONObject(evalString("JSON.stringify(window.__gwVaultWitness)")))
                 .put("sameHandleAsInitial",evalString("String(window.__gwDials[0]?.handleId===window.__gwDials.at(-1)?.handleId)"))
                 .put("ownerPhases",new JSONArray(evalString("JSON.stringify((window.__pocketshellConnectionJournal??[]).slice(-12).map(e=>e.phase))")))
-                .put("gatewayChallenges",backend.gatewayAuthChallenges).put("silentFailures",google.silentFailures));
+                .put("gatewayChallenges",backend.gatewayAuthChallenges).put("backgroundSignIns",google.interactiveCalls-signInsBeforeLoss3));
         assertEquals("the real SSH-owned GatewaySyncSession consumed the broker challenge", 1, backend.gatewayAuthChallenges);
-        assertEquals("gateway-owned native renewal failed, independently of GoogleSyncPlugin", 3, google.silentFailures);
+        assertEquals("gateway-owned loss opens no sign-in UI by itself (#3189)", signInsBeforeLoss3, google.interactiveCalls);
         refreshServers();
         awaitAuthLossGoogleAction();
         assertEquals("gateway loss preserves every encrypted cloud slot", ciphertext, backend.vaultSlots.toString());
         assertEquals("gateway loss preserves protected custody bytes", beforeGatewayLoss.toString(), authLossProtectedBytes().toString());
         pureLossByteIntervals++;
         recallsBefore=rememberedRecalls();
-        click("[data-testid=server-google-login]");
-        awaitJsTrue("!!document.querySelector('[data-testid=trusted-server-connect]:not([disabled])')",120_000);
+        click("[data-testid=server-reauth-sign-in]");
+        awaitJsTrue("!!document.querySelector('[data-testid=trusted-servers-list] [data-testid=trusted-server-connect]:not([disabled])')",120_000);
         assertTrue("native remembered unlock after gateway-owned auth loss",rememberedRecalls()>recallsBefore);
         rememberedReauths++;
         assertEquals("normal Google reauthentication must repair existing gateway session consumers", 4, google.interactiveCalls);
@@ -878,7 +936,7 @@ public final class GatewayDockerJourneyTest {
         assertEquals("no cloud PUT or DELETE", 0, backend.writes);
         assertNoRoutingTokenEscaped();
         Log.i(TAG, "AUTH_LOSS_CUSTODY " + new JSONObject().put("losses", backend.authChallenges)
-                .put("silentFailures", google.silentFailures).put("interactive", google.interactiveCalls)
+                .put("backgroundSignIns", google.interactiveCalls - 4 /* the four explicit sign-in taps */).put("interactive", google.interactiveCalls)
                 .put("gatewayChallenges", backend.gatewayAuthChallenges)
                 .put("rememberedReauths",rememberedReauths).put("manualLockConfirmed",true)
                 .put("pureLossByteIntervals",pureLossByteIntervals).put("reauthTrustChecks",reauthTrustChecks)
@@ -939,9 +997,14 @@ public final class GatewayDockerJourneyTest {
 
     private int rememberedRecalls() throws Exception {return Integer.parseInt(evalString("String(window.__gwVaultWitness.recalls)"));}
 
+    /**
+     * #3189: a lost sign-in is shown, not acted on — the saved rows stay behind
+     * one "You're signed out — Sign in" banner, the chip reads Signed out, and no
+     * vault sheet or Google UI opens by itself.
+     */
     private void awaitAuthLossGoogleAction() throws Exception {
-        awaitJsTrue("!!document.querySelector('[data-testid=server-google-login]')"
-                + " && !document.querySelector('[data-testid=trusted-server-connect]')"
+        awaitJsTrue("!!document.querySelector('[data-testid=server-reauth-sign-in]')"
+                + " && document.querySelector('[data-testid=account-chip]')?.dataset.syncPhase === 'reauth'"
                 + " && !document.querySelector('[data-testid=vault-unlock-gate]')", 120_000);
     }
 
@@ -1108,9 +1171,23 @@ public final class GatewayDockerJourneyTest {
         return phoneFingerprint;
     }
 
+    /**
+     * A fresh signed-out start. #3189 keeps the saved server list when a sign-in is lost (rows plus a
+     * "You're signed out" banner); a journey that starts from no account at all drops a list an earlier
+     * journey left and reloads, so it begins where a first launch does.
+     */
+    private void awaitFreshSignedOutPicker() throws Exception {
+        awaitJsTrue("!!document.querySelector('[data-testid=server-google-login]')"
+                + " || !!document.querySelector('[data-testid=server-reauth]')", 60_000);
+        if (exists("[data-testid=server-reauth]")) {
+            evalRaw("localStorage.removeItem('pocketshell.trustedServers.v1'); location.reload(); 'reload'");
+            awaitJsTrue("!!document.querySelector('[data-testid=server-google-login]')", 60_000);
+        }
+    }
+
     void launchSignedInLocked() throws Exception {
         scenario = ActivityScenario.launch(SharedShellLaunch.intent());
-        awaitJsTrue("!!document.querySelector('[data-testid=server-google-login]')", 60_000);
+        awaitFreshSignedOutPicker();
         evalRaw("localStorage.removeItem('" + SHARED_SETTINGS_KEY + "'); localStorage.setItem('" + HOSTS_KEY + "','[]'); localStorage.removeItem('ps.lastFolder.gw-dev'); localStorage.removeItem('ps.lastFolder.gw-missing'); 'empty'");
         click("[data-testid=server-google-login]");
         awaitJsTrue("!!document.querySelector('[data-testid=vault-unlock-gate]')", 60_000);
@@ -1441,8 +1518,6 @@ public final class GatewayDockerJourneyTest {
     static final class FakeGoogle implements GoogleSyncSession.SignInProvider {
         static final String SIGNATURE = "FAKEGOOGLEIDTOKEN3086gwlaneDoNotLeak";
         final String token;
-        volatile boolean silentRenewFailure;
-        volatile int silentFailures;
         volatile int interactiveCalls;
         volatile int clearCalls;
 
@@ -1453,9 +1528,10 @@ public final class GatewayDockerJourneyTest {
         }
 
         @Override
-        public synchronized String obtainIdToken(boolean interactiveRequest) throws SyncAuthException {
-            if (interactiveRequest) { interactiveCalls++; silentRenewFailure = false; }
-            else if (silentRenewFailure) { silentFailures++; throw new SyncAuthException(SyncAuthException.UNAVAILABLE, "Fixture has no silent credential."); }
+        public synchronized String obtainIdToken() throws SyncAuthException {
+            // #3189: the only provider call is the user's own Sign in tap; a loss must
+            // leave interactiveCalls unchanged until that tap (asserted after each loss).
+            interactiveCalls++;
             return token;
         }
 
@@ -1501,6 +1577,9 @@ public final class GatewayDockerJourneyTest {
         volatile int gatewayAuthChallenges;
         volatile long routingLifetimeSeconds = 240;
         synchronized void rejectNext(String path) { nextUnauthorizedPath = path; }
+        /** #3189: when set, GET /me is held here (outside the lock, so every other route still answers). */
+        volatile java.util.concurrent.CountDownLatch meGate;
+        final java.util.concurrent.atomic.AtomicInteger meHeld = new java.util.concurrent.atomic.AtomicInteger();
         final List<String> reads = Collections.synchronizedList(new ArrayList<>());
 
         FakeSyncBackend() throws Exception {
@@ -1517,7 +1596,18 @@ public final class GatewayDockerJourneyTest {
         }
 
         @Override
-        public synchronized GoogleSyncSession.Response send(String method, String url, Map<String, String> headers, String body) {
+        public GoogleSyncSession.Response send(String method, String url, Map<String, String> headers, String body) {
+            java.util.concurrent.CountDownLatch gate = meGate;
+            if (gate != null && "GET".equals(method) && "/me".equals(url.replaceFirst("^https://[^/]+", ""))) {
+                meHeld.incrementAndGet();
+                try { gate.await(10, java.util.concurrent.TimeUnit.MINUTES); }
+                catch (InterruptedException interrupted) { Thread.currentThread().interrupt(); }
+                finally { meHeld.decrementAndGet(); }
+            }
+            return sendLocked(method, url, headers, body);
+        }
+
+        private synchronized GoogleSyncSession.Response sendLocked(String method, String url, Map<String, String> headers, String body) {
             String path = url.replaceFirst("^https://[^/]+", "");
             if ("GET".equals(method)) reads.add(path);
             if (("GET".equals(method) || ("POST".equals(method) && "/gateway/token".equals(path))) && path.equals(nextUnauthorizedPath)) {

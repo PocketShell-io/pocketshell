@@ -11,7 +11,7 @@ vi.mock('@capacitor/core', () => ({ registerPlugin: () => ({
   status: async () => ({ signedIn: pluginState.signedIn, email: pluginState.signedIn ? 'orin@example.test' : null, packageName: 'fixture' }),
   accountId: async () => ({ accountId: 'google:fixture' }),
 }) }));
-import { createGoogleSyncNative, googleSync, verifiedGoogleAccountId } from '@/native/googleSync';
+import { createGoogleSyncNative, googleSync, googleAccountId } from '@/native/googleSync';
 
 function deferred<T>() { let resolve!: (v: T) => void; const promise = new Promise<T>(r => { resolve = r; }); return { promise, resolve }; }
 
@@ -162,7 +162,7 @@ describe('Android native auth loss shared-store custody', () => {
     const release = bindAndroidAuthLoss(googleSync, { sync, vault: { lock, cancelUnlock }, lockAndroidVault });
     try {
       pluginState.signedIn = false; // Native credential record invalidated by another plugin's broker request.
-      expect(await verifiedGoogleAccountId()).toBeNull(); // Normal Refresh servers account helper.
+      expect(await googleAccountId()).toBeNull(); // Normal Refresh servers account helper.
       expect(sync.status).toMatchObject({ loggedIn: false, email: null });
       expect(sync.passphrase).toBe(''); expect(sync.accountHosts).toBeNull();
       expect(lock).toHaveBeenCalledTimes(1); expect(cancelUnlock).toHaveBeenCalledTimes(1);

@@ -104,27 +104,29 @@ public final class GoogleSyncSessionTest {
         assertFalse("no token in a response the WebView receives", conflict.body.contains("HEADERSECRET2"));
     }
 
-    @Test public void anExpiredTokenIsRenewedSilentlyBeforeTheRequest() throws Exception {
+    /** #3189: an expired token ends the session at the request; no silent renewal, no sheet. */
+    @Test public void anExpiredTokenSignsOutBeforeTheRequestWithoutAProviderCall() throws Exception {
         store.value = token("sub-1", "phone@example.com", NOW + 30, "OLDSECRET3");
-        String fresh = token("sub-1", "phone@example.com", NOW + 3600, "NEWSECRET3");
-        signIn.tokens.add(fresh);
-        transport.responses.add(new GoogleSyncSession.Response(404, ""));
-        assertEquals(404, session.request("GET", "main", null).status);
-        assertEquals(List.of(false), signIn.interactive);
-        assertEquals(fresh, store.value);
-        assertEquals("Bearer " + fresh, transport.requests.get(0).headers.get("Authorization"));
+        try { session.request("GET", "main", null); fail("an expired token cannot be spent"); }
+        catch (SyncAuthException expected) {
+            assertEquals(SyncAuthException.NOT_SIGNED_IN, expected.code);
+            assertEquals(GoogleSyncSession.SIGNED_OUT_MESSAGE, expected.getMessage());
+        }
+        assertTrue("no Credential Manager call", signIn.interactive.isEmpty());
+        assertTrue("the expired bearer never reaches the wire", transport.requests.isEmpty());
+        assertFalse(session.status().signedIn);
     }
 
-    @Test public void a401IsRetriedExactlyOnceAfterASilentRenewal() throws Exception {
+    /** #3189: the server refusing the token (revoked, deleted, expired) ends the session; one request, no renewal. */
+    @Test public void a401EndsTheSessionWithoutARenewalOrRetry() throws Exception {
         store.value = token("sub-1", "phone@example.com", NOW + 3600, "FIRSTSECRET4");
-        String fresh = token("sub-1", "phone@example.com", NOW + 3600, "SECONDSECRET4");
-        signIn.tokens.add(fresh);
+        signIn.tokens.add(token("sub-1", "phone@example.com", NOW + 3600, "SECONDSECRET4"));
         transport.responses.add(new GoogleSyncSession.Response(401, "{\"message\":\"Unauthorized\"}"));
-        transport.responses.add(new GoogleSyncSession.Response(401, "{\"message\":\"Unauthorized\"}"));
-        GoogleSyncSession.Response response = session.request("GET", "main", null);
-        assertEquals("a refused renewal is reported, not looped", 401, response.status);
-        assertEquals(2, transport.requests.size());
-        assertEquals("Bearer " + fresh, transport.requests.get(1).headers.get("Authorization"));
+        try { session.request("GET", "main", null); fail("a refused token is a lost session"); }
+        catch (SyncAuthException expected) { assertEquals(SyncAuthException.NOT_SIGNED_IN, expected.code); }
+        assertEquals(1, transport.requests.size());
+        assertTrue(signIn.interactive.isEmpty());
+        assertFalse(session.status().signedIn);
     }
 
     @Test public void aFailedRenewalSignsOutWithoutEchoingAnyToken() throws Exception {
@@ -142,17 +144,15 @@ public final class GoogleSyncSessionTest {
         assertTrue(transport.requests.isEmpty());
     }
 
-    @Test public void cancellationAndNetworkDuringRenewalPreserveTheAccountWithoutRetry() throws Exception {
+    /** #3189: an expired token never reaches the provider, so nothing can loop on its failures. */
+    @Test public void anExpiredTokenNeverReachesTheProviderWhateverItWouldAnswer() throws Exception {
         for (String code : List.of(SyncAuthException.CANCELLED, SyncAuthException.NETWORK)) {
             setUp();
-            String previous = token("sub-1", "phone@example.com", NOW - 10, "TRANSIENT");
-            store.value = previous;
+            store.value = token("sub-1", "phone@example.com", NOW - 10, "TRANSIENT");
             signIn.failure = new SyncAuthException(code, "safe transient error");
-            try { session.request("GET", "main", null); fail("transient error"); }
-            catch (SyncAuthException expected) { assertEquals(code, expected.code); }
-            assertEquals(previous, store.value);
-            assertTrue(session.status().signedIn);
-            assertEquals(List.of(false), signIn.interactive);
+            try { session.request("GET", "main", null); fail("expired"); }
+            catch (SyncAuthException expected) { assertEquals(SyncAuthException.NOT_SIGNED_IN, expected.code); }
+            assertTrue(signIn.interactive.isEmpty());
             assertTrue(transport.requests.isEmpty());
         }
     }
@@ -213,43 +213,32 @@ public final class GoogleSyncSessionTest {
         assertFalse("the former account must not be inherited", "sub-1".equals(pairing.subject()));
     }
 
-    @Test public void anOldGatewayRenewalCannotClearANewerInteractiveLoginAcrossPluginWorkers() throws Exception {
-        java.util.concurrent.CountDownLatch renewing = new java.util.concurrent.CountDownLatch(1);
-        java.util.concurrent.CountDownLatch releaseRenewal = new java.util.concurrent.CountDownLatch(1);
-        java.util.concurrent.CountDownLatch loginStarted = new java.util.concurrent.CountDownLatch(1);
+    /**
+     * #3189: a gateway worker that finds the token expired ends the session without any provider
+     * call (no "Signing you in" sheet from a background reconnect), and the user's later explicit
+     * sign-in is the one credential every plugin then reads.
+     */
+    @Test public void anExpiredGatewayExchangeSignsOutWithoutAProviderCallAndALaterLoginWins() throws Exception {
+        java.util.concurrent.atomic.AtomicInteger calls = new java.util.concurrent.atomic.AtomicInteger();
         GoogleSyncSession.SignInProvider provider = new GoogleSyncSession.SignInProvider() {
-            public String obtainIdToken(boolean interactive) throws SyncAuthException {
-                if (interactive) return token("sub-2", "other@example.com", NOW + 3600, "NEW");
-                renewing.countDown();
-                try { if (!releaseRenewal.await(5, java.util.concurrent.TimeUnit.SECONDS)) throw new AssertionError("release renewal"); }
-                catch (InterruptedException error) { throw new AssertionError(error); }
-                throw new SyncAuthException(SyncAuthException.UNAVAILABLE, "old credential unavailable");
+            public String obtainIdToken() {
+                calls.incrementAndGet();
+                return token("sub-2", "other@example.com", NOW + 3600, "NEW");
             }
             public void clearCredentialState() { }
         };
         GoogleSyncSession gateway = new GoogleSyncSession(store, provider, transport, API, () -> now);
         GoogleSyncSession interactive = new GoogleSyncSession(store, provider, transport, API, () -> now);
         store.value = token("sub-1", "phone@example.com", NOW - 10, "OLD");
-        java.util.concurrent.ExecutorService workers = java.util.concurrent.Executors.newFixedThreadPool(2);
-        try {
-            java.util.concurrent.Future<?> old = workers.submit(() -> {
-                try { gateway.gatewayTokenExchange(); throw new AssertionError("renewal must fail"); }
-                catch (SyncAuthException expected) { assertEquals(SyncAuthException.NOT_SIGNED_IN, expected.code); }
-            });
-            assertTrue(renewing.await(5, java.util.concurrent.TimeUnit.SECONDS));
-            java.util.concurrent.Future<?> login = workers.submit(() -> {
-                loginStarted.countDown();
-                try { assertTrue(interactive.signIn().signedIn); }
-                catch (SyncAuthException error) { throw new AssertionError(error); }
-            });
-            assertTrue(loginStarted.await(5, java.util.concurrent.TimeUnit.SECONDS));
-            try { login.get(100, java.util.concurrent.TimeUnit.MILLISECONDS); fail("credential change must wait for the older worker"); }
-            catch (java.util.concurrent.TimeoutException expected) { }
-            releaseRenewal.countDown();
-            old.get(5, java.util.concurrent.TimeUnit.SECONDS); login.get(5, java.util.concurrent.TimeUnit.SECONDS);
-            assertEquals("sub-2", gateway.currentAccountSubject());
-            assertEquals("sub-2", interactive.currentAccountSubject());
-        } finally { releaseRenewal.countDown(); workers.shutdownNow(); }
+        try { gateway.gatewayTokenExchange(); fail("an expired token cannot reach the broker"); }
+        catch (SyncAuthException expected) { assertEquals(SyncAuthException.NOT_SIGNED_IN, expected.code); }
+        assertEquals("no Credential Manager call from a background exchange", 0, calls.get());
+        assertTrue(transport.requests.isEmpty());
+        assertFalse(interactive.status().signedIn);
+        assertTrue(interactive.signIn().signedIn);
+        assertEquals(1, calls.get());
+        assertEquals("sub-2", gateway.currentAccountSubject());
+        assertEquals("sub-2", interactive.currentAccountSubject());
     }
 
     @Test public void failedExplicitSignOutCannotResurrectCredentialInAnotherPlugin() throws Exception {
@@ -364,7 +353,37 @@ public final class GoogleSyncSessionTest {
             assertEquals(SyncAuthException.NETWORK, expected.code);
             assertFalse(expected.getMessage().contains("TRANSPORTSECRET9"));
             assertFalse(expected.getMessage().contains("Bearer"));
+            assertFalse(expected.detail.contains("TRANSPORTSECRET9"));
+            assertFalse(expected.detail.contains("Bearer"));
         }
+    }
+
+    /** #3189: opening a saved server reads the account from the stored credential, never GET /me. */
+    @Test public void theOpenAccountComesFromTheStoredCredentialWithoutANetworkCall() throws Exception {
+        store.value = token("sub-1", "phone@example.com", NOW + 3600, "CACHEDSECRET");
+        assertEquals("google:sub-1", session.currentAccountId());
+        assertTrue("no /me on the open path", transport.requests.isEmpty());
+        store.value = token("sub-1", "phone@example.com", NOW - 10, "EXPIREDSECRET");
+        try { session.currentAccountId(); fail("an expired credential cannot open anything"); }
+        catch (SyncAuthException expected) { assertEquals(SyncAuthException.NOT_SIGNED_IN, expected.code); }
+        assertTrue(transport.requests.isEmpty());
+        assertFalse("an expired credential ends the session", session.status().signedIn);
+    }
+
+    /** #3189: the user-facing message is plain words; the exception class is only a "Copy details" detail. */
+    @Test public void aTransportTimeoutIsPlainWordsWithTheClassOnlyInTheDetail() throws Exception {
+        store.value = token("sub-1", "phone@example.com", NOW + 3600, "TIMEOUTSECRET");
+        transport.failure = new java.net.SocketTimeoutException("timeout");
+        try {
+            session.verifiedAccountId();
+            fail("a transport failure must be reported");
+        } catch (SyncAuthException expected) {
+            assertEquals(SyncAuthException.NETWORK, expected.code);
+            assertEquals(GoogleSyncSession.NETWORK_MESSAGE, expected.getMessage());
+            assertFalse(expected.getMessage().matches(".*[A-Z]\\w*(Exception|Error).*"));
+            assertEquals("SocketTimeoutException on GET /me", expected.detail);
+        }
+        assertEquals("a timeout is not an auth loss: the sign-in stays", "phone@example.com", session.status().email);
     }
 
     @Test public void boundVaultCreationRefusesAccountSwitchBeforeAnyHttpEffect() throws Exception {
@@ -463,8 +482,8 @@ public final class GoogleSyncSessionTest {
         SyncAuthException failure;
         int cleared;
 
-        @Override public String obtainIdToken(boolean interactiveRequest) throws SyncAuthException {
-            interactive.add(interactiveRequest);
+        @Override public String obtainIdToken() throws SyncAuthException {
+            interactive.add(true);
             if (failure != null) throw failure;
             if (tokens.isEmpty()) throw new SyncAuthException(SyncAuthException.FAILED, "no scripted token");
             return tokens.removeFirst();

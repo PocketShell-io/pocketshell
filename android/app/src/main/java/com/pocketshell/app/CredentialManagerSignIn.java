@@ -13,7 +13,6 @@ import androidx.credentials.exceptions.ClearCredentialException;
 import androidx.credentials.exceptions.GetCredentialCancellationException;
 import androidx.credentials.exceptions.GetCredentialException;
 import androidx.credentials.exceptions.NoCredentialException;
-import com.google.android.libraries.identity.googleid.GetGoogleIdOption;
 import com.google.android.libraries.identity.googleid.GetSignInWithGoogleOption;
 import com.google.android.libraries.identity.googleid.GoogleIdTokenCredential;
 import java.util.concurrent.CountDownLatch;
@@ -24,9 +23,10 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
 
 /**
- * Google sign-in through Android Credential Manager ("Sign in with Google").
- * The interactive path shows Google's account chooser; the silent path renews
- * a token for an already-authorized account without UI. Scopes are Google's
+ * Google sign-in through Android Credential Manager ("Sign in with Google"):
+ * Google's account chooser, on the user's own tap. There is no silent path
+ * (#3189): even the auto-select option shows a "Signing you in" sheet, so it
+ * may never run in the background. Scopes are Google's
  * fixed openid/email/profile set — the same identity-only scopes the desktop
  * client requests.
  *
@@ -34,7 +34,6 @@ import java.util.function.Supplier;
  */
 final class CredentialManagerSignIn implements GoogleSyncSession.SignInProvider {
     private static final long INTERACTIVE_TIMEOUT_SECONDS = 300;
-    private static final long SILENT_TIMEOUT_SECONDS = 30;
 
     private final Supplier<Activity> activity;
     private final String serverClientId;
@@ -46,19 +45,13 @@ final class CredentialManagerSignIn implements GoogleSyncSession.SignInProvider 
     }
 
     @Override
-    public String obtainIdToken(boolean interactive) throws SyncAuthException {
+    public String obtainIdToken() throws SyncAuthException {
         Activity host = activity.get();
         if (host == null || host.isFinishing()) {
             throw new SyncAuthException(SyncAuthException.FAILED, "Google sign-in needs PocketShell in the foreground.");
         }
         GetCredentialRequest request = new GetCredentialRequest.Builder()
-                .addCredentialOption(interactive
-                        ? new GetSignInWithGoogleOption.Builder(serverClientId).build()
-                        : new GetGoogleIdOption.Builder()
-                                .setServerClientId(serverClientId)
-                                .setFilterByAuthorizedAccounts(true)
-                                .setAutoSelectEnabled(true)
-                                .build())
+                .addCredentialOption(new GetSignInWithGoogleOption.Builder(serverClientId).build())
                 .build();
         CountDownLatch done = new CountDownLatch(1);
         AtomicReference<GetCredentialResponse> result = new AtomicReference<>();
@@ -79,7 +72,7 @@ final class CredentialManagerSignIn implements GoogleSyncSession.SignInProvider 
                     }
                 });
         try {
-            if (!done.await(interactive ? INTERACTIVE_TIMEOUT_SECONDS : SILENT_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
+            if (!done.await(INTERACTIVE_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
                 cancel.cancel();
                 throw new SyncAuthException(SyncAuthException.FAILED, "Google sign-in did not answer in time.");
             }

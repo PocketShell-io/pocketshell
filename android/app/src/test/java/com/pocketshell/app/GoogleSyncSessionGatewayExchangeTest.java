@@ -80,42 +80,25 @@ public final class GoogleSyncSessionGatewayExchangeTest {
         assertFalse(exchange.bearerEchoedBy("hdr.SCOPED.sig"));
     }
 
-    @Test public void anExpiredStoredTokenRenewsSilentlyForTheSameAccount() throws Exception {
-        String expired = token("sub-77", "phone@example.com", NOW - 10, "OLDBEARER");
-        store.value = expired;
-        String renewed = token("sub-77", "phone@example.com", NOW + 3600, "NEWBEARER");
-        signIn.tokens.add(renewed);
-        transport.responses.add(new GoogleSyncSession.Response(200, "{\"token\":\"hdr.SCOPED.sig\","
-                + "\"token_type\":\"Bearer\",\"expires_at\":" + (NOW + 240) + ",\"expires_in\":240}"));
-        session.gatewayTokenExchange();
-        Sent sent = transport.requests.get(0);
-        assertEquals("Bearer " + renewed, sent.headers.get("Authorization"));
-        assertFalse("the old bearer never reaches the wire", sent.headers.get("Authorization").contains("OLDBEARER"));
+    /** #3189: a background gateway exchange never renews; an expired token ends the session. */
+    @Test public void anExpiredStoredTokenSignsOutWithoutReachingTheBroker() throws Exception {
+        store.value = token("sub-77", "phone@example.com", NOW - 10, "OLDBEARER");
+        signIn.tokens.add(token("sub-77", "phone@example.com", NOW + 3600, "NEWBEARER"));
+        try { session.gatewayTokenExchange(); fail("expired"); }
+        catch (SyncAuthException expected) { assertEquals(SyncAuthException.NOT_SIGNED_IN, expected.code); }
+        assertTrue("the old bearer never reaches the wire", transport.requests.isEmpty());
+        assertEquals("the provider was never asked", 1, signIn.tokens.size());
     }
 
-    @Test public void aBroker401RenewsSilentlyAndRetriesExactlyOnce() throws Exception {
-        // #3086: same rule as a sync request — the ID token can age out
-        // between the local expiry check and the broker's authorizer.
-        String stale = token("sub-77", "phone@example.com", NOW + 3600, "STALEBEARER");
-        store.value = stale;
-        String renewed = token("sub-77", "phone@example.com", NOW + 3600, "RENEWEDBEARER");
-        signIn.tokens.add(renewed);
+    /** #3189: a broker 401 ends the session; no silent renewal, no second request. */
+    @Test public void aBroker401EndsTheSessionWithoutARetry() throws Exception {
+        store.value = token("sub-77", "phone@example.com", NOW + 3600, "STALEBEARER");
+        signIn.tokens.add(token("sub-77", "phone@example.com", NOW + 3600, "RENEWEDBEARER"));
         transport.responses.add(new GoogleSyncSession.Response(401, "{}"));
-        transport.responses.add(new GoogleSyncSession.Response(200, "{\"token\":\"hdr.SCOPED.sig\","
-                + "\"token_type\":\"Bearer\",\"expires_at\":" + (NOW + 240) + ",\"expires_in\":240}"));
-        GoogleSyncSession.GatewayBrokerExchange exchange = session.gatewayTokenExchange();
-        assertEquals(200, exchange.response.status);
-        assertEquals(2, transport.requests.size());
-        assertEquals("Bearer " + renewed, transport.requests.get(1).headers.get("Authorization"));
-        assertTrue("the echo check follows the bearer actually sent", exchange.bearerEchoedBy(renewed));
-
-        // A second 401 is the broker's answer, not retried again.
-        signIn.tokens.add(token("sub-77", "phone@example.com", NOW + 3600, "THIRDBEARER"));
-        transport.requests.clear();
-        transport.responses.add(new GoogleSyncSession.Response(401, "{}"));
-        transport.responses.add(new GoogleSyncSession.Response(401, "{}"));
-        assertEquals(401, session.gatewayTokenExchange().response.status);
-        assertEquals(2, transport.requests.size());
+        try { session.gatewayTokenExchange(); fail("a refused bearer is a lost session"); }
+        catch (SyncAuthException expected) { assertEquals(SyncAuthException.NOT_SIGNED_IN, expected.code); }
+        assertEquals(1, transport.requests.size());
+        assertEquals("the provider was never asked", 1, signIn.tokens.size());
     }
 
     @Test public void aDifferentSubjectOnRenewalDropsTheSignIn() throws Exception {
@@ -150,7 +133,7 @@ public final class GoogleSyncSessionGatewayExchangeTest {
     static final class ScriptedSignIn implements GoogleSyncSession.SignInProvider {
         final Deque<String> tokens = new ArrayDeque<>();
 
-        @Override public String obtainIdToken(boolean interactive) {
+        @Override public String obtainIdToken() {
             return tokens.poll();
         }
 

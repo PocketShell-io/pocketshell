@@ -26,8 +26,6 @@ public final class GoogleSyncPlugin extends Plugin {
     /** Read-only backend calls (identity, GET requests) never queue behind sign-in/out or a slow renewal. */
     private final ExecutorService readers = Executors.newFixedThreadPool(3);
     private GoogleSyncSession session;
-    /** Pre-renew the ID token on foreground when it expires within this window. */
-    private static final long PRE_RENEW_WINDOW_SECONDS = 10L * 60L;
 
     @Override
     public void load() {
@@ -35,7 +33,7 @@ public final class GoogleSyncPlugin extends Plugin {
         session = new GoogleSyncSession(
                 new EncryptedSyncTokenStore(getContext()),
                 GoogleSyncEnvironment.signIn(this::getActivity),
-                GoogleSyncEnvironment.transport(),
+                GoogleSyncEnvironment.transport(getContext()),
                 GoogleSyncConfig.SYNC_API_URL,
                 () -> System.currentTimeMillis() / 1000L);
     }
@@ -44,16 +42,6 @@ public final class GoogleSyncPlugin extends Plugin {
     protected void handleOnDestroy() {
         worker.shutdown();
         readers.shutdown();
-    }
-
-    @Override
-    protected void handleOnResume() {
-        // Off the critical path: renew before the user's first tap, not during it.
-        try {
-            worker.execute(() -> session.renewIfExpiringWithin(PRE_RENEW_WINDOW_SECONDS));
-        } catch (RejectedExecutionException destroyed) {
-            // Plugin already torn down.
-        }
     }
 
     private void submitRead(PluginCall call, Runnable task) {
@@ -88,9 +76,21 @@ public final class GoogleSyncPlugin extends Plugin {
         });
     }
 
-    /** Public stable verified subject only; the JWT never crosses the bridge. */
+    /**
+     * The stored credential's public subject, without a network round trip (issue #3189): opening a
+     * saved server never waits on {@code /me}. The JWT never crosses the bridge.
+     */
     @PluginMethod
     public void accountId(PluginCall call) {
+        submitRead(call, () -> {
+            try { call.resolve(new JSObject().put("accountId", session.currentAccountId())); }
+            catch (SyncAuthException error) { reject(call, error); }
+        });
+    }
+
+    /** Background identity refresh: the subject as the backend authorizer verifies it ({@code GET /me}). */
+    @PluginMethod
+    public void verifyAccount(PluginCall call) {
         submitRead(call, () -> {
             try { call.resolve(new JSObject().put("accountId", session.verifiedAccountId())); }
             catch (SyncAuthException error) { reject(call, error); }
@@ -158,6 +158,7 @@ public final class GoogleSyncPlugin extends Plugin {
     }
 
     private static void reject(PluginCall call, SyncAuthException error) {
-        call.reject(error.getMessage(), error.code);
+        if (error.detail != null) call.reject(error.getMessage(), error.code, new JSObject().put("detail", error.detail));
+        else call.reject(error.getMessage(), error.code);
     }
 }

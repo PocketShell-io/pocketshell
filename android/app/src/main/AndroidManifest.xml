@@ -74,7 +74,8 @@
 
     <uses-permission android:name="android.permission.INTERNET" />
     <!-- Hear when the network is usable again, so a reconnect that gave up
-         while it was not retries by itself (#3160). -->
+         while it was not retries by itself (#3160); sync requests bind to the
+         active network and a failed background sync retries when it returns (#3189). -->
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />

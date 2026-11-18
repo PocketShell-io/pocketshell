@@ -49,8 +49,8 @@ public final class GoogleSyncEnvironment {
         return new CredentialManagerSignIn(activity, GoogleSyncConfig.SERVER_CLIENT_ID);
     }
 
-    static GoogleSyncSession.Transport transport() {
+    static GoogleSyncSession.Transport transport(android.content.Context context) {
         GoogleSyncSession.Transport transport = testTransport;
-        return transport != null ? transport : new HttpSyncTransport();
+        return transport != null ? transport : HttpSyncTransport.forSync(context);
     }
 }

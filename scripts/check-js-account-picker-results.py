@@ -5,7 +5,9 @@ Verifies that fresh instrumentation XML contains exactly the registered
 SharedAccountPickerJourneyTest methods, none skipped or failed; (when given)
 that every same-run screenshot was retrieved as a distinct real PNG; and (when
 given) that the same-run app logcat carries the journey's SHARED_PICKER line
-(every account host listed after unlock, nothing uploaded) and never the fake
+(every account host listed after unlock, nothing uploaded), the three #3189
+OFFLINE_FIRST lines (stalled, failing, revoked sync, and resume with a revoked
+token: no sign-in UI for 60 s), and never either fake
 Google ID token's signature marker.
 
 Usage:
@@ -35,6 +37,11 @@ REQUIRED_METHODS = frozenset(
     {
         "sharedTrustedPickerNeverAdoptsUntrustedAccountRowsAfterSignInOrSettingsSync",
         "legacyHomeListsAccountHostsAgainAfterRestartOnceUnlocked",
+        "offlineFirstSavedServersOpenAtOnceWhileSyncIsStalled",
+        "offlineFirstFailingSyncIsQuietRetriesAndKeepsOrder",
+        "offlineFirstRevokedAccountKeepsServersAndAsksToSignInAgain",
+        "offlineFirstResumeWithARevokedTokenNeverOpensSignIn",
+        "offlineFirstSyncTransportGetsPastADeadKeepAliveSocketQuickly",
     }
 )
 REQUIRED_SCREENSHOTS = frozenset(
@@ -45,16 +52,29 @@ REQUIRED_SCREENSHOTS = frozenset(
         "shared-account-synced.png",
         "legacy-account-locked-after-restart.png",
         "legacy-home-synced-hosts-after-unlock.png",
+        "offline-first-stalled-connecting.png",
+        "offline-first-not-synced.png",
+        "offline-first-reauth.png",
+        "offline-first-resume-after-sign-in.png",
     }
 )
 # The fake ID token's signature (SharedAccountPickerJourneyTest.TOKEN_SIGNATURE).
 TOKEN_MARKER = "FAKEIDTOKEN3020SIGNATUREdoNotLeak"
+# The #3189 journeys' fake ID token (OfflineFirstSyncEdges.TOKEN_SIGNATURE).
+OFFLINE_TOKEN_MARKER = "FAKEIDTOKEN3189SIGNATUREdoNotLeak"
+OFFLINE_MARKER = "OFFLINE_FIRST "
+# #3189: the maintainer's saved servers, in the order the phone first showed them.
+SAVED_SERVER_ORDER = ["host-desktop-fp4op26-venv", "Hetzner"]
+TAP_TO_CONNECTING_MAX_MS = 300
+# A dead pooled keep-alive socket must cost well under the 15 s read timeout; an idle return, nothing.
+DEAD_SOCKET_MAX_MS = 7_000
+AFTER_IDLE_MAX_MS = 3_000
 EVIDENCE_TAG = "PocketshellAccountSync"
 EVIDENCE_MARKER = "SHARED_PICKER "
 ACCOUNT_ROWS = []
 SYNCED_HOSTS = ["bäckerei", "hetzner"]
 PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
-SELF_TEST_CASES = 21
+SELF_TEST_CASES = 36
 
 
 
@@ -264,7 +284,7 @@ def validate_logcat(logcat_path: Path) -> dict:
         text = logcat_path.read_text(encoding="utf-8", errors="replace")
     except OSError as exc:
         raise GateFailure(f"logcat is unreadable: {exc}") from exc
-    if TOKEN_MARKER in text:
+    if TOKEN_MARKER in text or OFFLINE_TOKEN_MARKER in text:
         raise GateFailure("the fake Google ID token reached logcat")
     lines = [line for line in text.splitlines() if EVIDENCE_TAG in line and EVIDENCE_MARKER in line]
     if len(lines) != 1:
@@ -279,7 +299,76 @@ def validate_logcat(logcat_path: Path) -> dict:
         raise GateFailure(f"Sync now must keep every account host and the desktop's fields: {evidence}")
     if evidence.get("accountRows") != ACCOUNT_ROWS or evidence.get("untrustedRowsHidden") is not True:
         raise GateFailure(f"the picker's account rows differ: {evidence.get('accountRows')}")
+    evidence["offlineFirst"] = validate_offline_first(text)
     return evidence
+
+
+def _require_readable_chip(name: str, item: dict) -> None:
+    """B1: the account state was on screen in full at 411 dp and at 360 dp, not merely in the DOM."""
+    geometry = item.get("chipGeometry")
+    if item.get("chipReadable") is not True or not isinstance(geometry, dict):
+        raise GateFailure(f"{name}: no on-screen account-state geometry: {item}")
+    widths = []
+    for key in ("w411", "w360"):
+        g = geometry.get(key)
+        if not isinstance(g, dict):
+            raise GateFailure(f"{name}: missing {key} account-state geometry")
+        if (g.get("visible") is not True or g.get("hit") is not True
+                or not isinstance(g.get("clientWidth"), int) or g["clientWidth"] <= 0
+                or not isinstance(g.get("scrollWidth"), int) or g["scrollWidth"] > g["clientWidth"]
+                or g.get("left", -1) < 0 or g.get("right", 1e9) > g.get("innerWidth", 0)):
+            raise GateFailure(f"{name}: account state clipped or off screen at {key}: {g}")
+        widths.append(g.get("innerWidth"))
+    if not (isinstance(widths[0], int) and widths[0] >= 400 and widths[1] == 360):
+        raise GateFailure(f"{name}: account state not measured at 411 dp and 360 dp: {widths}")
+
+
+def validate_offline_first(text: str) -> dict:
+    """#3189: one OFFLINE_FIRST line per scenario, each proving its acceptance criterion."""
+    lines = [line for line in text.splitlines() if EVIDENCE_TAG in line and OFFLINE_MARKER in line]
+    scenarios: dict[str, dict] = {}
+    for line in lines:
+        try:
+            item = json.loads(line.split(OFFLINE_MARKER, 1)[1])
+        except (IndexError, json.JSONDecodeError) as exc:
+            raise GateFailure(f"{OFFLINE_MARKER.strip()} line is not JSON: {exc}") from exc
+        name = item.get("scenario")
+        if name in scenarios:
+            raise GateFailure(f"duplicate {OFFLINE_MARKER.strip()} scenario {name!r}")
+        scenarios[name] = item
+    if set(scenarios) != {"stalled", "failing", "revoked", "resume", "deadsocket"}:
+        raise GateFailure(f"expected OFFLINE_FIRST stalled, failing, revoked, resume and deadsocket lines, found {sorted(map(str, scenarios))}")
+    for name, item in scenarios.items():
+        if item.get("rows") != SAVED_SERVER_ORDER:
+            raise GateFailure(f"{name}: saved server rows changed or reordered: {item.get('rows')}")
+    stalled = scenarios["stalled"]
+    tap = stalled.get("tapToConnectingMs")
+    if not isinstance(tap, (int, float)) or isinstance(tap, bool) or tap < 0 or tap > TAP_TO_CONNECTING_MAX_MS:
+        raise GateFailure(f"stalled: a tap must start opening within {TAP_TO_CONNECTING_MAX_MS} ms: {tap!r}")
+    if stalled.get("checkingSeen") is not False or not (isinstance(stalled.get("stalledSyncRequests"), int) and stalled["stalledSyncRequests"] > 0):
+        raise GateFailure(f"stalled: no Checking step and the sync still in flight are required: {stalled}")
+    failing = scenarios["failing"]
+    if (failing.get("exceptionInDom") is not False or failing.get("chipPhase") != "offline"
+            or failing.get("chipText") != "Not synced · retry" or failing.get("chipRetry") is not True
+            or not (isinstance(failing.get("autoRetries"), int) and failing["autoRetries"] > 0)):
+        raise GateFailure(f"failing: quiet not-synced state with retries is required: {failing}")
+    revoked = scenarios["revoked"]
+    if any(revoked.get(key) is not True for key in ("reauthPrompt", "cacheKept", "localRowOpened", "signInOnTap")):
+        raise GateFailure(f"revoked: re-sign-in prompt, kept rows and openable hosts are required: {revoked}")
+    resume = scenarios["resume"]
+    watched = resume.get("watchedMs")
+    if (resume.get("signInLaunchesAfterResume") != 0 or not isinstance(watched, int) or watched < 60_000
+            or resume.get("chipText") != "Signed out" or resume.get("bannerTapLaunches") != 1):
+        raise GateFailure(f"resume: zero sign-in UI for 60 s, Signed out, one launch on the banner tap: {resume}")
+    for name in ("failing", "revoked", "resume"):
+        _require_readable_chip(name, scenarios[name])
+    dead = scenarios["deadsocket"]
+    stale, idle = dead.get("staleSocketMs"), dead.get("afterIdleMs")
+    if (not isinstance(stale, int) or not 0 <= stale < DEAD_SOCKET_MAX_MS
+            or not isinstance(idle, int) or not 0 <= idle < AFTER_IDLE_MAX_MS
+            or not isinstance(dead.get("swallowed"), int) or dead["swallowed"] < 1):
+        raise GateFailure(f"deadsocket: a swallowed request must cost < {DEAD_SOCKET_MAX_MS} ms and an idle return < {AFTER_IDLE_MAX_MS} ms: {dead}")
+    return scenarios
 
 
 def _create_mock_png(width: int = 100, height: int = 200, status_bar_val: int = 0, content_val: int = 1) -> bytes:
@@ -431,9 +520,33 @@ def self_test() -> int:
             completed += 1
             print(f"ok   [{index + 1}/{SELF_TEST_CASES}] {label}")
 
+        chip = {"chipReadable": True, "chipGeometry": {
+            "w411": {"text": "x", "scrollWidth": 120, "clientWidth": 120, "left": 24, "right": 144, "top": 70, "bottom": 114,
+                     "innerWidth": 411, "innerHeight": 914, "visible": True, "hit": True},
+            "w360": {"text": "x", "scrollWidth": 120, "clientWidth": 120, "left": 20, "right": 140, "top": 70, "bottom": 114,
+                     "innerWidth": 360, "innerHeight": 800, "visible": True, "hit": True}}}
+        offline = {
+            "stalled": {"scenario": "stalled", "rows": SAVED_SERVER_ORDER, "tapToConnectingMs": 42.5,
+                        "checkingSeen": False, "stalledSyncRequests": 1},
+            "failing": {"scenario": "failing", "rows": SAVED_SERVER_ORDER, "exceptionInDom": False, "chipPhase": "offline",
+                        "chipText": "Not synced · retry", "autoRetries": 1, "chipRetry": True, **chip},
+            "revoked": {"scenario": "revoked", "rows": SAVED_SERVER_ORDER, "reauthPrompt": True, "cacheKept": True,
+                        "localRowOpened": True, "signInOnTap": True, **chip},
+            "deadsocket": {"scenario": "deadsocket", "rows": SAVED_SERVER_ORDER, "staleSocketMs": 4100, "afterIdleMs": 180,
+                           "connections": 3, "swallowed": 1},
+            "resume": {"scenario": "resume", "rows": SAVED_SERVER_ORDER, "signInLaunchesAfterResume": 0, "watchedMs": 60_000,
+                       "chipText": "Signed out", "syncChecksAfterResume": 2, "bannerTapLaunches": 1, **chip},
+        }
+
+        def offline_lines(**overrides: dict) -> str:
+            return "".join(f"10-08 12:00:01.000 I/{EVIDENCE_TAG}( 123): {OFFLINE_MARKER}"
+                           + json.dumps({**item, **overrides.get(name, {})}, ensure_ascii=False) + "\n"
+                           for name, item in offline.items() if overrides.get(name) is not False)
+
         good_line = (f"10-08 12:00:00.000 I/{EVIDENCE_TAG}( 123): {EVIDENCE_MARKER}"
                      + json.dumps({"requests": 3, "uploads": 1, "accountRows": ACCOUNT_ROWS, "syncedHosts": SYNCED_HOSTS,
-                                 "keptDesktopFields": True, "untrustedRowsHidden": True}, ensure_ascii=False))
+                                 "keptDesktopFields": True, "untrustedRowsHidden": True}, ensure_ascii=False)
+                     + "\n" + offline_lines().rstrip("\n"))
         for label, text, should_pass in (
             ("logcat with one SHARED_PICKER line and no token passes", good_line + "\n", True),
             ("a token in logcat is rejected", good_line + "\nAuthorization: Bearer x." + TOKEN_MARKER + "\n", False),
@@ -443,6 +556,21 @@ def self_test() -> int:
             ("untrusted row visibility is rejected", good_line.replace('"untrustedRowsHidden": true', '"untrustedRowsHidden": false') + "\n", False),
             ("a sync that dropped an account host is rejected", good_line.replace('["bäckerei", "hetzner"]', '["bäckerei"]') + "\n", False),
             ("a sync that wiped desktop fields is rejected", good_line.replace('"keptDesktopFields": true', '"keptDesktopFields": false') + "\n", False),
+            ("a missing OFFLINE_FIRST scenario is rejected", good_line.split("\n")[0] + "\n" + offline_lines(revoked=False), False),
+            ("a slow tap-to-opening is rejected", good_line.split("\n")[0] + "\n" + offline_lines(stalled={"tapToConnectingMs": 301}), False),
+            ("a Checking step is rejected", good_line.split("\n")[0] + "\n" + offline_lines(stalled={"checkingSeen": True}), False),
+            ("an exception class in the DOM is rejected", good_line.split("\n")[0] + "\n" + offline_lines(failing={"exceptionInDom": True}), False),
+            ("a reordered row list is rejected", good_line.split("\n")[0] + "\n" + offline_lines(failing={"rows": list(reversed(SAVED_SERVER_ORDER))}), False),
+            ("a revoked account that lost its rows is rejected", good_line.split("\n")[0] + "\n" + offline_lines(revoked={"cacheKept": False}), False),
+            ("no retry after a failed sync is rejected", good_line.split("\n")[0] + "\n" + offline_lines(failing={"autoRetries": 0}), False),
+            ("a sign-in sheet after resume is rejected", good_line.split("\n")[0] + "\n" + offline_lines(resume={"signInLaunchesAfterResume": 4}), False),
+            ("a banner tap that signs in twice is rejected", good_line.split("\n")[0] + "\n" + offline_lines(resume={"bannerTapLaunches": 2}), False),
+            ("a resume watch shorter than 60 s is rejected", good_line.split("\n")[0] + "\n" + offline_lines(resume={"watchedMs": 30_000}), False),
+            ("a dead socket that cost the full timeout is rejected", good_line.split("\n")[0] + "\n" + offline_lines(deadsocket={"staleSocketMs": 15200}), False),
+            ("an idle return that tried the old socket is rejected", good_line.split("\n")[0] + "\n" + offline_lines(deadsocket={"afterIdleMs": 4200}), False),
+            ("a clipped account state is rejected", good_line.split("\n")[0] + "\n" + offline_lines(failing={"chipGeometry": {**chip["chipGeometry"], "w360": {**chip["chipGeometry"]["w360"], "scrollWidth": 160}}}), False),
+            ("an account state never measured at 360 dp is rejected", good_line.split("\n")[0] + "\n" + offline_lines(resume={"chipGeometry": {"w411": chip["chipGeometry"]["w411"]}}), False),
+            ("the #3189 token in logcat is rejected", good_line + "\nBearer x." + OFFLINE_TOKEN_MARKER + "\n", False),
         ):
             index = completed
             logcat_path = root / f"logcat-{index}.txt"
@@ -502,6 +630,8 @@ def main(argv: list[str]) -> int:
         print(f"  logcat: no ID token; SHARED_PICKER uploads={evidence['uploads']}"
               f" accountRows={evidence['accountRows']} syncedHosts={evidence['syncedHosts']}"
               f" keptDesktopFields={evidence['keptDesktopFields']}")
+        for name, item in sorted(evidence["offlineFirst"].items()):
+            print(f"  logcat: OFFLINE_FIRST {name} {json.dumps(item, ensure_ascii=False, sort_keys=True)}")
     return 0
 
 
