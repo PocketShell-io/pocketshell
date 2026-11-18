@@ -133,10 +133,10 @@ public final class SshCapabilityPluginChannelRequestTest {
         Recording host = new Recording();
         SessionChannel channel = SshCapabilityPlugin.startPtySession(host.client());
         assertTrue("openPty's channel must be the guarded PTY channel",
-                channel instanceof SshCapabilityPlugin.PtySessionChannel);
-        assertFalse(((SshCapabilityPlugin.PtySessionChannel) channel).closeSent());
+                channel instanceof PtySessionChannel);
+        assertFalse(((PtySessionChannel) channel).closeSent());
         channel.handle(Message.CHANNEL_CLOSE, new SSHPacket());
-        assertTrue(((SshCapabilityPlugin.PtySessionChannel) channel).closeSent());
+        assertTrue(((PtySessionChannel) channel).closeSent());
     }
 
     /**
@@ -243,7 +243,7 @@ public final class SshCapabilityPluginChannelRequestTest {
     }
 
     /** The production PTY channel with the two race hooks; nothing else overridden. */
-    private static final class CloseRaceChannel extends SshCapabilityPlugin.PtySessionChannel {
+    private static final class CloseRaceChannel extends PtySessionChannel {
         private final CloseRace race;
 
         CloseRaceChannel(Connection connection, CloseRace race) {

@@ -24,7 +24,7 @@ final class SshCallRouting {
 
     static {
         // Free: independent, never queue behind anything (cancelOperation must preempt a running connect).
-        for (String method : new String[] {"transportCapabilities", "connect", "cancelOperation", "exec", "openPty", "resourceSnapshot"}) {
+        for (String method : new String[] {"transportCapabilities", "connect", "cancelOperation", "exec", "openPty", "resourceSnapshot", "setBackgroundGrace"}) {
             ROUTES.put(method, UNORDERED);
         }
         // One connection's lifecycle calls.

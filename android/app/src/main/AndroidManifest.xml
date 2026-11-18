@@ -50,10 +50,13 @@
 
         </activity>
 
+        <!-- One foreground service for both background jobs (#3160): the
+             user's port forwards, and the bounded grace hold that keeps live
+             SSH connections open across an app switch. -->
         <service android:name=".ForwardService" android:exported="false"
             android:foregroundServiceType="specialUse">
             <property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
-                android:value="User enabled SSH local port forwarding" />
+                android:value="Keeps the user's SSH port forwards, and for a bounded user-chosen grace window their live SSH sessions, open while the app is in the background" />
         </service>
 
         <provider
@@ -70,8 +73,13 @@
     <!-- Permissions -->
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Hear when the network is usable again, so a reconnect that gave up
+         while it was not retries by itself (#3160). -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- The grace hold keeps the CPU awake for its bounded window (#3160). -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
 </manifest>

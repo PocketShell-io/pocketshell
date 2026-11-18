@@ -51,6 +51,7 @@ import { declinedAccountHostMessage, type AccountHostKeys } from './accountHosts
 import { insecureGatewayMessage, resolveGatewayTarget, type GatewayConnectRequest, type GatewayPairings } from './gatewayTarget';
 import { AndroidForwards } from './forwards';
 import { sshCapability, nativeRemoteDirectory, nativeSftpStat, nativeSftpWriteIfUnchanged } from '@/native/sshCapability';
+import type { BackgroundHold } from '@/native/backgroundHold';
 import { createAndroidFiles, type AndroidFileNative } from './files';
 import type { AndroidVault, GatewayAuthPolicy } from '@/vault/androidVault';
 
@@ -142,6 +143,17 @@ export interface AndroidApiDeps {
   lifecycle?: AndroidLifecycle;
   /** The user's background grace, read at the moment the app backgrounds. */
   backgroundGraceMs: () => number;
+  /**
+   * The user's "Reconnect when I return": false leaves a grace-spent
+   * connection waiting for an explicit Reconnect. Defaults to true.
+   */
+  reconnectOnReturn?: () => boolean;
+  /**
+   * The native grace hold and network-return signal (#3160). Receives the
+   * grace window ahead of time and tells the hub when the network is usable
+   * again, so a given-up reconnect recovers by itself.
+   */
+  backgroundHold?: BackgroundHold;
   /** Route the shared picker's empty state sends the user to. */
   addHostRoute: string;
   log?: (entry: { kind: string; message: string; detail?: Record<string, unknown> }) => void;
@@ -224,12 +236,47 @@ export function createAndroidPlatform(deps: AndroidApiDeps): AndroidPlatform {
     },
   });
   forwards = new AndroidForwards(hub, sshCapability);
+  let appActive = true;
+  const pushGrace = () => {
+    void deps.backgroundHold?.setGrace(deps.backgroundGraceMs())
+      .catch((error) => deps.log?.({ kind: 'background-hold', message: String(error) }));
+  };
+  // Transitions run one at a time, each reconciled to the LATEST state: a
+  // return that arrives while enterBackground still awaits its native
+  // scheduleClose must run after it, or the controller ends up in
+  // `background` with the app on screen (input refused, grace close armed;
+  // #3160, the fast app-switch race).
+  let lifecycleChain: Promise<void> = Promise.resolve();
+  const reconcileLifecycle = async (): Promise<void> => {
+    if (!appActive) {
+      await hub.enterBackground(deps.backgroundGraceMs(), (id) => forwards!.hasActive(id));
+    }
+    if (appActive) {
+      pushGrace();
+      await hub.returnToForeground({ reconnect: deps.reconnectOnReturn?.() ?? true });
+      await forwards!.resume();
+      await resumeEnabledHosts();
+    }
+  };
   const unbindLifecycle = deps.lifecycle
     ? deps.lifecycle.onActiveChange((active) => {
-        if (active) void hub.returnToForeground().then(() => forwards!.resume()).then(resumeEnabledHosts).catch((error) => deps.log?.({ kind: 'forward-resume', message: String(error) }));
-        else void hub.enterBackground(deps.backgroundGraceMs(), (id) => forwards!.hasActive(id));
+        appActive = active;
+        lifecycleChain = lifecycleChain
+          .then(reconcileLifecycle)
+          .catch((error) => deps.log?.({ kind: 'forward-resume', message: String(error) }));
       })
     : () => undefined;
+  // A reconnect ladder that gave up while the network was not usable yet
+  // retries, with a fresh budget, once Android says it is (#3160). In the
+  // background the grace policy owns the connections; the foreground return
+  // retries them itself.
+  const unbindNetwork = deps.backgroundHold?.onNetworkAvailable(() => {
+    if (!appActive || disposed) return;
+    void hub.recoverGivenUp().then((count) => {
+      if (count > 0) deps.log?.({ kind: 'network-return', message: `Retrying ${count} connection(s) after the network returned.` });
+    });
+  }) ?? (() => undefined);
+  pushGrace();
 
   const exec = (connectionId: string, command: string) => hub.exec(connectionId, command);
 
@@ -727,6 +774,9 @@ export function createAndroidPlatform(deps: AndroidApiDeps): AndroidPlatform {
       // (bindLifecycle above). Feeding the shared store's resume probe too
       // would start a second reconnect decision on the same event (D28).
       onResumed: () => () => undefined,
+      // The phone suspends in the background and holds live connections for
+      // the user's grace window: Settings shows the grace controls (#3160).
+      backgroundGrace: true,
       // No window zoom chords, OS-theme follow, Electron menu or hardware
       // chord table on a phone: Settings hides them (#3139).
       desktopChrome: false,
@@ -743,6 +793,7 @@ export function createAndroidPlatform(deps: AndroidApiDeps): AndroidPlatform {
     dispose() {
       disposed = true;
       unbindLifecycle();
+      unbindNetwork();
       forwards?.dispose();
       for (const id of hostConnections.values()) void hub.close(id);
       hostConnections.clear();

@@ -7,6 +7,8 @@
 import { App as CapacitorApp } from '@capacitor/app';
 import { ConnectionController, type HostKeyTrustPin, type HostKeyTrustStore } from '@pocketshell/core';
 import { loadSshTransportCapabilities, sshCapability } from '@/native/sshCapability';
+import { backgroundHold } from '@/native/backgroundHold';
+import { sharedBackgroundGraceMs, sharedReconnectOnReturn } from './lifecycleSettings';
 import { gatewayPairings, nativeGatewayPairing } from '@/native/gatewayPairing';
 import { sshKeyVault } from '@/native/sshKeyVault';
 import { createAndroidGatewayDirectory } from '@/platform/android/gatewayDirectory';
@@ -30,9 +32,6 @@ import {
   createStoreVaultCore,
   VAULT_RESET_URL,
 } from '@/vault/coreVault';
-
-/** Mirrors the legacy screen's default; the shared settings store has no grace field yet (stage L1). */
-const BACKGROUND_GRACE_MS = 60_000;
 
 const capacitorLifecycle: AndroidLifecycle = {
   onActiveChange(handler) {
@@ -167,7 +166,9 @@ export const androidPlatform = createAndroidPlatform({
   createController: () => new ConnectionController({ capability: sshCapability, trustStore }),
   hosts: androidHosts,
   lifecycle: capacitorLifecycle,
-  backgroundGraceMs: () => BACKGROUND_GRACE_MS,
+  backgroundGraceMs: sharedBackgroundGraceMs,
+  reconnectOnReturn: sharedReconnectOnReturn,
+  backgroundHold,
   addHostRoute: ADD_HOST_ROUTE,
   log: (entry) => console.info(`[pocketshell] ${entry.kind}: ${entry.message}`, entry.detail ?? ''),
   observeConnections: journalConnection,

@@ -141,6 +141,7 @@ jobs:
           scripts/check-js-journey-results.py --self-test
           scripts/check-js-voice-settings-results.py --self-test
           scripts/check-js-forward-service-results.py --self-test
+          scripts/check-js-background-hold-results.py --self-test
           scripts/check-js-s1-layout-results.py --self-test
           scripts/check-js-voice-composer-results.py --self-test
 
@@ -522,6 +523,7 @@ jobs:
               'Account key vault') key=account_vault ;; Key-vault) key=key_vault ;;
               'Durable storage') key=durable ;; Signed-upgrade) key=signed_upgrade ;;
               'Voice settings') key=voice_settings ;; 'Forward service') key=forward_service ;;
+              'Background hold') key=background_hold ;;
               Composer*) key=composer ;;
               *) echo "FAIL: unmapped exact-report lane: $lane" >&2; return 1 ;;
             esac
@@ -581,6 +583,8 @@ jobs:
             --results-dir "android/app/build/outputs/js-voice-settings/js2857voice-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/instrumentation-results"
           run_check "Forward service" scripts/check-js-forward-service-results.py \
             --results-dir "android/app/build/outputs/js-forward-service/js3097-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/instrumentation-results"
+          run_check "Background hold" scripts/check-js-background-hold-results.py \
+            --results-dir "android/app/build/outputs/js-background-hold/bg3160-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
 
           if lane_selected composer; then
           composer_root="android/app/build/outputs/js-composer"
@@ -686,6 +690,7 @@ jobs:
             android/app/build/outputs/js-settings/**
             android/app/build/outputs/js-voice-settings/**
             android/app/build/outputs/js-forward-service/**
+            android/app/build/outputs/js-background-hold/**
             android/app/build/outputs/js-account-sync/**
             android/app/build/outputs/js-account-picker/**
             android/app/build/outputs/js-account-vault/**

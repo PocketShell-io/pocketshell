@@ -28,6 +28,7 @@ s1_layout_status=0
 voice_composer_status=0
 account_vault_status=0
 forward_service_status=0
+background_hold_status=0
 key_vault_status=0
 signed_upgrade_status=0
 copy_status=0
@@ -344,6 +345,21 @@ fi
 
 fi
 
+# Issue #3160: the background grace hold, with the app NOT instrumented (an
+# instrumented process is never frozen or network-blocked in the background).
+# It builds its own suffixed APK and shares 2243 with forward-service, in turn.
+if lane_selected background_hold; then
+if scripts/connected-js-background-hold.sh \
+  --suffix i3160hold \
+  --port 2243 \
+  --run-id "bg3160-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"; then
+  background_hold_status=0
+else
+  background_hold_status=$?
+fi
+
+fi
+
 if lane_selected key_vault; then
 if scripts/connected-js-key-vault-docker.sh \
   --suffix i2926ci \
@@ -374,13 +390,13 @@ fi
 
 fi
 
-printf 'Packaged API 35 lane statuses: smoke=%s lifecycle=%s usage-ports=%s files=%s composer=%s composer-junit-copy=%s composer-junit=%s hotkeys=%s hotkeys-junit=%s durable-storage=%s settings=%s voice-settings=%s forward-service=%s account-sync=%s account-picker=%s gateway=%s shared-app=%s s1-layout=%s voice-composer=%s account-vault=%s key-vault=%s signed-upgrade=%s smoke-junit-copy=%s\n' \
+printf 'Packaged API 35 lane statuses: smoke=%s lifecycle=%s usage-ports=%s files=%s composer=%s composer-junit-copy=%s composer-junit=%s hotkeys=%s hotkeys-junit=%s durable-storage=%s settings=%s voice-settings=%s forward-service=%s background-hold=%s account-sync=%s account-picker=%s gateway=%s shared-app=%s s1-layout=%s voice-composer=%s account-vault=%s key-vault=%s signed-upgrade=%s smoke-junit-copy=%s\n' \
   "$smoke_status" "$lifecycle_status" "$usage_status" "$files_status" "$composer_status" \
   "$composer_junit_copy_status" "$composer_junit_status" "$hotkeys_status" \
-  "$hotkeys_junit_status" "$durable_status" "$settings_status" "$voice_settings_status" "$forward_service_status" "$account_sync_status" "$account_picker_status" "$gateway_status" "$shared_app_status" "$s1_layout_status" "$voice_composer_status" \
+  "$hotkeys_junit_status" "$durable_status" "$settings_status" "$voice_settings_status" "$forward_service_status" "$background_hold_status" "$account_sync_status" "$account_picker_status" "$gateway_status" "$shared_app_status" "$s1_layout_status" "$voice_composer_status" \
   "$account_vault_status" "$key_vault_status" "$signed_upgrade_status" "$copy_status"
 
-if (( smoke_status != 0 || lifecycle_status != 0 || usage_status != 0 || files_status != 0 || voice_settings_status != 0 || forward_service_status != 0 \
+if (( smoke_status != 0 || lifecycle_status != 0 || usage_status != 0 || files_status != 0 || voice_settings_status != 0 || forward_service_status != 0 || background_hold_status != 0 \
       || composer_status != 0 || composer_junit_copy_status != 0 || composer_junit_status != 0 \
       || hotkeys_status != 0 || hotkeys_junit_status != 0 || durable_status != 0 \
       || settings_status != 0 || account_sync_status != 0 || account_picker_status != 0 || gateway_status != 0 || shared_app_status != 0 || s1_layout_status != 0 || voice_composer_status != 0 || account_vault_status != 0 || key_vault_status != 0 \

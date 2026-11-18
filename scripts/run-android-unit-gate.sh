@@ -11,6 +11,8 @@ ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
 cd -- "$ROOT_DIR"
 
 REQUIRED_CLASSES=(
+  com.pocketshell.app.BackgroundHoldTest
+  com.pocketshell.app.ForegroundStartLedgerTest
   com.pocketshell.app.TrustedHostRevisionsTest
   com.pocketshell.app.GoogleSyncEnvironmentTest
   com.pocketshell.app.CredentialHandleVaultTest
