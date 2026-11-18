@@ -20,6 +20,8 @@ APP="$ROOT_DIR/src/App.vue"
 bash -n "$RUNNER"
 bash -n "$LANES"
 python3 "$ROOT_DIR/tests/scripts/fastkey-receiver-pty-test.py"
+# #3158: the runner restores the navigation mode J30 may have left behind.
+bash "$ROOT_DIR/tests/scripts/android-navigation-mode-test.sh"
 python3 - "$WORKFLOW" "$RUNNER" "$LANES" "$EXTRACTOR" "$PTY_GEOMETRY" "$RESULT_CHECKER" "$JOURNEY" "$MOBILE_HOTKEYS" "$APP" <<'PY'
 import ast
 import re

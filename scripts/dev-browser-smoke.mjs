@@ -397,6 +397,82 @@ async function mockJourneys(browser, base, smoke) {
     return `shared-${marker}`;
   });
 
+  await smoke.step('shared: the fast-key dock is a phone-width row only; a wide window keeps its whole terminal (D44, #3158)', async () => {
+    const measureDock = () => sharedPage.evaluate(() => {
+      const rect = (element) => {
+        if (!element) return null;
+        const r = element.getBoundingClientRect();
+        return { top: r.top, bottom: r.bottom, left: r.left, right: r.right, height: r.height };
+      };
+      const area = document.querySelector('.terminal-area');
+      const slot = [...document.querySelectorAll('.terminal-slot')].find((element) => element.offsetParent !== null);
+      const layer = document.querySelector('.composer-dock');
+      const style = layer ? getComputedStyle(layer) : null;
+      const dockElement = document.querySelector('[data-testid="fast-keys-dock"]');
+      const cells = dockElement ? [...dockElement.querySelectorAll('button')].map((button) => ({
+        id: button.dataset.keyId, width: button.getBoundingClientRect().width, height: button.getBoundingClientRect().height,
+      })) : [];
+      return {
+        width: innerWidth,
+        dock: rect(dockElement),
+        cells,
+        scrollable: dockElement ? dockElement.scrollWidth > dockElement.clientWidth + 1
+          || ['auto', 'scroll'].includes(getComputedStyle(dockElement).overflowX) : null,
+        slot: rect(slot),
+        area: rect(area),
+        layerTop: style ? parseFloat(style.top) : null,
+        layerBottom: style ? parseFloat(style.bottom) : null,
+      };
+    });
+    const results = {};
+    try {
+      // Phone width: the dock is the terminal area's bottom row; the terminal
+      // ends at its top edge and the prompt layer stops above it.
+      // #3158 round 6: six fixed cells of at least 48px that never scroll, at
+      // the narrowest phone (360) and the Pixel 7a's width (412).
+      for (const width of [360, 412]) {
+        await sharedPage.setViewportSize({ width, height: PHONE.viewport.height });
+        await sharedPage.locator('[data-testid="fast-keys-dock"]').waitFor({ timeout: 10_000 });
+        const narrow = await measureDock();
+        if (narrow.cells.length !== 6 || narrow.cells.some((cell) => cell.width < 47.5 || cell.height < 47.5) || narrow.scrollable) {
+          throw new Error(`${width}: the dock must be six >=48px cells that cannot scroll: ${JSON.stringify(narrow)}`);
+        }
+        await shot(sharedPage, smoke, `shared-dock-phone-${width}`);
+        results[`phone${width}`] = narrow;
+      }
+      await sharedPage.setViewportSize(PHONE.viewport);
+      await sharedPage.locator('[data-testid="fast-keys-dock"]').waitFor({ timeout: 10_000 });
+      const phone = await measureDock();
+      if (!phone.dock || !phone.slot || Math.abs(phone.slot.bottom - phone.dock.top) > 0.5
+          || Math.abs(phone.dock.bottom - phone.area.bottom) > 0.5 || Math.abs(phone.dock.height - 48) > 0.5) {
+        throw new Error(`phone: the dock must be the terminal area's 48px bottom row: ${JSON.stringify(phone)}`);
+      }
+      if (Math.abs(phone.layerBottom - (phone.layerTop + 48)) > 0.5) {
+        throw new Error(`phone: the prompt layer must stop at the dock's top edge: ${JSON.stringify(phone)}`);
+      }
+      results.phone = phone;
+      // Wide (desktop) width: no dock, the terminal takes its whole area, and
+      // the prompt layer keeps its plain inset -- the layout before #3158.
+      await sharedPage.setViewportSize({ width: 1280, height: 800 });
+      await sharedPage.waitForFunction(() => !document.querySelector('[data-testid="fast-keys-dock"]'), null, { timeout: 5_000 })
+        .catch(() => undefined);
+      const wide = await measureDock();
+      if (wide.dock) throw new Error(`wide: a 1280px window must not render the phone key dock: ${JSON.stringify(wide)}`);
+      if (!wide.slot || Math.abs(wide.slot.bottom - wide.area.bottom) > 0.5) {
+        throw new Error(`wide: the terminal must take its whole area: ${JSON.stringify(wide)}`);
+      }
+      if (Math.abs(wide.layerBottom - wide.layerTop) > 0.5) {
+        throw new Error(`wide: the prompt layer must keep its plain inset: ${JSON.stringify(wide)}`);
+      }
+      await shot(sharedPage, smoke, 'shared-dock-wide-1280');
+      results.wide = wide;
+      writeFileSync(path.join(smoke.artifacts, 'shared-dock-geometry.json'), JSON.stringify(results, null, 2));
+      return `360: 6 cells min ${Math.min(...results.phone360.cells.map((cell) => cell.width)).toFixed(1)}px, 412: min ${Math.min(...results.phone412.cells.map((cell) => cell.width)).toFixed(1)}px, no scroll; phone: dock ${phone.dock.top}-${phone.dock.bottom}; 1280: no dock, terminal to ${wide.slot.bottom} of ${wide.area.bottom}`;
+    } finally {
+      await sharedPage.setViewportSize(PHONE.viewport);
+    }
+  });
+
   await smoke.step('shared: the rendered terminal stays inside the root content box across platform insets and viewport sizes', async () => {
     const cases = [
       { name: 'portrait-bars', width: 393, height: 851, top: 50, bottom: 24 },

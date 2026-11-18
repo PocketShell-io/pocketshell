@@ -25,6 +25,7 @@ import androidx.test.platform.app.InstrumentationRegistry;
 
 import com.pocketshell.app.GoogleSyncEnvironment;
 import com.pocketshell.app.GoogleSyncSession;
+import com.pocketshell.app.LegacyShellLaunch;
 import com.pocketshell.app.MainActivity;
 import com.pocketshell.app.SyncAuthException;
 
@@ -306,7 +307,7 @@ public final class AccountSyncJourneyTest {
     // ---- journey steps ------------------------------------------------------
 
     private void launchWithLocalHosts(JSONArray hosts) throws Exception {
-        scenario = ActivityScenario.launch(MainActivity.class);
+        scenario = ActivityScenario.launch(LegacyShellLaunch.intent());
         awaitJsTrue("document.querySelector('[data-testid=build-status]')?.dataset.state === 'verified'", 45_000);
         // location.reload() only schedules the navigation: the old document
         // keeps answering evaluateJavascript (build check verified, Back ready,

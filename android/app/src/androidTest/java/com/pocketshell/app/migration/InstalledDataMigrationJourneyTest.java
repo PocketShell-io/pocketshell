@@ -17,6 +17,7 @@ import androidx.test.platform.app.InstrumentationRegistry;
 
 import com.pocketshell.app.DurableKeyValueStore;
 import com.pocketshell.app.DurableStoragePlugin;
+import com.pocketshell.app.LegacyShellLaunch;
 import com.pocketshell.app.MainActivity;
 import com.pocketshell.app.smoke.JsVisibility;
 
@@ -108,7 +109,7 @@ public final class InstalledDataMigrationJourneyTest {
     public void startupStagesLegacyDataAndLeavesOriginalFilesUntouched() throws Exception {
         assertTrue("the migrated-host cycle must not seed malformed encrypted preferences",
             !malformedEncryptedFixtureRequested());
-        scenario = ActivityScenario.launch(MainActivity.class);
+        scenario = ActivityScenario.launch(LegacyShellLaunch.intent());
         awaitPublishedMigrationStatus("complete");
         awaitJsTrue("document.querySelector('[data-testid=installed-data-migration-error]') === null");
 
@@ -212,7 +213,7 @@ public final class InstalledDataMigrationJourneyTest {
     public void malformedEncryptedPreferencesAppearInPackagedWebView() throws Exception {
         assertTrue("the runner must request the malformed encrypted-preferences fixture",
             malformedEncryptedFixtureRequested());
-        scenario = ActivityScenario.launch(MainActivity.class);
+        scenario = ActivityScenario.launch(LegacyShellLaunch.intent());
         awaitPublishedMigrationStatus("partial");
         awaitJsTrue("document.querySelector('[data-testid=installed-data-migration-error]')?.textContent.includes('pocketshell-voice-secrets') === true");
         String warning = evalString("document.querySelector('[data-testid=installed-data-migration-error]')?.textContent ?? ''");
@@ -228,7 +229,7 @@ public final class InstalledDataMigrationJourneyTest {
     public void malformedPrivateKeyAppearsInPackagedWebViewAndLeavesSourceUntouched() throws Exception {
         assertEquals("the runner must seed the malformed private-key fixture", "true",
             InstrumentationRegistry.getArguments().getString("installedDataMigrationMalformedKeyFixture"));
-        scenario = ActivityScenario.launch(MainActivity.class);
+        scenario = ActivityScenario.launch(LegacyShellLaunch.intent());
         awaitPublishedMigrationStatus("partial");
         awaitJsTrue("document.querySelector('[data-testid=installed-data-migration-error]')?.textContent.includes('Migrated Docker key') === true");
         String warning = evalString("document.querySelector('[data-testid=installed-data-migration-error]')?.textContent ?? ''");
