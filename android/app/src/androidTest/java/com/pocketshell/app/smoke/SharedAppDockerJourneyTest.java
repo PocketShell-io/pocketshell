@@ -1405,7 +1405,7 @@ public abstract class SharedAppDockerJourneyTest {
         assertFalse("the folder picker must list the host's folders, not 'Search 0 folders here'",
                 evalString("document.querySelector(\"input[aria-label='Search folders in this directory']\")?.placeholder ?? ''")
                         .startsWith("Search 0 "));
-        screenshot("j27-new-session-folders");
+        committedScreenshot("j27-new-session-folders");
         for (String name : new String[] {root, "proj-one"}) {
             evalString("(() => {const row=[...document.querySelectorAll('.folder-row')].find((n)=>n.querySelector('.folder-name')?.textContent.trim()==="
                     + JSONObject.quote(name) + "); if(!row) throw new Error('no folder row ' + " + JSONObject.quote(name)
@@ -1419,14 +1419,14 @@ public abstract class SharedAppDockerJourneyTest {
         awaitJsTrue("!document.querySelector('.new-session') && " + VISIBLE_TERMINAL + ".includes('$')");
         typeLine("echo " + marker + " | tee terminal-proof.txt");
         awaitTerminalLine("PS3105_42_" + run);
-        screenshot("j27-new-session-terminal");
+        committedScreenshot("j27-new-session-terminal");
 
         click("button.tab.add");
         awaitJsTrue("[...document.querySelectorAll('.menu-item')].some((n)=>n.textContent.trim()==='New Files tab')");
         evalString("(() => {const item=[...document.querySelectorAll('.menu-item')].find((n)=>n.textContent.trim()==='New Files tab');"
                 + "item.click(); return 'ok';})()");
         awaitJsTrue("[...document.querySelectorAll('.file-tree .entry .nm')].some((n)=>n.getAttribute('title')==='notes.txt')");
-        screenshot("j27-files-listing");
+        committedScreenshot("j27-files-listing");
         evalString("(() => {const nm=[...document.querySelectorAll('.file-tree .entry .nm')].find((n)=>n.getAttribute('title')==='notes.txt');"
                 + "nm.closest('.entry').click(); return 'ok';})()");
         awaitJsTrue("!!document.querySelector('.cm-content') && document.querySelector('.cm-content').textContent.includes('before-edit')");
@@ -1437,7 +1437,7 @@ public abstract class SharedAppDockerJourneyTest {
         click(".save-btn");
         awaitJsTrue("!document.querySelector('.editor-bar .dirty') && !document.querySelector('.file-error')"
                 + " && document.querySelector('.save-btn')?.disabled === true");
-        screenshot("j27-files-saved");
+        committedScreenshot("j27-files-saved");
     }
 
     /** A real Android drag over a raw-mode terminal must not send arrow bytes. */
@@ -2101,6 +2101,27 @@ public abstract class SharedAppDockerJourneyTest {
     }
 
     /** Evidence only: the runner pulls /data/local/tmp/ps2952-*.png next to the results. */
+    /**
+     * A screenshot of what the journey just asserted: waits for two animation
+     * frames and the WebView's committed visual state before capture (the plain
+     * {@link #screenshot} can race a repaint and show an earlier screen).
+     */
+    protected void committedScreenshot(String name) throws Exception {
+        String token = Long.toString(SystemClock.uptimeMillis());
+        evalString("(() => {window.__ps3105Painted=null;requestAnimationFrame(()=>requestAnimationFrame(()=>window.__ps3105Painted="
+                + JSONObject.quote(token) + "));return 'scheduled';})()");
+        awaitJsTrue("window.__ps3105Painted===" + JSONObject.quote(token), 5000);
+        CountDownLatch committed = new CountDownLatch(1);
+        scenario.onActivity(activity -> activity.getBridge().getWebView().postVisualStateCallback(
+                SystemClock.uptimeMillis(), new WebView.VisualStateCallback() {
+                    @Override public void onComplete(long requestId) { committed.countDown(); }
+                }));
+        assertTrue("WebView must commit the asserted screen before capture", committed.await(5, TimeUnit.SECONDS));
+        InstrumentationRegistry.getInstrumentation().waitForIdleSync();
+        SystemClock.sleep(250);
+        screenshot(name);
+    }
+
     protected void screenshot(String name) {
         ScriptedIme.shell("screencap -p /data/local/tmp/ps2952-" + name + ".png");
     }

@@ -340,6 +340,9 @@ pull_phase_traces() {
 DEVICE_KEY_PATH="/data/local/tmp/pocketshell-$SUFFIX-shared-key.pem"
 "$ADB" -s "$ANDROID_SERIAL" push "$ROOT_DIR/tests/docker/test_key" "$DEVICE_KEY_PATH" >/dev/null
 "$ADB" -s "$ANDROID_SERIAL" shell rm -f /data/local/tmp/ps2952-j21-guest-failure-current.png >/dev/null 2>&1 || true
+for shot in j27-new-session-folders j27-new-session-terminal j27-files-listing j27-files-saved; do
+  "$ADB" -s "$ANDROID_SERIAL" shell rm -f "/data/local/tmp/ps2952-$shot.png" >/dev/null 2>&1 || true
+done
 
 printf 'Running shared-app journeys on %s (API %s), suffix %s\n' "$ANDROID_SERIAL" "$device_api" "$SUFFIX"
 if "$ROOT_DIR/android/gradlew" -p "$ROOT_DIR/android" :app:connectedDebugAndroidTest \
@@ -387,7 +390,7 @@ fetch_guest_host_proof || fail 'could not read guest terminal proof over the ind
 fetch_j27_host_proof || fail 'could not read the J27 host proof over the independent host connection'
 pull_phase_traces "$RESULTS_DIR" 7>&-
 # Screenshots the journeys took of the typed terminal (evidence, not a gate).
-for shot in typed-after-reattach ime-bytes j14-session-stopped j15-scrolled-terminal j19-host-form-ime j19-tunnel-form-ime j19-tunnel-form-ime-before-assertion j21-host-added-and-connected j21-guest-local-entry j21-guest-real-terminal j11-shared-file-staged j20-three-file-upload-finished j28-before-cd j28-after-cd-and-polls; do
+for shot in typed-after-reattach ime-bytes j14-session-stopped j15-scrolled-terminal j19-host-form-ime j19-tunnel-form-ime j19-tunnel-form-ime-before-assertion j21-host-added-and-connected j21-guest-local-entry j21-guest-real-terminal j11-shared-file-staged j20-three-file-upload-finished j28-before-cd j28-after-cd-and-polls j27-new-session-folders j27-new-session-terminal j27-files-listing j27-files-saved; do
   "$ADB" -s "$ANDROID_SERIAL" pull "/data/local/tmp/ps2952-$shot.png" "$SHARED_APP_RESULTS_DIR/$shot.png" >/dev/null 2>&1 || true
   "$ADB" -s "$ANDROID_SERIAL" shell rm -f "/data/local/tmp/ps2952-$shot.png" >/dev/null 2>&1 || true
 done
