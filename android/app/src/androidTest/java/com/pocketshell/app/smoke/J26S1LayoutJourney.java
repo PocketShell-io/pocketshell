@@ -294,8 +294,9 @@ public class J26S1LayoutJourney extends SharedAppDockerJourneyTest {
         // Vault list needs an unlocked vault and RemoteImagePicker needs an open picker: neither is reachable here,
         // so their kinds are recorded but only required where counted (see evidence 'unreachable').
         evidence.put("unreachable", new JSONArray().put("vault-key-list (needs unlocked vault)").put("rip (needs image picker)"));
-        // Close with the dialog's own Close control (OverlayPanel button[title=Close]), not the Android BACK key.
-        String close = SETTINGS_DIALOG + " button[title=Close]";
+        // Close with the dialog's own control, not the Android BACK key: OverlayPanel renders a Close button
+        // on wide screens and a Back arrow on compact ones (S4a full-screen page).
+        String close = SETTINGS_DIALOG + " button[title=Close], " + SETTINGS_DIALOG + " button[title=Back]";
         awaitJsTrue("document.querySelector('" + close + "') !== null");
         JsVisibility.expectClicked(evalString(JsVisibility.click("document.querySelector('" + close + "')")));
         awaitJsTrue("document.querySelector('" + SETTINGS_DIALOG + "') === null && !!document.querySelector('.host-list, .empty')");

@@ -1267,8 +1267,20 @@ public abstract class UsagePortsJourneySupport {
                 + "node.dispatchEvent(new Event('change',{bubbles:true})); return 'set';})()");
     }
 
+    /**
+     * Clicks only a visible, topmost target, retrying while a route/sheet transition still has it covered
+     * (the guard clicks nothing on failure, so a retry can never double-click). The last page-side reason
+     * is raised when the target never becomes tappable.
+     */
     private void click(String selector) throws Exception {
-        JsVisibility.expectClicked(evalString(JsVisibility.click("document.querySelector(" + JSONObject.quote(selector) + ")")));
+        long deadline = SystemClock.uptimeMillis() + 10_000;
+        String result;
+        do {
+            result = evalString(JsVisibility.click("document.querySelector(" + JSONObject.quote(selector) + ")"));
+            if (!result.startsWith("FAILED: ")) return;
+            Thread.sleep(250);
+        } while (SystemClock.uptimeMillis() < deadline);
+        JsVisibility.expectClicked(result);
     }
 
     private void awaitJsTrue(String expression) throws Exception {

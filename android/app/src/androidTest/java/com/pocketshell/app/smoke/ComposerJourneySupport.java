@@ -1843,6 +1843,13 @@ public abstract class ComposerJourneySupport {
     }
 
     private void attachSession(String suffixName) throws Exception {
+        // A composer sheet restored open after a restart is a modal bottom sheet whose scrim
+        // covers the navigation (S4a); dismiss it the way a user does, with a scrim tap. The
+        // draft is persisted, so reopening the composer below restores it.
+        if ("true".equals(evalRaw("!!document.querySelector('[data-testid=prompt-composer-scrim]')"))) {
+            tapScrimAboveComposerSheet();
+            awaitJsTrue("!document.querySelector('[data-testid=prompt-composer]')", 10_000);
+        }
         if (!"sessions".equals(evalRaw("document.querySelector('.app-shell')?.dataset.homeSurface ?? ''"))) {
             click("[data-testid=open-sessions]");
         }
