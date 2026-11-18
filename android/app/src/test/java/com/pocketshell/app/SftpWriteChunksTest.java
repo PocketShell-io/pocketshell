@@ -47,4 +47,35 @@ public final class SftpWriteChunksTest {
         assertEquals(failure, observed);
         assertEquals("later bytes must not be sent after an unacknowledged write", 2, count[0]);
     }
+
+    @Test public void resumedChunkWritesAtTheRequestedFileOffsetWhileReadingFromTheChunkStart() throws Exception {
+        // #3191: a chunked attachment upload appends its next chunk at the
+        // byte the host already holds; packets must keep that file offset.
+        byte[] chunk = new byte[40 * 1024];
+        for (int index = 0; index < chunk.length; index++) chunk[index] = (byte) (index % 253);
+        List<long[]> calls = new ArrayList<>();
+        ByteArrayOutputStream remote = new ByteArrayOutputStream();
+        SftpWriteChunks.write((fileOffset, bytes, sourceOffset, length) -> {
+            calls.add(new long[] {fileOffset, sourceOffset, length});
+            remote.write(bytes, sourceOffset, length);
+        }, 512L * 1024L * 3L, chunk);
+        assertEquals(2, calls.size());
+        assertArrayEquals(new long[] {1572864L, 0L, 32768L}, calls.get(0));
+        assertArrayEquals(new long[] {1572864L + 32768L, 32768L, 8192L}, calls.get(1));
+        assertArrayEquals(chunk, remote.toByteArray());
+        assertThrows(IOException.class, () -> SftpWriteChunks.write((a, b, c, d) -> { }, -1L, chunk));
+    }
+
+    @Test public void chunkRefusalsGuardEveryResumableUploadState() {
+        // #3191: offset 0 never overwrites; a later chunk needs its .part, as a
+        // regular file, ending exactly where the chunk starts.
+        assertEquals(null, SftpWriteChunks.chunkRefusal(0, false, false, 0));
+        assertEquals("SFTP_FILE_EXISTS", SftpWriteChunks.chunkRefusal(0, true, true, 0));
+        assertEquals(null, SftpWriteChunks.chunkRefusal(524_288, true, true, 524_288));
+        assertEquals("SFTP_NOT_FOUND", SftpWriteChunks.chunkRefusal(524_288, false, false, 0));
+        assertEquals("SFTP_NOT_FILE", SftpWriteChunks.chunkRefusal(524_288, true, false, 524_288));
+        assertEquals("a lost chunk", "SFTP_OFFSET_MISMATCH", SftpWriteChunks.chunkRefusal(1_048_576, true, true, 524_288));
+        assertEquals("a duplicated chunk", "SFTP_OFFSET_MISMATCH", SftpWriteChunks.chunkRefusal(524_288, true, true, 1_048_576));
+        assertEquals("INVALID_ARGUMENT", SftpWriteChunks.chunkRefusal(-1, false, false, 0));
+    }
 }

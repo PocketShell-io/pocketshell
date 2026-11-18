@@ -17,6 +17,13 @@ answers the phone's terminal sent back to its DECRQM queries; the runner reads
 that file over its own SSH connection (PS3161_HOST_NAME). It must hold one
 well-formed answer per query, so the DECRQM handler that threw in the shipped
 bundle provably ran — independently of what the journey read on screen.
+
+#3191: the composer-attach journeys (J31) record what they picked; the runner
+re-reads the host over its OWN SSH connection (ATTACHMENT_PROOF_NAME): the
+three generated Pixel-like photos (627,672 / 667,110 / 1,700,000 bytes, all
+over the editor's 512 KiB limit) must be on the host byte-exact, the
+cancelled upload must have left nothing (its `.part` was seen mid-flight),
+and the over-limit file must never have been written.
 """
 
 from __future__ import annotations
@@ -34,6 +41,9 @@ from pathlib import Path
 
 REQUIRED_CLASS = "com.pocketshell.app.smoke.J01ConnectAndTrustJourney"
 METHOD_CLASSES = {'aThreeFileUploadShowsTheBarMidFlightAndLeavesNoResidueAfterCompletion': 'com.pocketshell.app.smoke.J20ComposerUploadProgressJourney',
+ 'pickedPhonePhotosLandByteExactOnTheHost': 'com.pocketshell.app.smoke.J31ComposerAttachPhotosJourney',
+ 'overLimitFileShowsAReadableChipErrorWithoutADiagnostic': 'com.pocketshell.app.smoke.J31ComposerAttachPhotosJourney',
+ 'cancellingMidUploadLeavesNothingOnTheHost': 'com.pocketshell.app.smoke.J31ComposerAttachPhotosJourney',
  'androidShareStreamsReachTheChosenSessionOnTheRealHost': 'com.pocketshell.app.smoke.J11ShareUploadJourney',
  'androidSingleShareReachesTheChosenSessionOnTheRealHost': 'com.pocketshell.app.smoke.J11ShareUploadJourney',
  'cdInsideOpenShellKeepsTheTerminalMounted': 'com.pocketshell.app.smoke.J28CdKeepsTerminalJourney',
@@ -68,6 +78,11 @@ REGRESSION_METHODS = frozenset({
     "slowRebindCommandsCannotCreateANewDeadline",
 })
 HOST_BYTES_NAME = "host-ime-bytes.hex"
+# #3191: written by scripts/connected-js-shared-app.sh from its own SSH reads.
+ATTACHMENT_PROOF_NAME = "ps3191-host-proof.json"
+# The maintainer's two failing photos and the third 1.67 MB pick, in pick order.
+ATTACHMENT_PHOTO_SIZES = (627_672, 667_110, 1_700_000)
+EDITOR_READ_LIMIT = 512 * 1024
 # #3039: kept by the journeys, pulled by scripts/connected-js-shared-app.sh.
 PHASE_TRACE_NAMES = ("ps3039-journal-session-end.json", "ps3039-journal-client-drop.json")
 FORBIDDEN_PHASES = frozenset({"reconnecting", "lost"})
@@ -226,6 +241,46 @@ def validate_j27_host(path: Path) -> None:
     rows = [r for r in sessions if isinstance(r, dict) and str(r.get("workspace", "")).endswith(f"/{run}-j27/proj-one")] if isinstance(sessions, list) else []
     if len(rows) != 1 or rows[0].get("phase") != "running" or rows[0].get("alive") is not True:
         raise GateFailure("the host has no single running session in the folder picked in New session")
+
+
+def validate_attachment_host(path: Path) -> None:
+    """#3191: the runner's own SSH read of what the composer-attach journeys left on the host."""
+    if not path.is_file():
+        raise GateFailure(f"the independent #3191 attachment host proof is missing: {path}")
+    try:
+        proof = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as error:
+        raise GateFailure(f"the #3191 attachment host proof is unreadable: {error}") from error
+    if not isinstance(proof, dict):
+        raise GateFailure("the #3191 attachment host proof is not an object")
+    photos = proof.get("photos")
+    files = photos.get("files") if isinstance(photos, dict) else None
+    token = photos.get("token") if isinstance(photos, dict) else None
+    if not isinstance(files, list) or not isinstance(token, str) or not token:
+        raise GateFailure("the #3191 proof has no picked photos")
+    if tuple(f.get("size") for f in files if isinstance(f, dict)) != ATTACHMENT_PHOTO_SIZES:
+        raise GateFailure(f"the picked photos must be {ATTACHMENT_PHOTO_SIZES} bytes, in order")
+    if not all(size > EDITOR_READ_LIMIT for size in ATTACHMENT_PHOTO_SIZES):
+        raise GateFailure("every photo must exceed the editor's 512 KiB limit to reproduce #3191")
+    for item in files:
+        remote = str(item.get("remotePath", ""))
+        if token not in str(item.get("name", "")) or "/.pocketshell/attachments/" not in remote:
+            raise GateFailure(f"photo {item.get('name')} was not staged in this run's attachment directory")
+        if item.get("hostSize") != item.get("size") or item.get("hostSha256") != item.get("sha256") or not item.get("sha256"):
+            raise GateFailure(f"the host does not hold {item.get('name')} byte-exact")
+    cancelled = proof.get("cancelled")
+    if not isinstance(cancelled, dict) or not cancelled.get("token"):
+        raise GateFailure("the #3191 proof has no cancelled upload")
+    seen = str(cancelled.get("partSeenMidFlight", ""))
+    if cancelled["token"] not in seen or not seen.endswith(".part"):
+        raise GateFailure("the cancelled upload's .part file was not seen mid-flight")
+    if cancelled.get("hostMatches") != []:
+        raise GateFailure(f"the cancelled upload left files on the host: {cancelled.get('hostMatches')}")
+    over = proof.get("overLimit")
+    if not isinstance(over, dict) or not over.get("name") or not isinstance(over.get("hostMatches"), list):
+        raise GateFailure("the #3191 proof has no over-limit pick")
+    if any(str(over["name"]) in str(match) for match in over["hostMatches"]):
+        raise GateFailure("the over-limit file reached the host")
 
 
 def validate_guest_viewport(directory: Path) -> None:
@@ -429,7 +484,50 @@ def self_test() -> int:
                 print(f"FAIL: {label}", file=sys.stderr)
             else:
                 print(f"ok: {label}")
-    total = len(cases) + len(trace_cases)+len(guest_cases)+len(j27_cases)+len(cases_3161)
+        photo_files = [
+            {"name": f"PXL_t1_{index + 1}.jpg", "size": size, "sha256": f"{index}" * 64,
+             "remotePath": f"/home/testuser/.pocketshell/attachments/s/20261118-101500-0{index + 1}-PXL_t1_{index + 1}.jpg",
+             "hostSize": size, "hostSha256": f"{index}" * 64}
+            for index, size in enumerate(ATTACHMENT_PHOTO_SIZES)
+        ]
+        attach_good = {
+            "photos": {"token": "t1", "files": photo_files},
+            "cancelled": {"token": "c1", "partSeenMidFlight": "/home/testuser/.pocketshell/attachments/s/x-VID_c1.mp4.part", "hostMatches": []},
+            "overLimit": {"token": "o1", "name": "VID_o1.jpg", "hostMatches": ["/home/testuser/.pocketshell/attachments/s/x-PXL_o1_ok.jpg"]},
+        }
+        def altered(section: str, **changes: object) -> dict:
+            return {**attach_good, section: {**attach_good[section], **changes}}
+        attach_cases = [
+            ("#3191 proof passes when every host read matches", attach_good, True),
+            ("#3191 a truncated photo on the host fails",
+             altered("photos", files=[{**photo_files[0], "hostSize": 524_288}, *photo_files[1:]]), False),
+            ("#3191 a re-encoded photo on the host fails",
+             altered("photos", files=[*photo_files[:2], {**photo_files[2], "hostSha256": "f" * 64}]), False),
+            ("#3191 photos under the editor limit cannot stand in",
+             altered("photos", files=[{**f, "size": 1000, "hostSize": 1000} for f in photo_files]), False),
+            ("#3191 a missing photo fails", altered("photos", files=photo_files[:2]), False),
+            ("#3191 a cancelled upload left on the host fails",
+             altered("cancelled", hostMatches=["/home/testuser/.pocketshell/attachments/s/x-VID_c1.mp4.part"]), False),
+            ("#3191 a cancel with no .part seen mid-flight fails", altered("cancelled", partSeenMidFlight=""), False),
+            ("#3191 an over-limit file on the host fails",
+             altered("overLimit", hostMatches=["/home/testuser/.pocketshell/attachments/s/x-VID_o1.jpg"]), False),
+            ("#3191 proof missing fails", None, False),
+        ]
+        for index, (label, proof, expected_pass) in enumerate(attach_cases):
+            path = root / f"attach-{index}.json"
+            if proof is not None:
+                path.write_text(json.dumps(proof), encoding="utf-8")
+            try:
+                validate_attachment_host(path)
+                passed = True
+            except GateFailure:
+                passed = False
+            if passed != expected_pass:
+                failures += 1
+                print(f"FAIL: {label}", file=sys.stderr)
+            else:
+                print(f"ok: {label}")
+    total = len(cases) + len(trace_cases)+len(guest_cases)+len(j27_cases)+len(cases_3161)+len(attach_cases)
     print(f"Shared-app result guard self-test: {total - failures}/{total} checks passed")
     return 1 if failures else 0
 
@@ -445,6 +543,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--evidence-dir", type=Path)
     parser.add_argument("--guest-host-proof", type=Path)
     parser.add_argument("--j27-host-proof", type=Path)
+    parser.add_argument("--attachment-host-proof", type=Path)
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args(argv)
     if args.self_test:
@@ -458,6 +557,8 @@ def main(argv: list[str] | None = None) -> int:
         validate_j27_host(j27_proof)
         host_3161 = args.results_dir / PS3161_HOST_NAME
         validate_3161_host(host_3161)
+        attachment_proof = args.attachment_host_proof or args.results_dir / ATTACHMENT_PROOF_NAME
+        validate_attachment_host(attachment_proof)
         validate_guest_viewport(args.evidence_dir or args.results_dir)
         traces = validate_phase_traces(args.results_dir)
         if args.evidence_dir:
@@ -474,6 +575,8 @@ def main(argv: list[str] | None = None) -> int:
                 shutil.copy2(j27_proof, args.evidence_dir / j27_proof.name)
             if host_3161.resolve() != (args.evidence_dir / PS3161_HOST_NAME).resolve():
                 shutil.copy2(host_3161, args.evidence_dir / PS3161_HOST_NAME)
+            if attachment_proof.resolve() != (args.evidence_dir / attachment_proof.name).resolve():
+                shutil.copy2(attachment_proof, args.evidence_dir / attachment_proof.name)
             if host_bytes.resolve() != (args.evidence_dir / HOST_BYTES_NAME).resolve():
                 shutil.copy2(host_bytes, args.evidence_dir / HOST_BYTES_NAME)
     except GateFailure as error:
@@ -484,6 +587,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"PASS: the host received exactly the scripted IME bytes ({EXPECTED_IME_BYTES_HEX})")
     print(f"PASS: #3039 phase traces kept and free of reconnects: {', '.join(PHASE_TRACE_NAMES)}")
     print(f"PASS: #3161 the host received a DECRPM answer for each of {', '.join(PS3161_QUERIED_MODES)}")
+    print("PASS: #3191 picked photos are byte-exact on the host; the cancelled and over-limit files left nothing")
     return 0
 
 

@@ -495,10 +495,17 @@ public class J26S1LayoutJourney extends SharedAppDockerJourneyTest {
             "[...document.querySelectorAll('button[title=Settings]')].find((b)=>b.offsetParent!==null)";
     private static final String SIZE_INPUT = SETTINGS_DIALOG + " input#terminal-size";
 
-    /** Opens Settings (whichever visible gear), selects Appearance, and waits for the terminal size control. */
+    /**
+     * Opens Settings, selects Appearance, and waits for the terminal size control. From the host list the
+     * picker's gear is the door; inside a workspace on a phone the gear is gone (S2, #3121) and Settings is
+     * the overflow (⋮) menu's row, the same way a user reaches it.
+     */
     private void openAppearanceSettings() throws Exception {
-        awaitJsTrue("!!" + VISIBLE_SETTINGS_BUTTON);
-        JsVisibility.expectClicked(evalString(JsVisibility.click(VISIBLE_SETTINGS_BUTTON)));
+        if ("true".equals(evalString("String(!!" + VISIBLE_SETTINGS_BUTTON + ")"))) {
+            JsVisibility.expectClicked(evalString(JsVisibility.click(VISIBLE_SETTINGS_BUTTON)));
+        } else {
+            openHostTool("settings");
+        }
         String appearance = SETTINGS_DIALOG + " #settings-tab-appearance";
         awaitJsTrue("!!document.querySelector('" + appearance + "')");
         JsVisibility.expectClicked(evalString(JsVisibility.click("document.querySelector('" + appearance + "')")));

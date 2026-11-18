@@ -118,7 +118,7 @@ public final class SshCapabilityPluginGatewayTokenTest {
         // method that could hand back a token cannot appear unnoticed.
         assertEquals(Set.of("transportCapabilities", "connect", "cancelOperation", "getConnectionState",
                 "closeConnection", "scheduleClose", "cancelScheduledClose", "exec", "openPty", "readPty",
-                "writePty", "resizePty", "closePty", "sftpList", "sftpStat", "sftpRealPath", "sftpRead", "sftpWrite", "sftpWriteIfUnchanged",
+                "writePty", "resizePty", "closePty", "sftpList", "sftpStat", "sftpRealPath", "sftpRead", "sftpWrite", "sftpWriteChunk", "sftpWriteIfUnchanged",
                 "sftpMkdir", "sftpRename", "sftpDelete", "openPortForward", "closePortForward", "resourceSnapshot"),
                 pluginMethods(SshCapabilityPlugin.class));
         // ... and the capability report is a flag, nothing more.

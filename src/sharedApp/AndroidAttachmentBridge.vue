@@ -8,8 +8,9 @@ import { useSessionsStore } from '@ui/app/stores/sessions';
 import { useComposerStore } from '@ui/app/stores/composer';
 import { useProjectsStore } from '@ui/app/stores/projects';
 import { useWorkspaceRootsStore } from '@ui/app/stores/workspaceRoots';
+import type { AttachmentSource } from '@pocketshell/core';
 import { platformInput, type SharedContent } from '@/session/platformInput';
-import { androidAttachmentProgress } from '@/platform/android/attachments';
+import { releaseOpenedDocuments, sharedDocumentSources } from '@/platform/android/attachments';
 
 const router = useRouter();
 const projects = useProjectsStore();
@@ -19,12 +20,35 @@ const connection = useConnectionStore();
 const sessions = useSessionsStore();
 const composer = useComposerStore();
 const pending = shallowRef<SharedContent | null>(null);
+/** Each share's documents are opened as staging sources once, so a retry reuses them. */
+const shareSources = new WeakMap<SharedContent, AttachmentSource[]>();
+function sourcesFor(content: SharedContent): AttachmentSource[] {
+  let sources = shareSources.get(content);
+  if (!sources) {
+    sources = sharedDocumentSources(content.documents);
+    shareSources.set(content, sources);
+  }
+  return sources;
+}
+async function dismissShare(): Promise<void> {
+  const content = pending.value;
+  pending.value = null;
+  failure.value = '';
+  if (!content) return;
+  if (shareSources.has(content)) await releaseOpenedDocuments('share');
+  else await Promise.all(content.documents.map((document) => platformInput.releaseDocument(document)));
+}
 const failure = shallowRef('');
 let removeShare: (() => Promise<void>) | null = null;
 const targets = computed(() => connection.connectionId ? sessions.sessions : []);
 let disposed = false;
 onMounted(async () => {
-  const remove = await platformInput.listenForShares((content) => { pending.value = content; failure.value = content.failures.map((item) => item.message).join('\n'); });
+  const remove = await platformInput.listenForShares((content) => {
+    // A new share replaces one still waiting for a target.
+    if (pending.value) void dismissShare();
+    pending.value = content;
+    failure.value = content.failures.map((item) => `${item.name}: ${item.message}`).join('\n');
+  });
   if (disposed) await remove();
   else removeShare = remove;
 });
@@ -57,7 +81,7 @@ async function chooseTarget(index: number) {
     if (content.text) composer.seedPrompt(key, content.text);
     composer.setMode('docked');
     pending.value = null;
-    await composer.stage(key, { connectionId, scopeKey: attachmentScopeKey(session.name, session.workspace), sources: content.attachments });
+    await composer.stage(key, { connectionId, scopeKey: attachmentScopeKey(session.name, session.workspace), sources: sourcesFor(content) });
     const error = composer.states[key]?.error;
     if (error) { pending.value = content; failure.value = error; }
   } catch (error) {
@@ -81,19 +105,11 @@ async function chooseTarget(index: number) {
     <p v-if="!targets.length">Connect to a host and choose its session.</p>
     <button v-for="(session, index) in targets" :key="`${session.workspace}/${session.name}`" type="button" :disabled="busy" data-testid="android-share-session" :data-session-name="session.name" @click="chooseTarget(index)">{{ session.name }}</button>
     <p v-if="failure" role="alert">{{ failure }}</p>
-    <button type="button" @click="pending = null">Cancel</button>
-  </section>
-  <section v-if="androidAttachmentProgress" class="android-upload" role="status" data-testid="android-upload-progress"
-    :data-written="androidAttachmentProgress.batchBytesWritten" :data-total="androidAttachmentProgress.batchBytesTotal"
-    :data-file-count="androidAttachmentProgress.fileCount">
-    <span>Uploading {{ androidAttachmentProgress.fileName }} · {{ androidAttachmentProgress.fileIndex + 1 }}/{{ androidAttachmentProgress.fileCount }}</span>
-    <progress :value="androidAttachmentProgress.batchBytesWritten" :max="androidAttachmentProgress.batchBytesTotal" />
+    <button type="button" @click="dismissShare()">Cancel</button>
   </section>
 </template>
 
 <style scoped>
 .android-share { position: fixed; z-index: 1000; inset: max(var(--sp-3), env(safe-area-inset-top)) var(--sp-3) auto; max-height: 80dvh; overflow: auto; padding: var(--sp-4); background: var(--surface); color: var(--fg); border: 1px solid var(--border); box-shadow: var(--shadow-overlay); }
 .android-share button, .android-share select { display: block; min-height: 48px; width: 100%; margin-block: var(--sp-2); }
-.android-upload { position: fixed; z-index: 999; bottom: max(var(--sp-3), env(safe-area-inset-bottom)); inset-inline: var(--sp-3); padding: var(--sp-3); background: var(--surface); color: var(--fg); }
-.android-upload progress { display: block; width: 100%; }
 </style>

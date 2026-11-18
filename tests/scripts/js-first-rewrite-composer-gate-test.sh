@@ -161,7 +161,7 @@ def require_contract(source: str, packaged_script: str) -> None:
         raise AssertionError("packaged wrapper ignores the signed-upgrade lane status")
     for lane in ("smoke_status", "lifecycle_status", "usage_status", "files_status", "composer_status",
                  "hotkeys_status", "hotkeys_junit_status", "durable_status", "settings_status",
-                 "account_sync_status", "account_picker_status", "gateway_status", "shared_app_status", "s1_layout_status", "account_vault_status", "key_vault_status", "signed_upgrade_status", "voice_settings_status", "forward_service_status", "copy_status"):
+                 "account_sync_status", "account_picker_status", "gateway_status", "shared_app_status", "s1_layout_status", "voice_composer_status", "account_vault_status", "key_vault_status", "signed_upgrade_status", "voice_settings_status", "forward_service_status", "copy_status"):
         if lane not in packaged_script:
             raise AssertionError(f"packaged wrapper does not aggregate {lane}")
     for command, status in (("scripts/connected-js-voice-settings.sh", "voice_settings_status"),
@@ -668,6 +668,7 @@ with tempfile.TemporaryDirectory(prefix="js rewrite live lane reports ") as temp
         ("check-js-gateway-results.py", "gateway"),
         ("check-js-shared-app-results.py", "shared-app"),
         ("check-js-s1-layout-results.py", "s1-layout"),
+        ("check-js-voice-composer-results.py", "voice-composer"),
         ("check-js-account-vault-results.py", "account-vault"),
         ("check-js-voice-settings-results.py", "voice-settings"),
         ("check-js-forward-service-results.py", "forward-service"),
@@ -728,7 +729,7 @@ with tempfile.TemporaryDirectory(prefix="js rewrite live lane reports ") as temp
         raise AssertionError(f"isolated Composer phases did not accept the real run's duplicated summary copy: {result.stderr!r}")
     checked_lines = result_trace.read_text().splitlines()
     checked_lanes = [line.split("\t", 1)[0] for line in checked_lines]
-    if checked_lanes != ["smoke", "lifecycle", "usage-ports", "settings", "account-sync", "account-picker", "gateway", "shared-app", "s1-layout", "account-vault", "key-vault", "durable-storage", "signed-upgrade", "voice-settings", "forward-service", *(["composer"] * 4)]:
+    if checked_lanes != ["smoke", "lifecycle", "usage-ports", "settings", "account-sync", "account-picker", "gateway", "shared-app", "s1-layout", "voice-composer", "account-vault", "key-vault", "durable-storage", "signed-upgrade", "voice-settings", "forward-service", *(["composer"] * 4)]:
         raise AssertionError(f"the always-run report guard stopped before all present lanes: {checked_lanes!r}")
     for line, phase in zip(checked_lines[-4:], phase_cases, strict=True):
         if f"/phase-{phase} --phase {phase}" not in line:
@@ -750,7 +751,7 @@ subprocess.run(["bash", "-n", str(packaged_lanes_path)], check=True)
 def exercise_packaged_lanes(label: str, *, preflight: int = 0, smoke: int = 0, lifecycle: int = 0,
                             usage: int = 0, files: int = 0, composer: int = 0, durable: int = 0, settings: int = 0,
                             voice_settings: int = 0, forward_service: int = 0,
-                            account_sync: int = 0, account_picker: int = 0, gateway: int = 0, shared_app: int = 0, s1_layout: int = 0,
+                            account_sync: int = 0, account_picker: int = 0, gateway: int = 0, shared_app: int = 0, s1_layout: int = 0, voice_composer: int = 0,
                             account_vault: int = 0, key_vault: int = 0, signed_upgrade: int = 0, omit_junit: bool = False,
                             fail_junit_copy: bool = False, hotkeys: int = 0,
                             hotkeys_checker: int = 0, omit_hotkeys_junit: bool = False) -> None:
@@ -882,6 +883,7 @@ def exercise_packaged_lanes(label: str, *, preflight: int = 0, smoke: int = 0, l
             ("connected-js-durable-storage.sh", "durable-storage", "FIXTURE_DURABLE_STATUS"),
             ("connected-js-shared-app.sh", "shared-app", "FIXTURE_SHARED_APP_STATUS"),
             ("connected-js-s1-layout.sh", "s1-layout", "FIXTURE_S1_LAYOUT_STATUS"),
+            ("connected-js-voice-composer.sh", "voice-composer", "FIXTURE_VOICE_COMPOSER_STATUS"),
             ("connected-js-account-vault-docker.sh", "account-vault", "FIXTURE_ACCOUNT_VAULT_STATUS"),
             ("connected-js-key-vault-docker.sh", "key-vault", "FIXTURE_KEY_VAULT_STATUS"),
             ("connected-js-key-vault-signed-upgrade.sh", "signed-upgrade", "FIXTURE_SIGNED_UPGRADE_STATUS"),
@@ -919,6 +921,7 @@ def exercise_packaged_lanes(label: str, *, preflight: int = 0, smoke: int = 0, l
             "FIXTURE_DURABLE_STATUS": str(durable),
             "FIXTURE_SHARED_APP_STATUS": str(shared_app),
             "FIXTURE_S1_LAYOUT_STATUS": str(s1_layout),
+            "FIXTURE_VOICE_COMPOSER_STATUS": str(voice_composer),
             "FIXTURE_ACCOUNT_VAULT_STATUS": str(account_vault),
             "FIXTURE_KEY_VAULT_STATUS": str(key_vault),
             "FIXTURE_SIGNED_UPGRADE_STATUS": str(signed_upgrade),
@@ -955,11 +958,11 @@ def exercise_packaged_lanes(label: str, *, preflight: int = 0, smoke: int = 0, l
             f"Packaged API 35 lane statuses: smoke={smoke} lifecycle={lifecycle} "
             f"usage-ports={usage} files={files} composer={composer} composer-junit-copy=0 "
             f"composer-junit=0 hotkeys={hotkeys} hotkeys-junit={expected_hotkeys_junit} "
-            f"durable-storage={durable} settings={settings} voice-settings={voice_settings} forward-service={forward_service} account-sync={account_sync} account-picker={account_picker} gateway={gateway} shared-app={shared_app} s1-layout={s1_layout} account-vault={account_vault} key-vault={key_vault} "
+            f"durable-storage={durable} settings={settings} voice-settings={voice_settings} forward-service={forward_service} account-sync={account_sync} account-picker={account_picker} gateway={gateway} shared-app={shared_app} s1-layout={s1_layout} voice-composer={voice_composer} account-vault={account_vault} key-vault={key_vault} "
             f"signed-upgrade={signed_upgrade} smoke-junit-copy={expected_copy}"
         )
         expected_exit = 1 if any((smoke, lifecycle, usage, files, composer, hotkeys,
-                                  expected_hotkeys_junit, durable, settings, voice_settings, forward_service, account_sync, account_picker, gateway, shared_app, s1_layout, account_vault, key_vault,
+                                  expected_hotkeys_junit, durable, settings, voice_settings, forward_service, account_sync, account_picker, gateway, shared_app, s1_layout, voice_composer, account_vault, key_vault,
                                   signed_upgrade, expected_copy)) else 0
         if result.returncode != expected_exit or expected_summary not in result.stdout:
             raise AssertionError(
@@ -968,7 +971,7 @@ def exercise_packaged_lanes(label: str, *, preflight: int = 0, smoke: int = 0, l
             )
         if [line.split("\t", 1)[0] for line in trace_lines] != [
             "smoke", "lifecycle", "usage-ports", "files", "durable-storage", "composer", "hotkeys",
-            "hotkeys-check", "settings", "voice-settings", "account-sync", "account-picker", "gateway", "shared-app", "s1-layout", "account-vault", "forward-service", "key-vault", "signed-upgrade",
+            "hotkeys-check", "settings", "voice-settings", "account-sync", "account-picker", "gateway", "shared-app", "s1-layout", "voice-composer", "account-vault", "forward-service", "key-vault", "signed-upgrade",
         ]:
             raise AssertionError(f"{label}: wrapper failed to execute every lane in order: {trace_lines!r}")
         if "--run-id js2861-run-1" not in trace_lines[1]:
@@ -1010,8 +1013,8 @@ def exercise_packaged_lanes(label: str, *, preflight: int = 0, smoke: int = 0, l
             raise AssertionError(f"{label}: settings lane arguments/status were not preserved: {trace_lines[8]!r}")
         if trace_lines[9] != f"voice-settings\t{voice_settings}\t--suffix i2855ci --run-id js2857voice-run-1 --test-only":
             raise AssertionError(f"{label}: voice-settings lane arguments/status were not preserved: {trace_lines[9]!r}")
-        if trace_lines[16] != f"forward-service\t{forward_service}\t--suffix i3097forward --port 2243 --run-id js3097-run-1":
-            raise AssertionError(f"{label}: forward-service lane arguments/status were not preserved: {trace_lines[16]!r}")
+        if trace_lines[17] != f"forward-service\t{forward_service}\t--suffix i3097forward --port 2243 --run-id js3097-run-1":
+            raise AssertionError(f"{label}: forward-service lane arguments/status were not preserved: {trace_lines[17]!r}")
         if trace_lines[10] != f"account-sync\t{account_sync}\t--suffix i2855ci --run-id js3020-run-1 --test-only":
             raise AssertionError(f"{label}: account-sync lane arguments/status were not preserved: {trace_lines[10]!r}")
         if trace_lines[11] != f"account-picker\t{account_picker}\t--suffix i2855ci --run-id js3063-run-1 --test-only":
@@ -1022,8 +1025,10 @@ def exercise_packaged_lanes(label: str, *, preflight: int = 0, smoke: int = 0, l
         if trace_lines[14] != f"s1-layout\t{s1_layout}\t{expected_s1_args}":
             raise AssertionError(f"{label}: s1-layout lane arguments/status were not preserved: {trace_lines[14]!r}")
         expected_vault_args = "--suffix ikvgwlane --port 2243 --container pocketshell-test-agents-2243 --run-id vaultw4-run-1 --test-only"
-        if trace_lines[15] != f"account-vault\t{account_vault}\t{expected_vault_args}":
-            raise AssertionError(f"{label}: account-vault lane arguments/status were not preserved: {trace_lines[15]!r}")
+        if trace_lines[15] != f"voice-composer\t{voice_composer}\t--suffix i2855ci --port 2243 --test-only":
+            raise AssertionError(f"{label}: voice-composer lane arguments/status were not preserved: {trace_lines[15]!r}")
+        if trace_lines[16] != f"account-vault\t{account_vault}\t{expected_vault_args}":
+            raise AssertionError(f"{label}: account-vault lane arguments/status were not preserved: {trace_lines[16]!r}")
         expected_upgrade_args = "--port 2244 --container pocketshell-test-agents-2244 --run-id up2926-run-1"
         if trace_lines[-1] != f"signed-upgrade\t{signed_upgrade}\t{expected_upgrade_args}":
             raise AssertionError(f"{label}: signed-upgrade lane arguments/status were not preserved: {trace_lines[-1]!r}")
@@ -1058,6 +1063,7 @@ exercise_packaged_lanes("voice-settings failure is fail-closed", voice_settings=
 exercise_packaged_lanes("forward-service failure is fail-closed", forward_service=43)
 exercise_packaged_lanes("account-sync failure is fail-closed", account_sync=33)
 exercise_packaged_lanes("account-picker failure is fail-closed", account_picker=35)
+exercise_packaged_lanes("voice-composer failure is fail-closed", voice_composer=47)
 exercise_packaged_lanes("gateway failure is fail-closed", gateway=37)
 exercise_packaged_lanes("durable-storage failure is fail-closed", durable=31)
 exercise_packaged_lanes("shared-app failure is fail-closed", shared_app=27)

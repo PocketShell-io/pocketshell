@@ -30,7 +30,7 @@ ROOT = Path(__file__).resolve().parent.parent
 MANIFEST = ROOT / "scripts/js-journey-class-manifest.json"
 DEFAULT_RESULTS_DIR = ROOT / "android/app/build/outputs/androidTest-results/connected/debug"
 SELF_TEST_CASES = 9
-REQUIRED_CLASS_COUNT = 27
+REQUIRED_CLASS_COUNT = 28
 
 
 def _new_result(required: list[str]) -> dict[str, Any]:
@@ -297,7 +297,7 @@ def self_test() -> int:
     green = [(name, "runsJourney", "passed") for name in required]
     first, last = required[0], required[-1]
     probes: list[tuple[str, list[tuple[str, str, str]] | None, bool]] = [
-        ("exact non-empty 27-class journey report passes", green, True),
+        ("exact non-empty 28-class journey report passes", green, True),
         ("missing reports block", None, False),
         ("missing journey class blocks", [case for case in green if case[0] != first], False),
         ("zero tests block", [(name, "", "zero") for name in required], False),

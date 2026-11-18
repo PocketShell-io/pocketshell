@@ -23,6 +23,13 @@ import {
   type FileEditSaveVerdict,
   type RemoteFileMetadata,
 } from '@pocketshell/core';
+import {
+  ATTACHMENT_PART_SUFFIX,
+  ATTACHMENT_WRITE_CHUNK_BYTES,
+  MAX_ATTACHMENT_FILE_BYTES,
+  STALE_ATTACHMENT_PART_MS,
+  attachmentTooLargeMessage,
+} from './attachmentLimits';
 import type {
   NativeSshCapabilityPlugin,
   SshCapabilityPlugin,
@@ -30,6 +37,10 @@ import type {
   SshSftpEntry,
 } from '../native/sshCapability';
 
+/**
+ * The text editor's read/save limit. Attachment uploads have their own,
+ * much larger limit in ./attachmentLimits and stream in chunks (#3191).
+ */
 export const MAX_SFTP_FILE_BYTES = 512 * 1024;
 export const DEFAULT_FILE_READ_BYTES = MAX_SFTP_FILE_BYTES;
 
@@ -85,9 +96,37 @@ export interface FileUploadResult {
   bytesWritten: number;
 }
 
+/**
+ * One file to upload as an attachment, read lazily in bounded chunks (#3191).
+ * `read` returns up to `maxBytes` from `offset`, and fewer only at the end.
+ */
 export interface AttachmentSource {
   name: string;
-  bytes: Uint8Array;
+  mimeType?: string | null;
+  /** The size the source reported up front, or null when unknown. */
+  sizeBytes: number | null;
+  read(offset: number, maxBytes: number): Promise<{ bytes: Uint8Array; eof: boolean }>;
+}
+
+/** An in-memory attachment (a pasted image, an annotated drawing). */
+export function bytesAttachmentSource(name: string, bytes: Uint8Array, mimeType: string | null = null): AttachmentSource {
+  return {
+    name,
+    mimeType,
+    sizeBytes: bytes.byteLength,
+    async read(offset, maxBytes) {
+      const end = Math.min(bytes.byteLength, offset + maxBytes);
+      return { bytes: bytes.subarray(offset, end), eof: end >= bytes.byteLength };
+    },
+  };
+}
+
+/** Thrown inside an upload the user cancelled; its partial file is removed. */
+export class AttachmentUploadCancelled extends Error {
+  constructor() {
+    super('Upload cancelled.');
+    this.name = 'AttachmentUploadCancelled';
+  }
 }
 
 export interface StagedAttachment {
@@ -99,7 +138,11 @@ export interface StagedAttachment {
 
 export interface AttachmentStageFailure {
   sourceName: string;
+  /** The source's position in the requested batch. */
+  sourceIndex: number;
   message: string;
+  /** True when the user cancelled this file; not an error to show. */
+  cancelled?: true;
 }
 
 export interface AttachmentStageResult {
@@ -161,7 +204,7 @@ export function createFileWorkspaceService(
   if (rootPath == null) throw new FileWorkspaceError('invalid-path', 'The file workspace root is invalid.');
   const normalizedRoot: string = rootPath;
   const fileCapability = capability as SshCapabilityPlugin &
-    Pick<NativeSshCapabilityPlugin, 'sftpWriteIfUnchanged'>;
+    Pick<NativeSshCapabilityPlugin, 'sftpWriteIfUnchanged' | 'sftpWriteChunk'>;
   currentDirectory = resolvePath(configuration.initialDirectory ?? normalizedRoot, normalizedRoot);
 
   function assertCurrent(): void {
@@ -440,13 +483,111 @@ export function createFileWorkspaceService(
     await checkedResponse(capability.sftpMkdir(options), options.requestId);
   }
 
+  /**
+   * Stream one attachment to `<path>.part` in bounded chunks, then rename it
+   * into place. A failure or cancellation removes the partial file, so the
+   * host never keeps a truncated attachment under its final name.
+   */
+  async function uploadStreamed(
+    path: string,
+    source: AttachmentSource,
+    maxFileBytes: number,
+    isCancelled: () => boolean,
+    onProgress: (bytesWritten: number) => void,
+  ): Promise<number> {
+    const partPath = `${path}${ATTACHMENT_PART_SUFFIX}`;
+    let offset = 0;
+    let created = false;
+    try {
+      for (;;) {
+        if (isCancelled()) throw new AttachmentUploadCancelled();
+        const chunk = await source.read(offset, ATTACHMENT_WRITE_CHUNK_BYTES);
+        assertCurrent();
+        if (!(chunk?.bytes instanceof Uint8Array) || chunk.bytes.byteLength > ATTACHMENT_WRITE_CHUNK_BYTES) {
+          throw new FileWorkspaceError('invalid-content', 'The file could not be read. Pick it again.');
+        }
+        const length = chunk.bytes.byteLength;
+        if (offset + length > maxFileBytes) {
+          throw new FileWorkspaceError('file-too-large', attachmentTooLargeMessage(source.name, source.mimeType, offset + length, maxFileBytes));
+        }
+        if (length > 0 || !created) {
+          if (isCancelled()) throw new AttachmentUploadCancelled();
+          const options = { ...requestOptions(partPath), offset, dataBase64: encodeBase64(chunk.bytes) };
+          const response = await checkedResponse(fileCapability.sftpWriteChunk(options), options.requestId);
+          created = true;
+          if (response.bytesWritten !== length || response.sizeBytes !== offset + length) {
+            throw new FileWorkspaceError('invalid-response', 'The server did not confirm the whole file was written.');
+          }
+          offset += length;
+          onProgress(offset);
+        }
+        if (chunk.eof === true) break;
+        if (length === 0) throw new FileWorkspaceError('invalid-content', 'The file stopped before it was complete. Pick it again.');
+      }
+      if (source.sizeBytes != null && offset !== source.sizeBytes) {
+        throw new FileWorkspaceError('file-changed', 'The selected file changed while it was uploading. Pick it again.');
+      }
+      if (isCancelled()) throw new AttachmentUploadCancelled();
+      const options = { ...requestOptions(partPath), destination: path };
+      await checkedResponse(capability.sftpRename(options), options.requestId);
+      created = false;
+      return offset;
+    } catch (error) {
+      if (created) await removeQuietly(partPath);
+      throw error;
+    }
+  }
+
+  async function removeQuietly(path: string): Promise<void> {
+    try {
+      const options = requestOptions(path);
+      await checkedResponse(capability.sftpDelete(options), options.requestId);
+    } catch {
+      // Best-effort: a dropped connection cannot remove it here. The next
+      // upload to this folder sweeps it once stale (sweepStaleParts).
+    }
+  }
+
+  /**
+   * Remove `.part` files an earlier upload abandoned (a dropped connection
+   * leaves one its own cleanup could not delete). Only regular files older
+   * than STALE_ATTACHMENT_PART_MS: a live upload refreshes its mtime on every
+   * chunk, and this batch's own `.part` names do not exist yet. Best-effort.
+   */
+  async function sweepStaleParts(entries: readonly FileWorkspaceEntry[], nowMillis: number): Promise<Set<string>> {
+    const removed = new Set<string>();
+    for (const entry of entries) {
+      if (entry.type !== 'file' || !entry.name.endsWith(ATTACHMENT_PART_SUFFIX)) continue;
+      if (!(entry.modifiedEpochMs > 0) || nowMillis - entry.modifiedEpochMs < STALE_ATTACHMENT_PART_MS) continue;
+      try {
+        const options = requestOptions(entry.path);
+        await checkedResponse(capability.sftpDelete(options), options.requestId);
+        removed.add(entry.name);
+      } catch {
+        assertCurrent();
+      }
+    }
+    return removed;
+  }
+
   async function uploadAttachmentBatch(input: {
     directory: string;
     scopeKey: string;
     timestamp: string;
     attachments: readonly AttachmentSource[];
+    /** Whole batch cancelled (the composer was discarded). */
     isCancelled?: () => boolean;
+    /** One file cancelled from its chip; the rest of the batch continues. */
+    isSourceCancelled?: (index: number) => boolean;
+    /** Acknowledged bytes of one file, after each native write. */
+    onProgress?: (index: number, bytesWritten: number) => void;
+    /** Called when a file starts uploading. */
+    onStart?: (index: number) => void;
+    maxFileBytes?: number;
+    /** Wall clock for the stale `.part` sweep (test seam). */
+    nowMillis?: number;
   }): Promise<AttachmentStageResult> {
+    const maxFileBytes = input.maxFileBytes ?? MAX_ATTACHMENT_FILE_BYTES;
     const base = resolvePath(input.directory);
     const scope = sanitizeAttachmentScope(input.scopeKey);
     const folder = joinRemoteChildPath(base, scope);
@@ -468,58 +609,62 @@ export function createFileWorkspaceService(
     }
     const prepared = input.attachments.map((source, index) => ({
       source,
+      index,
       filename: composeAttachmentFilename(input.timestamp, index, sanitizeFilename(source.name)),
     }));
     await ensureDirectory(directory);
     const initialListing = await listDirectoryAt(directory);
-    const occupiedNames = new Set(initialListing.entries.map((entry) => entry.name));
+    const swept = await sweepStaleParts(initialListing.entries, input.nowMillis ?? Date.now());
+    const occupiedNames = new Set(initialListing.entries.map((entry) => entry.name).filter((name) => !swept.has(name)));
 
-    for (const { source, filename } of prepared) {
+    for (const { source, index, filename } of prepared) {
       if (input.isCancelled?.() === true) {
         return { directory, decision: decideAttachmentStage(attempts, true), failures };
       }
+      const fail = (message: string) => {
+        attempts.push({ kind: 'failed' });
+        failures.push({ sourceName: source.name, sourceIndex: index, message });
+      };
 
       const child = joinRemoteChildPath(directory, filename);
-      if (!child.ok) {
-        attempts.push({ kind: 'failed' });
-        failures.push({ sourceName: source.name, message: 'The attachment name could not be made into a safe remote path.' });
+      if (!child.ok || !isRemotePathWithin(normalizedRoot, child.path)) {
+        fail('The attachment name could not be made into a safe remote path.');
         continue;
       }
-      if (!isRemotePathWithin(normalizedRoot, child.path)) {
-        attempts.push({ kind: 'failed' });
-        failures.push({ sourceName: source.name, message: 'The attachment name could not be made into a safe remote path.' });
+      if (occupiedNames.has(filename) || occupiedNames.has(`${filename}${ATTACHMENT_PART_SUFFIX}`)) {
+        fail('An attachment with this generated name already exists.');
         continue;
       }
-      if (occupiedNames.has(filename)) {
-        attempts.push({ kind: 'failed' });
-        failures.push({ sourceName: source.name, message: 'An attachment with this generated name already exists.' });
+      if (typeof source?.read !== 'function') {
+        fail('Attachment content could not be read.');
         continue;
       }
-      if (!(source.bytes instanceof Uint8Array) || source.bytes.byteLength > MAX_SFTP_FILE_BYTES) {
-        attempts.push({ kind: 'failed' });
-        failures.push({
-          sourceName: source.name,
-          message: source.bytes instanceof Uint8Array
-            ? `This file is larger than the ${formatBytes(MAX_SFTP_FILE_BYTES)} transfer limit.`
-            : 'Attachment content must be a byte array.',
-        });
+      if (source.sizeBytes != null && source.sizeBytes > maxFileBytes) {
+        fail(attachmentTooLargeMessage(source.name, source.mimeType, source.sizeBytes, maxFileBytes));
         continue;
       }
+      const sourceCancelled = () => input.isCancelled?.() === true || input.isSourceCancelled?.(index) === true;
 
       try {
-        const uploaded = await writeBytes(child.path, source.bytes);
-        const attachment = {
-          path: uploaded.path,
-          filename,
-          sourceName: source.name,
-          sizeBytes: uploaded.bytesWritten,
-        };
-        attempts.push({ kind: 'uploaded', attachment });
+        input.onStart?.(index);
+        const bytesWritten = await uploadStreamed(child.path, source, maxFileBytes, sourceCancelled,
+          (written) => input.onProgress?.(index, written));
+        attempts.push({
+          kind: 'uploaded',
+          attachment: { path: child.path, filename, sourceName: source.name, sizeBytes: bytesWritten },
+        });
         occupiedNames.add(filename);
       } catch (error) {
         assertCurrent();
         attempts.push({ kind: 'failed' });
-        failures.push({ sourceName: source.name, message: errorMessage(error) });
+        if (error instanceof AttachmentUploadCancelled) {
+          if (input.isCancelled?.() === true) {
+            return { directory, decision: decideAttachmentStage(attempts, true), failures };
+          }
+          failures.push({ sourceName: source.name, sourceIndex: index, message: error.message, cancelled: true });
+        } else {
+          failures.push({ sourceName: source.name, sourceIndex: index, message: errorMessage(error) });
+        }
       }
     }
 

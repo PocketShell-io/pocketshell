@@ -462,6 +462,46 @@ async function mockJourneys(browser, base, smoke) {
     }
   });
 
+  // #3128 (D44): the phone voice composer (launcher + dictation panel) is
+  // phone-only. At 1280 the closed and the open composer must look exactly as
+  // they do with nothing contributed; the screenshots hide only the terminal's
+  // run-specific text, so a before/after pair from two trees compares exactly.
+  await smoke.step('shared: at 1280 the composer carries no phone voice controls (D44)', async () => {
+    await sharedPage.setViewportSize({ width: 1280, height: 800 });
+    try {
+      await sharedPage.waitForFunction(() => innerWidth === 1280);
+      const close = sharedPage.locator('button[aria-label="Close the prompt panel"]');
+      if (await close.isVisible()) await close.click();
+      await sharedPage.locator('textarea[aria-label="Prompt draft"]').waitFor({ state: 'detached', timeout: 5_000 });
+      await sharedPage.waitForTimeout(400);
+      await sharedPage.evaluate(() => {
+        const style = document.createElement('style');
+        style.id = 'ps-d44-hide-terminal-text';
+        style.textContent = '.xterm-rows, .xterm-selection, .xterm-decoration-container { visibility: hidden !important; }';
+        document.head.appendChild(style);
+      });
+      if (await sharedPage.locator('[data-testid="voice-composer-launcher"]').count()) throw new Error('voice launcher rendered at 1280');
+      await sharedPage.screenshot({ path: path.join(smoke.artifacts, 'shared-1280-composer-closed.png') });
+      await sharedPage.locator('.composer-root > button.rail').click();
+      await sharedPage.locator('textarea[aria-label="Prompt draft"]').waitFor({ timeout: 5_000 });
+      // Caret blink is the one live pixel left in an open composer.
+      await sharedPage.evaluate(() => (document.activeElement instanceof HTMLElement) && document.activeElement.blur());
+      await sharedPage.waitForTimeout(400);
+      if (!(await sharedPage.locator('textarea[aria-label="Prompt draft"]').isVisible())) throw new Error('the composer did not stay open for the 1280 capture');
+      if (await sharedPage.locator('[data-testid="composer-dictation"]').count()) throw new Error('dictation panel rendered at 1280');
+      const emptySlotHeight = await sharedPage.evaluate(() => {
+        const slot = document.querySelector('[data-extension-slot="composer.inputSources"]');
+        return slot ? slot.getBoundingClientRect().height : 0;
+      });
+      if (emptySlotHeight !== 0) throw new Error(`an empty composer.inputSources slot takes ${emptySlotHeight}px at 1280`);
+      await sharedPage.screenshot({ path: path.join(smoke.artifacts, 'shared-1280-composer-open.png') });
+      return 'no launcher, no dictation panel, no empty slot band at 1280';
+    } finally {
+      await sharedPage.evaluate(() => document.getElementById('ps-d44-hide-terminal-text')?.remove());
+      await sharedPage.setViewportSize(PHONE.viewport);
+    }
+  });
+
   await smoke.step('vite: a hot update applies without reloading the page', async () => {
     const probeDir = path.join(repoRoot, 'build', 'dev-browser-smoke', 'hmr');
     mkdirSync(probeDir, { recursive: true });

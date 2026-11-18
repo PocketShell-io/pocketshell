@@ -27,6 +27,7 @@
     "J24SettingsReachJourney",
     "J28CdKeepsTerminalJourney",
     "J29TuiRedrawNoDiagJourney",
+    "J31ComposerAttachPhotosJourney",
     "J25AndroidBackJourney"
   ]
 }

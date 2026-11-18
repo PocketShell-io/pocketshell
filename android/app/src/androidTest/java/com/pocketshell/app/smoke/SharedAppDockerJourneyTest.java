@@ -771,6 +771,8 @@ public abstract class SharedAppDockerJourneyTest {
     }
 
     protected void backToPickerAndDisconnect() throws Exception {
+        // The phone shows a folder's pane under the app bar; the way out is back to the session list first (#3121).
+        if (exists("button[aria-label=\"Back to sessions\"]")) click("button[aria-label=\"Back to sessions\"]");
         click("button[title=\"Back to hosts\"]");
         awaitJsTrue("!!document.querySelector('.disconnect')");
         click(".disconnect");
@@ -1257,7 +1259,7 @@ public abstract class SharedAppDockerJourneyTest {
         String id = live.getString("selectedId");
         String transport = live.getString("transportId");
         String generation = live.getString("generationId");
-        click(".tab-close[title='Stop this session']");
+        stopFrontSessionFromOverflow();
         awaitJsTrue("!!document.querySelector('.stop-confirm .btn-danger')");
         click(".stop-confirm .btn-danger");
         awaitJsTrue("!document.querySelector('.stop-confirm')");
@@ -1337,16 +1339,19 @@ public abstract class SharedAppDockerJourneyTest {
         awaitJsTrue("!document.querySelector('.overlay-panel') && !!document.querySelector('.workspace')");
         assertAppAlive("Back from the New session dialog");
 
-        click("button[title^='Port forwarding']");
+        openHostTool("ports");
         awaitJsTrue("!!document.querySelector('.port-panel')");
         screenshot("j25-ports-open");
         pressAndroidBack();
         awaitJsTrue("!document.querySelector('.port-panel') && !!document.querySelector('.workspace')");
         assertAppAlive("Back from Ports");
 
-        // The workspace's Settings gear is not tappable on a phone while the session panel fills the screen (#3154:
-        // the tree header overflows the viewport and clips it), so Back-from-Settings is exercised on the host picker,
-        // where a user can actually reach the gear.
+        openHostTool("settings");
+        awaitJsTrue("!!document.querySelector('.overlay-panel')");
+        screenshot("j25-settings-open");
+        pressAndroidBack();
+        awaitJsTrue("!document.querySelector('.overlay-panel') && !!document.querySelector('.workspace')");
+        assertAppAlive("Back from Settings");
 
         // A focused terminal: Back navigates; it must not write ESC or any byte.
         // (Back from Ports landed on the empty host workspace, so reopen the folder.)
@@ -1705,7 +1710,7 @@ public abstract class SharedAppDockerJourneyTest {
         String run = "j19-" + Long.toString(System.currentTimeMillis(), 36);
         connectFixtureAndAttach(run);
         installRecoveryRecorder();
-        click("button[title^='Port forwarding']");
+        openHostTool("ports");
         awaitJsTrue("!!document.querySelector('button.add-toggle')");
         click("button.add-toggle");
         awaitJsTrue("document.querySelector('section.add-form')?.offsetParent !== null");
@@ -2260,14 +2265,34 @@ public abstract class SharedAppDockerJourneyTest {
     }
 
     /**
-     * Opens the session panel the way a user does when the phone layout collapsed it: tap "Show session panel"
-     * when that toggle is on screen. A no-op when the panel is already showing.
+     * Opens the session panel the way a user does when the phone layout shows a folder: tap the app bar's
+     * "Back to sessions" when it is on screen. A no-op when the panel is already showing.
      */
     protected void openSessionPanelIfCollapsed() throws Exception {
-        if (exists("button[title='Show session panel']")) {
-            click("button[title='Show session panel']");
+        if (exists("button[aria-label='Back to sessions']")) {
+            click("button[aria-label='Back to sessions']");
             awaitVisible("aside.session-panel");
         }
+    }
+
+    /**
+     * Open a host tool (ports, usage, monitor, palette, settings) from the
+     * compact workspace's overflow (⋮) sheet. The phone has no icon rail and
+     * no icon strip (#3121): the sheet's labelled row is the only door.
+     */
+    protected void openHostTool(String tool) throws Exception {
+        click("button[aria-label=More]");
+        String row = "[data-testid=host-overflow-" + tool + "]";
+        awaitJsTrue("!!document.querySelector(" + JSONObject.quote(row) + ")");
+        click(row);
+        awaitJsTrue("!document.querySelector('.popup-menu')");
+    }
+
+    /** Stop the front tab's session through ⋮ (no `×` on the compact tab strip). */
+    protected void stopFrontSessionFromOverflow() throws Exception {
+        click("button[aria-label=More]");
+        awaitJsTrue("!!document.querySelector('[data-testid=host-overflow-tab-stop]')");
+        click("[data-testid=host-overflow-tab-stop]");
     }
 
     protected void click(String selector) throws Exception {

@@ -11,7 +11,7 @@ import type { DevKeyMetadata, DevKeyVaultBackend } from './keyVaultPlugin';
 export const SSH_CAPABILITY_METHODS = [
   'connect', 'cancelOperation', 'getConnectionState', 'closeConnection', 'scheduleClose',
   'cancelScheduledClose', 'exec', 'openPty', 'readPty', 'writePty', 'resizePty', 'closePty',
-  'sftpList', 'sftpRead', 'sftpWrite', 'sftpWriteIfUnchanged', 'sftpMkdir', 'sftpRename',
+  'sftpList', 'sftpRead', 'sftpWrite', 'sftpWriteChunk', 'sftpWriteIfUnchanged', 'sftpMkdir', 'sftpRename',
   'sftpDelete', 'openPortForward', 'closePortForward', 'resourceSnapshot',
 ] as const;
 

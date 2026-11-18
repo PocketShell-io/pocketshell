@@ -142,6 +142,7 @@ jobs:
           scripts/check-js-voice-settings-results.py --self-test
           scripts/check-js-forward-service-results.py --self-test
           scripts/check-js-s1-layout-results.py --self-test
+          scripts/check-js-voice-composer-results.py --self-test
 
       - name: Check fail-closed packaged lifecycle result guard
         run: scripts/check-js-lifecycle-results.py --self-test
@@ -517,7 +518,7 @@ jobs:
             case "$lane" in
               smoke) key=smoke ;; lifecycle) key=lifecycle ;; Files) key=files ;;
               Usage/Ports) key=usage ;; Settings) key=settings ;; 'Account sync') key=account_sync ;;
-              'Account picker') key=account_picker ;; Gateway) key=gateway ;; 'Shared app') key=shared_app ;; 'S1 layout') key=s1_layout ;;
+              'Account picker') key=account_picker ;; Gateway) key=gateway ;; 'Shared app') key=shared_app ;; 'S1 layout') key=s1_layout ;; 'Voice composer') key=voice_composer ;;
               'Account key vault') key=account_vault ;; Key-vault) key=key_vault ;;
               'Durable storage') key=durable ;; Signed-upgrade) key=signed_upgrade ;;
               'Voice settings') key=voice_settings ;; 'Forward service') key=forward_service ;;
@@ -562,6 +563,8 @@ jobs:
             --results-dir android/app/build/outputs/js-shared-app-results
           run_check "S1 layout" scripts/check-js-s1-layout-results.py \
             --results-dir android/app/build/outputs/js-s1-layout
+          run_check "Voice composer" scripts/check-js-voice-composer-results.py \
+            --results-dir android/app/build/outputs/js-voice-composer
           run_check "Account key vault" scripts/check-js-account-vault-results.py \
             --host-dir "android/app/build/outputs/js-account-vault/vaultw4-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/host" \
             --results-dir "android/app/build/outputs/js-account-vault/vaultw4-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/instrumentation-results" \
@@ -692,6 +695,7 @@ jobs:
             android/app/build/outputs/js-durable-storage/**
             android/app/build/outputs/js-shared-app-results/**
             android/app/build/outputs/js-s1-layout/**
+            android/app/build/outputs/js-voice-composer/**
           if-no-files-found: warn
 
       - name: Stop Docker agents fixture
