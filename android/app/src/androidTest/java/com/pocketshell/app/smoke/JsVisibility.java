@@ -73,4 +73,65 @@ public final class JsVisibility {
                 + "if(x<0||y<0||x>innerWidth||y>innerHeight)return true;"
                 + "const h=document.elementFromPoint(x,y);return !!h&&__n.contains(h);})()";
     }
+
+    /** Evaluates JavaScript in the journey's WebView and returns the raw result (a journey's own evalRaw). */
+    public interface Eval {
+        String eval(String js) throws Exception;
+    }
+
+    private static final String[] NAVIGATION_MARKERS = {
+        "open-sessions", "open-hosts", "open-terminal-settings", "Settings", "Back to hosts", "button.tab", "button.rail",
+    };
+
+    /** True for app-bar / navigation targets, which a modal sheet's scrim covers. */
+    public static boolean isNavigationTarget(String selector) {
+        for (String marker : NAVIGATION_MARKERS) if (selector.contains(marker)) return true;
+        return false;
+    }
+
+    /**
+     * #3154: before tapping app-bar / navigation, dismiss the transient modal the way a user does. The composer is a
+     * modal bottom sheet whose scrim covers the whole app bar (and a sheet persisted open comes back after a restart),
+     * so a navigation tap under it hits the scrim. Taps the scrim (the guarded click requires it to be topmost), then
+     * waits for the sheet to go. The draft persists, so reopening the composer restores it. No-op when no sheet is open.
+     * Every journey's click helper calls this, so no nav call site needs its own dismissal.
+     */
+    public static void prepareForNavigation(String selector, Eval eval) throws Exception {
+        if (!isNavigationTarget(selector)) return;
+        if (!"true".equals(eval.eval("!!document.querySelector('[data-testid=prompt-composer-scrim]')"))) return;
+        expectClicked(stripQuotes(eval.eval(click("document.querySelector('[data-testid=prompt-composer-scrim]')"))));
+        long deadline = System.currentTimeMillis() + 10_000;
+        while (System.currentTimeMillis() < deadline) {
+            if ("false".equals(eval.eval("!!document.querySelector('[data-testid=prompt-composer-scrim]')"))) return;
+            Thread.sleep(150);
+        }
+        throw new AssertionError("the composer sheet did not close after its scrim was tapped, so navigation to "
+                + selector + " is still covered");
+    }
+
+    /**
+     * The one way a journey taps a selector: dismisses a covering sheet for navigation targets, then clicks, retrying
+     * for up to 8 s while a route or sheet transition still has the target missing, hidden or covered. The guard
+     * clicks nothing on failure, so a retry cannot double-click. When it never lands, throws with the page-side reason.
+     */
+    public static void tap(String selector, Eval eval) throws Exception {
+        prepareForNavigation(selector, eval);
+        String script = click("document.querySelector(" + JSONObject.quote(selector) + ")");
+        long deadline = System.currentTimeMillis() + 8_000;
+        while (true) {
+            String last;
+            try {
+                last = stripQuotes(eval.eval(script));
+            } catch (AssertionError guardFailure) {
+                last = stripQuotes(String.valueOf(guardFailure.getMessage()));
+            }
+            if (last != null && !last.startsWith("FAILED: ")) return;
+            if (System.currentTimeMillis() > deadline) throw new AssertionError(last);
+            Thread.sleep(250);
+        }
+    }
+
+    private static String stripQuotes(String raw) {
+        return raw != null && raw.length() >= 2 && raw.startsWith("\"") && raw.endsWith("\"") ? raw.substring(1, raw.length() - 1) : raw;
+    }
 }

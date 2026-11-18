@@ -1255,6 +1255,9 @@ public abstract class ComposerJourneySupport {
 
     private void createHostSnippet(String label, String body) throws Exception {
         openPromptComposerAndAssertDraftFocus();
+        // The chip rail (with Manage) is hidden while the keyboard is up (v-show="!keyboardVisible"); a user hides the
+        // keyboard first, so the journey does too instead of JS-clicking the hidden chip.
+        hideImeUntilStableWithoutEditableFocus();
         click("[data-testid=manage-snippets]");
         awaitJsTrue("document.querySelector('.app-shell')?.dataset.route === 'settings-snippets'");
         awaitJsTrue("document.querySelector('[data-testid=host-snippets-screen]')?.dataset.hostId === "
@@ -1316,6 +1319,9 @@ public abstract class ComposerJourneySupport {
 
     private void openSnippetManager() throws Exception {
         openPromptComposerAndAssertDraftFocus();
+        // The chip rail (with Manage) is hidden while the keyboard is up (v-show="!keyboardVisible"); a user hides the
+        // keyboard first, so the journey does too instead of JS-clicking the hidden chip.
+        hideImeUntilStableWithoutEditableFocus();
         click("[data-testid=manage-snippets]");
         awaitJsTrue("document.querySelector('.app-shell')?.dataset.route === 'settings-snippets'");
     }
@@ -2952,7 +2958,7 @@ public abstract class ComposerJourneySupport {
     }
 
     private void click(String selector) throws Exception {
-        JsVisibility.expectClicked(evalString(JsVisibility.click("document.querySelector(" + JSONObject.quote(selector) + ")")));
+        JsVisibility.tap(selector, this::evalRaw);
     }
 
     private void beforeFirstInjectedInput(String context) throws Exception {

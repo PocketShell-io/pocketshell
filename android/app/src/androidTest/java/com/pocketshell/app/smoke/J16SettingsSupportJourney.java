@@ -370,7 +370,7 @@ public final class J16SettingsSupportJourney {
     }
 
     private void clickJs(String selector) throws Exception {
-        JsVisibility.expectClicked(evalString(JsVisibility.click("document.querySelector(" + JSONObject.quote(selector) + ")")));
+        JsVisibility.tap(selector, this::evalRaw);
     }
 
     /**

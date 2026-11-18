@@ -281,7 +281,7 @@ public final class DurableStorageRestartJourneyTest {
     }
 
     private void click(String selector) throws Exception {
-        JsVisibility.expectClicked(evalString(JsVisibility.click("document.querySelector(" + JSONObject.quote(selector) + ")")));
+        JsVisibility.tap(selector, this::evalRaw);
     }
 
     private void awaitJsTrue(String expression) throws Exception {

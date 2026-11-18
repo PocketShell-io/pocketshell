@@ -157,11 +157,27 @@ public abstract class SharedAppDockerJourneyTest {
      * (durably, through localStorage) and the app is relaunched so no journey depends on the one before it.
      */
     protected void resetRestoredWorkspaceState() throws Exception {
-        String removed = evalString("(() => {const drop=[];for(let i=0;i<localStorage.length;i++){const k=localStorage.key(i);"
+        // evaluateJavascript reports a script that throws as null (that is the "JavaScript returned null" a cold page
+        // produced here: localStorage.removeItem is a durable native commit that throws while the page or the native
+        // bridge is still starting). So wait for the rendered page first, never let the script throw, and retry until every
+        // key is gone.
+        awaitJsTrue("document.readyState === 'complete' && typeof localStorage !== 'undefined'"
+                + " && document.body.innerText.trim().length > 0", 60_000);
+        String script = "(() => {const out={removed:0,failed:[]};try{const drop=[];for(let i=0;i<localStorage.length;i++){"
+                + "const k=localStorage.key(i);"
                 + "if(k&&(k.startsWith('ps.workspace.')||k.startsWith('ps.lastFolder.')||k.startsWith('ps.tabOrder.')"
                 + "||k==='pocketshell.composer.v1'||k==='pocketshell.composerDrafts.v1'||k==='pocketshell.composer.visibility.v1'))drop.push(k);}"
-                + "drop.forEach((k)=>localStorage.removeItem(k));return String(drop.length);})()");
-        Log.i(TAG, "RESET_WORKSPACE_STATE removed " + removed + " persisted workspace/composer keys");
+                + "drop.forEach((k)=>{try{localStorage.removeItem(k);out.removed++;}catch(e){out.failed.push(k+': '+e.message);}});}"
+                + "catch(e){out.failed.push('scan: '+e.message);}return JSON.stringify(out);})()";
+        long deadline = SystemClock.uptimeMillis() + 30_000;
+        String removed;
+        while (true) {
+            removed = evalString(script);
+            if (new JSONObject(removed).getJSONArray("failed").length() == 0) break;
+            if (SystemClock.uptimeMillis() > deadline) throw new AssertionError("could not reset persisted workspace state: " + removed);
+            Thread.sleep(500);
+        }
+        Log.i(TAG, "RESET_WORKSPACE_STATE " + removed);
         scenario.close();
         scenario = ActivityScenario.launch(SharedShellLaunch.intent());
     }
@@ -2236,7 +2252,7 @@ public abstract class SharedAppDockerJourneyTest {
     }
 
     protected void click(String selector) throws Exception {
-        JsVisibility.expectClicked(evalString(JsVisibility.click("document.querySelector(" + JSONObject.quote(selector) + ")")));
+        JsVisibility.tap(selector, this::evalRaw);
     }
 
     /**

@@ -1168,7 +1168,11 @@ public final class GatewayDockerJourneyTest {
         long deadline = SystemClock.uptimeMillis() + 15_000;
         String raw;
         do {
-            raw = evalRaw(script);
+            try {
+                raw = evalRaw(script);
+            } catch (AssertionError guardFailure) {
+                raw = String.valueOf(guardFailure.getMessage()); // evalRaw rethrows a guard 'FAILED: ...'; retry
+            }
             if ("\"ok\"".equals(raw)) return;
             Thread.sleep(250);
         } while (SystemClock.uptimeMillis() < deadline);
@@ -1633,7 +1637,7 @@ public final class GatewayDockerJourneyTest {
     }
 
     private void click(String selector) throws Exception {
-        JsVisibility.expectClicked(evalString(JsVisibility.click("document.querySelector(" + JSONObject.quote(selector) + ")")));
+        JsVisibility.tap(selector, this::evalRaw);
     }
 
     void awaitJsTrue(String expression) throws Exception {
