@@ -17,6 +17,7 @@ import androidx.test.platform.app.InstrumentationRegistry;
 import java.util.concurrent.atomic.AtomicReference;
 import org.json.JSONArray;
 import org.json.JSONObject;
+import org.junit.After;
 import org.junit.Test;
 
 /**
@@ -60,6 +61,17 @@ public class J29TuiRedrawNoDiagJourney extends SharedAppDockerJourneyTest {
             + "errors:(window.__ps3161?.errors ?? []),"
             + "strip:(document.querySelector('.diag-strip')?.innerText ?? '').trim(),"
             + "kinds:[...document.querySelectorAll('.diag-strip [data-diag-kind]')].map((n)=>n.dataset.diagKind)})";
+
+    /**
+     * The trust-prompt journey types (an Enter key, IME digits), which takes the
+     * device out of touch mode; touch mode is device-global and outlives this
+     * app, so leave it the way a phone user leaves it (#3161: J26 in the next
+     * lane lost its keyboard to the first focusable button).
+     */
+    @After
+    public void restoreTouchMode() {
+        enterTouchMode();
+    }
 
     @Test
     public void antigravityTrustPromptRedrawsWithoutErrorOrStall() throws Exception {
