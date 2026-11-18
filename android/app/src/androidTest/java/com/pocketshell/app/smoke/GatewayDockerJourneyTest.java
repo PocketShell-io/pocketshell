@@ -260,7 +260,7 @@ public final class GatewayDockerJourneyTest {
                 acceptedFingerprints(login).contains(phoneFingerprint));
 
         // The host's aplexer sessions, listed through the gateway.
-        if (exists("button[title=\"Show session panel\"]")) click("button[title=\"Show session panel\"]");
+        if (exists("button[aria-label=\"Back to sessions\"]")) click("button[aria-label=\"Back to sessions\"]");
         String folder = hello.getString("sessionFolder");
         awaitJsTrue("[...document.querySelectorAll('.dir-header')].some((n)=>n.textContent.includes(" + JSONObject.quote(folder) + "))");
         evalString("(() => {const row=[...document.querySelectorAll('.dir-header')].find((n)=>n.textContent.includes("
@@ -490,7 +490,7 @@ public final class GatewayDockerJourneyTest {
         screenshot("account-direct-trust");
         click("[data-testid=trust-host-key]");
         awaitJsTrue("!!document.querySelector('button[title=\"Back to hosts\"]')", 120_000);
-        if (exists("button[title=\"Show session panel\"]")) click("button[title=\"Show session panel\"]");
+        if (exists("button[aria-label=\"Back to sessions\"]")) click("button[aria-label=\"Back to sessions\"]");
         String folder = hello.getString("sessionFolder");
         awaitJsTrue("[...document.querySelectorAll('.dir-header')].some(n=>n.textContent.includes(" + JSONObject.quote(folder) + "))");
         JsVisibility.expectClicked(evalString(JsVisibility.click("[...document.querySelectorAll('.dir-header')].find(n=>n.textContent.includes(" + JSONObject.quote(folder) + "))")));
@@ -524,7 +524,7 @@ public final class GatewayDockerJourneyTest {
         assertEquals("direct SSH never adopts the account host on the phone", "[]", evalString("localStorage.getItem('" + HOSTS_KEY + "')"));
         JSONObject firstDirectConnection = nativeConnectionRef(directDials.length() - 1);
         assertEquals("the first direct native transport is live", "connected", nativeConnectionState(firstDirectConnection, "direct-before-resume"));
-        click("button[title=\"Back to hosts\"]");
+        backToHosts();
         awaitJsTrue("[...document.querySelectorAll('.host-row')].some(n=>n.textContent.includes('account-direct'))");
         JsVisibility.expectClicked(evalString(JsVisibility.click("[...document.querySelectorAll('.host-row')].find(n=>n.textContent.includes('account-direct'))")));
         awaitJsTrue("!!document.querySelector('button[title=\"Back to hosts\"]')", 120_000);
@@ -532,7 +532,7 @@ public final class GatewayDockerJourneyTest {
         assertEquals("returning to the connected account row resumes without another native dial", directDials.length(), nativeDials().length());
         assertEquals("resume retains the same live native transport", "connected", nativeConnectionState(firstDirectConnection, "direct-after-resume"));
         screenshot("account-direct-resumed-terminal");
-        click("button[title=\"Back to hosts\"]");
+        backToHosts();
         awaitJsTrue("!!document.querySelector('[data-testid=trusted-server-connect]:not([disabled])')");
         awaitJsTrue("[...document.querySelectorAll('.host-row')].some(n=>n.textContent.includes('account-direct'))", 15_000);
         int gatewayMark = controller(new JSONObject().put("op", "mark")).getInt("mark");
@@ -546,7 +546,7 @@ public final class GatewayDockerJourneyTest {
         screenshot("account-direct-gateway-terminal");
         JSONObject gatewayConnection = nativeConnectionRef(allDials.length() - 1);
         assertEquals("the Gateway native transport is live", "connected", nativeConnectionState(gatewayConnection, "gateway-before-direct-switch"));
-        click("button[title=\"Back to hosts\"]");
+        backToHosts();
         awaitJsTrue("[...document.querySelectorAll('.host-row')].some(n=>n.textContent.includes('account-direct'))");
         JsVisibility.expectClicked(evalString(JsVisibility.click("[...document.querySelectorAll('.host-row')].find(n=>n.textContent.includes('account-direct'))")));
         awaitJsTrue("!!document.querySelector('button[title=\"Back to hosts\"]')", 120_000);
@@ -626,7 +626,7 @@ public final class GatewayDockerJourneyTest {
         screenshot("onboarding-existing-terminal");
         OnboardingViewportCapture.capture(scenario,evalString("JSON.stringify((()=>{const r=[...document.querySelectorAll('.xterm-screen')].find(n=>n.offsetParent!==null).getBoundingClientRect();return {left:r.left,top:r.top,right:r.right,bottom:r.bottom,innerWidth:innerWidth};})())"),run,"onboarding-existing-terminal-viewport");
         Log.i(TAG,"ONBOARDING_VISIBLE_TERMINAL "+evalString(VISIBLE_TERMINAL));
-        click("button[title=\"Back to hosts\"]");
+        backToHosts();
         awaitJsTrue("!!document.querySelector('[data-testid=trusted-server-connect]:not([disabled])')");
         lockVaultThroughSettings();
         assertTrue("the real user Lock released a held native vault credential",Integer.parseInt(evalString("String(window.__gwVaultWitness.released)"))>0);
@@ -722,7 +722,7 @@ public final class GatewayDockerJourneyTest {
         assertTrue("the real SSH server accepted the authenticated vault key",
                 acceptedFingerprints(sshdSince(mark, "authloss-connect")).contains(fingerprint));
         screenshot("authloss-initial-terminal");
-        click("button[title=\"Back to hosts\"]");
+        backToHosts();
         awaitJsTrue("!!document.querySelector('[data-testid=trusted-server-connect]:not([disabled])')");
         assertInstalledTrustedRevision(1);
         JSONObject binding = authLossPublicTrust();
@@ -817,7 +817,7 @@ public final class GatewayDockerJourneyTest {
         awaitJsTrue(VISIBLE_TERMINAL+".includes('$')",120_000);
         boolean freshLeaseBeforeBrokerLoss=Integer.parseInt(evalString("String(window.__gwVaultWitness.held)"))>heldBeforeResume;
         assertTrue("normal server click obtains a current native vault lease",freshLeaseBeforeBrokerLoss);
-        click("button[title=\"Back to hosts\"]");
+        backToHosts();
         awaitJsTrue("!!document.querySelector('[data-testid=trusted-server-connect]:not([disabled])')");
         assertInstalledTrustedRevision(1);
         assertEquals("explicit server resume keeps the same account, vault, epoch, descriptor and floor",binding.toString(),authLossPublicTrust().toString());
@@ -896,8 +896,26 @@ public final class GatewayDockerJourneyTest {
         click("[data-testid=vault-unlock-submit]");
     }
 
+    /** A host tool from the compact workspace's overflow (⋮) sheet; the phone has no Settings icon strip (#3121). */
+    private void openHostTool(String tool) throws Exception {
+        click("button[aria-label=More]");
+        String row = "[data-testid=host-overflow-" + tool + "]";
+        awaitJsTrue("!!document.querySelector('" + row + "')");
+        click(row);
+    }
+
+    /**
+     * Settings from wherever the journey stands: the host list has the picker's
+     * own header gear; inside a workspace it is a row of the ⋮ menu (#3121).
+     */
+    private void openSettingsFromCurrentScreen() throws Exception {
+        String pickerGear = ".picker .header-actions button[title=Settings]";
+        if ("true".equals(evalString("String(!!document.querySelector('" + pickerGear + "'))"))) click(pickerGear);
+        else openHostTool("settings");
+    }
+
     private void lockVaultThroughSettings() throws Exception {
-        click("button[title=Settings]");
+        openSettingsFromCurrentScreen();
         awaitJsTrue("!!document.querySelector('#settings-tab-advanced')");
         click("#settings-tab-advanced");
         awaitJsTrue("!!document.querySelector('[data-testid=vault-lock]')");
@@ -1634,6 +1652,17 @@ public final class GatewayDockerJourneyTest {
                 + "if(!node)throw new Error('missing ' + " + JSONObject.quote(selector) + ");"
                 + "node.value=" + JSONObject.quote(value) + ";node.dispatchEvent(new Event('input',{bubbles:true}));"
                 + "node.dispatchEvent(new Event('change',{bubbles:true}));return 'set';})()");
+    }
+
+    /**
+     * The phone layout shows a folder's pane with the app bar; "Back to hosts" lives on the session list.
+     * Walk back to the list first when the pane is up (#3121), then leave it.
+     */
+    private void backToHosts() throws Exception {
+        if ("true".equals(evalString("String(!!document.querySelector('button[aria-label=\\\"Back to sessions\\\"]'))"))) {
+            click("button[aria-label=\"Back to sessions\"]");
+        }
+        click("button[title=\"Back to hosts\"]");
     }
 
     private void click(String selector) throws Exception {

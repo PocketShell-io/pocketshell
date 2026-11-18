@@ -16,7 +16,7 @@ public final class J22ForwardServiceFgsJourney extends ForwardServiceJourneySupp
         connectAndRecord(); startServer("J22", true);
         // Outside the automatic range: only the real shared UI Add action can
         // create this tunnel. The native bridge must bind the chosen local port.
-        click("button[title^='Port forwarding']");
+        openHostTool("ports");
         awaitJsTrue("!!document.querySelector('button.add-toggle')");
         click("button.add-toggle");
         awaitJsTrue("document.querySelector('section.add-form')?.offsetParent !== null");

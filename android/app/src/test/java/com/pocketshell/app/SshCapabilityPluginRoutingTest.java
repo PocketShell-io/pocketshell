@@ -61,6 +61,7 @@ public final class SshCapabilityPluginRoutingTest {
         assertNotEquals("a blocked read must not queue a write", write, SshCallRouting.lane("readPty", pty));
         assertNotEquals("another channel is another lane", write, SshCallRouting.lane("writePty", new JSObject().put("channelId", "ch-2")));
         assertEquals(SshCallRouting.lane("sftpList", pty), SshCallRouting.lane("sftpWrite", pty));
+        assertEquals("chunked uploads queue with every other SFTP call (#3191)", SshCallRouting.lane("sftpWrite", pty), SshCallRouting.lane("sftpWriteChunk", pty));
         assertEquals(SshCallRouting.lane("closeConnection", pty), SshCallRouting.lane("scheduleClose", pty));
         assertEquals(SshCallRouting.lane("openPortForward", pty), SshCallRouting.lane("closePortForward", pty));
         for (String free : new String[] {"exec", "connect", "cancelOperation", "openPty", "resourceSnapshot", "transportCapabilities"}) {

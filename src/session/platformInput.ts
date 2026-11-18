@@ -1,5 +1,9 @@
-import type { AttachmentSource } from '@pocketshell/core';
-import { MAX_SFTP_FILE_BYTES } from './files';
+import {
+  MAX_ATTACHMENT_BATCH_BYTES,
+  MAX_ATTACHMENT_FILE_BYTES,
+  attachmentBatchTooLargeMessage,
+  attachmentTooLargeMessage,
+} from './attachmentLimits';
 import type {
   DocumentContentPlugin,
   NativeDocumentChunk,
@@ -15,16 +19,36 @@ import { documentContent } from '../native/documentContent';
 import { speechRecognition } from '../native/speechRecognition';
 
 const CHUNK_BYTES = 48 * 1024;
-const MAX_PICKED_BATCH_BYTES = 4 * 1024 * 1024;
 
 export interface PickedAttachmentFailure {
   name: string;
   message: string;
+  mimeType?: string | null;
+  sizeBytes?: number | null;
 }
 
-export interface PickedAttachmentBatch {
-  sources: AttachmentSource[];
+/**
+ * A picked or shared Android document that is still open on the native side
+ * (#3191). Nothing is read up front: the uploader streams it in bounded
+ * chunks, so a 100 MB video never sits in the WebView as one buffer. Release
+ * it with `releaseDocument` once it is uploaded or abandoned.
+ */
+export interface PickedDocument {
+  fileId: string;
+  name: string;
+  mimeType: string | null;
+  /** Provider-reported size; null when the provider does not know it. */
+  sizeBytes: number | null;
+}
+
+export interface PickedDocumentBatch {
+  documents: PickedDocument[];
   failures: PickedAttachmentFailure[];
+}
+
+export interface PickedDocumentChunk {
+  bytes: Uint8Array;
+  eof: boolean;
 }
 
 export interface SharedContent {
@@ -32,7 +56,7 @@ export interface SharedContent {
   mimeType: string | null;
   subject?: string;
   text?: string;
-  attachments: AttachmentSource[];
+  documents: PickedDocument[];
   failures: PickedAttachmentFailure[];
   fileError?: string;
 }
@@ -82,57 +106,111 @@ export function createPlatformInputService(
 ) {
   const dictationRequests = new Map<string, DictationRequestState>();
   const chunkBytes = boundedInteger(serviceOptions.chunkBytes ?? CHUNK_BYTES, 1, 64 * 1024, 'chunkBytes');
-  const maxFileBytes = boundedInteger(serviceOptions.maxFileBytes ?? MAX_SFTP_FILE_BYTES, 1, Number.MAX_SAFE_INTEGER, 'maxFileBytes');
-  const maxBatchBytes = boundedInteger(serviceOptions.maxBatchBytes ?? MAX_PICKED_BATCH_BYTES, maxFileBytes, Number.MAX_SAFE_INTEGER, 'maxBatchBytes');
+  const maxFileBytes = boundedInteger(serviceOptions.maxFileBytes ?? MAX_ATTACHMENT_FILE_BYTES, 1, Number.MAX_SAFE_INTEGER, 'maxFileBytes');
+  const maxBatchBytes = boundedInteger(serviceOptions.maxBatchBytes ?? MAX_ATTACHMENT_BATCH_BYTES, maxFileBytes, Number.MAX_SAFE_INTEGER, 'maxBatchBytes');
 
-  async function pickAttachments(): Promise<PickedAttachmentBatch> {
+  async function pickAttachments(): Promise<PickedDocumentBatch> {
     const picked = await documents.pickFiles({ mimeType: '*/*', multiple: true });
     if (!isPickedDocuments(picked)) {
       throw new PlatformInputError('invalid-picker-response', 'The Android file picker returned an invalid response.');
     }
-    if (picked.cancelled) return { sources: [], failures: [] };
-    return readPickedDocuments(picked.files);
+    if (picked.cancelled) return { documents: [], failures: [] };
+    return admitPickedDocuments(picked.files);
   }
 
-  async function readPickedDocuments(files: readonly NativePickedDocument[]): Promise<PickedAttachmentBatch> {
-    const sources: AttachmentSource[] = [];
+  /**
+   * Validate a selection against the attachment limits without reading it.
+   * Refused documents are released here and reported with a readable reason;
+   * admitted ones stay open for the uploader to stream.
+   */
+  async function admitPickedDocuments(files: readonly NativePickedDocument[]): Promise<PickedDocumentBatch> {
+    const admitted: PickedDocument[] = [];
     const failures: PickedAttachmentFailure[] = [];
     let batchBytes = 0;
-    try {
-      for (const file of files) {
-        const name = validName(file?.name) ? file.name : 'Shared file';
-        try {
-          validatePickedDocument(file);
-          if (file.sizeBytes != null && file.sizeBytes > maxFileBytes) {
-            throw new PlatformInputError('file-too-large', `This transfer supports files up to ${maxFileBytes} bytes.`);
-          }
-          const remainingBatchBytes = maxBatchBytes - batchBytes;
-          if (remainingBatchBytes <= 0) {
-            throw new PlatformInputError('batch-too-large', `A single selection can contain at most ${maxBatchBytes} bytes.`);
-          }
-          const bytes = await readDocument(file, Math.min(maxFileBytes, remainingBatchBytes));
-          batchBytes += bytes.byteLength;
-          sources.push({
-            kind: 'bytes',
-            data: bytes,
-            name,
-            mimeType: typeof file.mimeType === 'string' && file.mimeType.length > 0 ? file.mimeType : null,
-          });
-        } catch (error) {
-          failures.push({ name, message: errorMessage(error) });
+    for (const file of files) {
+      const name = validName(file?.name) ? file.name : 'Shared file';
+      const mimeType = typeof file?.mimeType === 'string' && file.mimeType.length > 0 ? file.mimeType : null;
+      try {
+        validatePickedDocument(file);
+        const sizeBytes = file.sizeBytes ?? null;
+        if (sizeBytes != null && sizeBytes > maxFileBytes) {
+          throw new PlatformInputError('file-too-large', attachmentTooLargeMessage(name, mimeType, sizeBytes, maxFileBytes));
         }
+        if (sizeBytes != null && batchBytes + sizeBytes > maxBatchBytes) {
+          throw new PlatformInputError('batch-too-large', attachmentBatchTooLargeMessage(maxBatchBytes));
+        }
+        batchBytes += sizeBytes ?? 0;
+        admitted.push({ fileId: file.fileId, name, mimeType, sizeBytes });
+      } catch (error) {
+        failures.push({ name, message: errorMessage(error), mimeType, sizeBytes: typeof file?.sizeBytes === 'number' ? file.sizeBytes : null });
+        await releaseFileId(file?.fileId);
       }
-    } finally {
-      await Promise.all(files.map(async (file) => {
-        if (typeof file?.fileId !== 'string' || file.fileId === '') return;
-        try {
-          await documents.releasePickedFile({ fileId: file.fileId });
-        } catch {
-          // Releasing is best-effort; the native registry is process-local and bounded.
-        }
-      }));
     }
-    return { sources, failures };
+    return { documents: admitted, failures };
+  }
+
+  async function releaseFileId(fileId: unknown): Promise<void> {
+    if (typeof fileId !== 'string' || fileId === '') return;
+    try {
+      await documents.releasePickedFile({ fileId });
+    } catch {
+      // Releasing is best-effort; the native registry is process-local and bounded.
+    }
+  }
+
+  /** Release an admitted document once it is uploaded or abandoned. */
+  async function releaseDocument(document: PickedDocument): Promise<void> {
+    await releaseFileId(document.fileId);
+  }
+
+  /**
+   * Read up to `maxBytes` starting at `offset`, in bounded native chunks.
+   * Returns fewer bytes only at the end of the document (`eof`). Enforces the
+   * per-file cap even when the provider did not report a size.
+   */
+  async function readDocumentChunk(document: PickedDocument, offset: number, maxBytes: number): Promise<PickedDocumentChunk> {
+    if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(maxBytes) || maxBytes < 1) {
+      throw new PlatformInputError('invalid-read-range', 'The file could not be read. Pick it again.');
+    }
+    const parts: Uint8Array[] = [];
+    let read = 0;
+    let eof = false;
+    while (read < maxBytes && !eof) {
+      const position = offset + read;
+      const requestedBytes = Math.min(chunkBytes, maxBytes - read);
+      const response = await documents.readPickedFileChunk({ fileId: document.fileId, offset: position, maxBytes: requestedBytes });
+      const bytes = decodeChunk(response, document.fileId, position, requestedBytes);
+      if (bytes.byteLength === 0 && response.eof !== true) {
+        throw new PlatformInputError('empty-chunk', 'The Android document provider stopped before the file was complete.');
+      }
+      parts.push(bytes);
+      read += bytes.byteLength;
+      eof = response.eof;
+      if (position + bytes.byteLength > maxFileBytes) {
+        throw new PlatformInputError('file-too-large',
+          attachmentTooLargeMessage(document.name, document.mimeType, position + bytes.byteLength, maxFileBytes));
+      }
+    }
+    if (eof && document.sizeBytes != null && offset + read !== document.sizeBytes) {
+      throw new PlatformInputError('file-changed', 'The selected file changed while it was being read. Pick it again.');
+    }
+    return { bytes: concatenate(parts, read), eof };
+  }
+
+  /** The whole document in memory (an image opened for annotation), bounded by `maxBytes`. */
+  async function readDocument(document: PickedDocument, maxBytes = maxFileBytes): Promise<Uint8Array> {
+    const parts: Uint8Array[] = [];
+    let total = 0;
+    for (;;) {
+      const chunk = await readDocumentChunk(document, total, 512 * 1024);
+      parts.push(chunk.bytes);
+      total += chunk.bytes.byteLength;
+      if (total > maxBytes) {
+        throw new PlatformInputError('file-too-large', attachmentTooLargeMessage(document.name, document.mimeType, total, maxBytes));
+      }
+      if (chunk.eof) break;
+    }
+    return concatenate(parts, total);
   }
 
   async function listenForShares(onShare: (content: SharedContent) => void): Promise<() => Promise<void>> {
@@ -141,7 +219,7 @@ export function createPlatformInputService(
         onShare({
           requestId: typeof event?.requestId === 'string' ? event.requestId : '',
           mimeType: typeof event?.mimeType === 'string' ? event.mimeType : null,
-          attachments: [],
+          documents: [],
           failures: [{ name: 'Shared content', message: errorMessage(error) }],
           ...(typeof event?.text === 'string' ? { text: event.text } : {}),
           ...(typeof event?.subject === 'string' ? { subject: event.subject } : {}),
@@ -153,12 +231,12 @@ export function createPlatformInputService(
 
   async function materializeShare(event: NativeSharedContent): Promise<SharedContent> {
     validateShare(event);
-    const materialized = await readPickedDocuments(event.files);
+    const admitted = await admitPickedDocuments(event.files);
     return {
       requestId: event.requestId,
       mimeType: event.mimeType,
-      attachments: materialized.sources,
-      failures: materialized.failures,
+      documents: admitted.documents,
+      failures: admitted.failures,
       ...(typeof event.text === 'string' ? { text: event.text } : {}),
       ...(typeof event.subject === 'string' ? { subject: event.subject } : {}),
       ...(typeof event.fileError === 'string' ? { fileError: event.fileError } : {}),
@@ -247,45 +325,11 @@ export function createPlatformInputService(
     await listener?.remove();
   }
 
-  async function readDocument(file: NativePickedDocument, maxBytes: number): Promise<Uint8Array> {
-    const chunks: Uint8Array[] = [];
-    let totalBytes = 0;
-    let eof = false;
-    while (!eof) {
-      if (totalBytes > maxBytes) {
-        throw new PlatformInputError('file-too-large', `This transfer supports files up to ${maxBytes} bytes.`);
-      }
-      const requestedBytes = Math.min(chunkBytes, maxBytes - totalBytes || chunkBytes);
-      const response = await documents.readPickedFileChunk({
-        fileId: file.fileId,
-        offset: totalBytes,
-        maxBytes: requestedBytes,
-      });
-      const bytes = decodeChunk(response, file.fileId, totalBytes, requestedBytes);
-      if (totalBytes + bytes.byteLength > maxBytes) {
-        throw new PlatformInputError('file-too-large', `This transfer supports files up to ${maxBytes} bytes.`);
-      }
-      if (bytes.byteLength === 0 && response.eof !== true) {
-        throw new PlatformInputError('empty-chunk', 'The Android document provider stopped before the file was complete.');
-      }
-      chunks.push(bytes);
-      totalBytes += bytes.byteLength;
-      eof = response.eof;
-    }
-    if (file.sizeBytes != null && totalBytes !== file.sizeBytes) {
-      throw new PlatformInputError('file-changed', 'The selected file changed while it was being read. Pick it again.');
-    }
-    const output = new Uint8Array(totalBytes);
-    let offset = 0;
-    for (const chunk of chunks) {
-      output.set(chunk, offset);
-      offset += chunk.byteLength;
-    }
-    return output;
-  }
-
   return {
     pickAttachments,
+    readDocumentChunk,
+    readDocument,
+    releaseDocument,
     listenForShares,
     startRecognition,
     stopRecognition,
@@ -314,6 +358,17 @@ function decodeChunk(chunk: NativeDocumentChunk, fileId: string, offset: number,
     if (error instanceof PlatformInputError) throw error;
     throw new PlatformInputError('invalid-document-chunk', 'Android returned file contents that could not be read. Pick it again.');
   }
+}
+
+function concatenate(parts: readonly Uint8Array[], total: number): Uint8Array {
+  if (parts.length === 1) return parts[0]!;
+  const output = new Uint8Array(total);
+  let offset = 0;
+  for (const part of parts) {
+    output.set(part, offset);
+    offset += part.byteLength;
+  }
+  return output;
 }
 
 function validatePickedDocument(file: NativePickedDocument): void {

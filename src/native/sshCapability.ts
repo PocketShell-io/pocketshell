@@ -51,6 +51,28 @@ export interface NativeSftpWriteIfUnchangedOptions {
   dataBase64: string;
 }
 
+/**
+ * One chunk of a resumable attachment upload (#3191; SshCapabilityPlugin
+ * `sftpWriteChunk`). Offset 0 creates `path` exclusively; a later chunk must
+ * start exactly at the file's current end. At most 512 KiB per call.
+ */
+export interface NativeSftpWriteChunkOptions {
+  requestId: string;
+  connectionId: string;
+  generationId: string;
+  rootPath: string;
+  path: string;
+  offset: number;
+  dataBase64: string;
+}
+
+export interface NativeSftpWriteChunkResult {
+  requestId: string;
+  bytesWritten: number;
+  /** The remote file's size after this chunk. */
+  sizeBytes: number;
+}
+
 export interface NativeSftpWriteIfUnchangedResult {
   requestId: string;
   status: 'written' | 'conflict';
@@ -71,6 +93,7 @@ export type NativeSshCapabilityPlugin = Plugin & {
   sftpWriteIfUnchanged(
     options: NativeSftpWriteIfUnchangedOptions,
   ): Promise<NativeSftpWriteIfUnchangedResult>;
+  sftpWriteChunk(options: NativeSftpWriteChunkOptions): Promise<NativeSftpWriteChunkResult>;
 };
 
 function isResourceSnapshot(value: unknown, requestId: string): value is SshResourceSnapshot {

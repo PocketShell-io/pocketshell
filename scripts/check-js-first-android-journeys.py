@@ -139,6 +139,7 @@ LANES = (
             ("com.pocketshell.app.smoke.J25AndroidBackJourney", frozenset({'androidBackWalksSubviewsThenHostListThenBackgrounds'})),
             ("com.pocketshell.app.smoke.J11ShareUploadJourney", frozenset({"androidSingleShareReachesTheChosenSessionOnTheRealHost", "androidShareStreamsReachTheChosenSessionOnTheRealHost"})),
             ("com.pocketshell.app.smoke.J20ComposerUploadProgressJourney", frozenset({"aThreeFileUploadShowsTheBarMidFlightAndLeavesNoResidueAfterCompletion"})),
+            ("com.pocketshell.app.smoke.J31ComposerAttachPhotosJourney", frozenset({"pickedPhonePhotosLandByteExactOnTheHost", "overLimitFileShowsAReadableChipErrorWithoutADiagnostic", "cancellingMidUploadLeavesNothingOnTheHost"})),
             ("com.pocketshell.app.smoke.J28CdKeepsTerminalJourney", frozenset({"cdInsideOpenShellKeepsTheTerminalMounted"})),
             ("com.pocketshell.app.smoke.J27NewSessionAndFilesJourney", frozenset({"newSessionFolderPickerAndFilesEditWorkOnTheRealHost"})),
             ("com.pocketshell.app.smoke.J29TuiRedrawNoDiagJourney", frozenset({"antigravityTrustPromptRedrawsWithoutErrorOrStall", "diagToastClearsTheStatusBarWithPlainWordsAndCopyDetails"})),

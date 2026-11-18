@@ -788,6 +788,35 @@ export function createSshCapability({ vault, emit, logger }) {
       return { requestId, bytesWritten: bytes.length };
     },
 
+    // SshCapabilityPlugin.sftpWriteChunk (#3191): offset 0 creates the target
+    // exclusively; a later chunk must start exactly at the file's end.
+    async sftpWriteChunk(options) {
+      const requestId = requiredString(options, 'requestId');
+      const connection = requireConnection(options);
+      const sftp = await sftpOf(connection);
+      const offset = options.offset;
+      if (!Number.isSafeInteger(offset) || offset < 0) fail('INVALID_ARGUMENT', 'offset is outside its supported range.');
+      const bytes = decodeBase64(options.dataBase64, 'SFTP content', MAX_SFTP_TRANSFER_BYTES);
+      const resolved = await resolveWithinRoot(sftp, requiredString(options, 'rootPath'), requiredString(options, 'path'), true);
+      if (offset === 0 && resolved.exists) fail('SFTP_FILE_EXISTS', 'SFTP write target already exists.');
+      if (offset > 0) {
+        if (!resolved.exists) fail('SFTP_NOT_FOUND', 'The partial upload is gone from the host.');
+        if (!resolved.attributes.isFile()) fail('SFTP_NOT_FILE', 'SFTP write target is not a regular file.');
+        if (Number(resolved.attributes.size) !== offset) {
+          fail('SFTP_OFFSET_MISMATCH', 'The partial upload on the host does not end where this chunk starts.');
+        }
+      }
+      const handle = await sftpCall(sftp, 'open', resolved.path, offset === 0 ? 'wx' : 'r+').catch((error) => { throw sftpFailure(error); });
+      let size;
+      try {
+        if (bytes.length > 0) await sftpCall(sftp, 'write', handle, bytes, 0, bytes.length, offset);
+        size = Number((await sftpCall(sftp, 'fstat', handle)).size);
+      } finally {
+        await sftpCall(sftp, 'close', handle).catch(() => undefined);
+      }
+      return { requestId, bytesWritten: bytes.length, sizeBytes: size };
+    },
+
     async sftpWriteIfUnchanged(options) {
       const requestId = requiredString(options, 'requestId');
       const connection = requireConnection(options);

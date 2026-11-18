@@ -381,6 +381,27 @@ export function createMockSshPlugin(options: MockSshOptions): MockSshPlugin {
       }
       return { requestId: request.requestId, bytesWritten: bytes.length };
     },
+    async sftpWriteChunk(request) {
+      requireConnection(request).sftp = true;
+      await delay();
+      const { path, file } = sftpPath(request, false);
+      const offset = Number(request.offset);
+      if (!Number.isSafeInteger(offset) || offset < 0) fail('INVALID_ARGUMENT', 'offset is outside its supported range.');
+      const bytes = base64ToBytes(requireString(request, 'dataBase64'));
+      if (offset === 0) {
+        if (file) fail('SFTP_FILE_EXISTS', 'SFTP write target already exists.');
+        parentMustExist(path);
+        host.files.set(path, { kind: 'file', content: bytes, modifiedEpochMs: Math.floor(Date.now() / 1000) * 1000 });
+      } else {
+        if (file?.kind !== 'file') fail('SFTP_NOT_FOUND', 'The partial upload is gone from the host.');
+        if (file.content.length !== offset) fail('SFTP_OFFSET_MISMATCH', 'The partial upload on the host does not end where this chunk starts.');
+        const joined = new Uint8Array(offset + bytes.length);
+        joined.set(file.content);
+        joined.set(bytes, offset);
+        host.files.set(path, { kind: 'file', content: joined, modifiedEpochMs: Math.floor(Date.now() / 1000) * 1000 });
+      }
+      return { requestId: request.requestId, bytesWritten: bytes.length, sizeBytes: host.files.get(path)!.content.length };
+    },
     async sftpWriteIfUnchanged(request) {
       requireConnection(request).sftp = true;
       await delay();

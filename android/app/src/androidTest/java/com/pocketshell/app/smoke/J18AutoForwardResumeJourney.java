@@ -15,7 +15,7 @@ public final class J18AutoForwardResumeJourney extends ForwardServiceJourneySupp
         startServer("J18");
         // Setup uses the shipping shared toggle, the user's explicit durable
         // host enablement. The measured cold launch below never opens Ports.
-        click("button[title^='Port forwarding']");
+        openHostTool("ports");
         awaitJsTrue("!!document.querySelector('button.toggle')");
         awaitJsTrue("document.querySelector('button.toggle').textContent.includes('OFF')");
         click("button.toggle");

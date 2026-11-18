@@ -153,7 +153,7 @@ public final class DocumentContentPlugin extends Plugin {
                 throw new IOException("Document chunk offset is outside the source file.");
             }
 
-            byte[] bytes = readAtOffset(content.uri, offset, requestedBytes);
+            byte[] bytes = readChunk(content, offset, requestedBytes);
             boolean eof = bytes.length < requestedBytes
                     || (content.sizeBytes >= 0 && offset + bytes.length >= content.sizeBytes);
             JSObject response = new JSObject()
@@ -173,9 +173,11 @@ public final class DocumentContentPlugin extends Plugin {
     public void releasePickedFile(PluginCall call) {
         String fileId = call.getString("fileId");
         if (fileId != null) {
+            PickedContent removed;
             synchronized (pickedContent) {
-                pickedContent.remove(fileId);
+                removed = pickedContent.remove(fileId);
             }
+            closeSequential(removed);
         }
         call.resolve(new JSObject().put("released", fileId != null));
     }
@@ -298,6 +300,7 @@ public final class DocumentContentPlugin extends Plugin {
     @Override
     protected void handleOnDestroy() {
         synchronized (pickedContent) {
+            for (PickedContent content : pickedContent.values()) closeSequential(content);
             pickedContent.clear();
         }
         synchronized (createdContent) {
@@ -424,7 +427,7 @@ public final class DocumentContentPlugin extends Plugin {
             pickedContent.put(content.fileId, content);
             while (pickedContent.size() > MAX_OPEN_DOCUMENTS) {
                 String oldest = pickedContent.keySet().iterator().next();
-                pickedContent.remove(oldest);
+                closeSequential(pickedContent.remove(oldest));
             }
         }
         return content;
@@ -480,35 +483,77 @@ public final class DocumentContentPlugin extends Plugin {
         }
     }
 
-    private byte[] readAtOffset(Uri uri, long offset, int requestedBytes) throws IOException {
-        try (InputStream input = getContext().getContentResolver().openInputStream(uri)) {
-            if (input == null) throw new IOException("Document provider returned no input stream.");
-            long skipped = 0;
-            while (skipped < offset) {
-                long amount = input.skip(offset - skipped);
-                if (amount > 0) {
-                    skipped += amount;
-                    continue;
+    /** Continue an open sequential read when the offset matches; otherwise reopen and skip. */
+    private byte[] readChunk(PickedContent content, long offset, int requestedBytes) throws IOException {
+        synchronized (content) {
+            try {
+                if (content.sequential == null || content.sequentialPosition != offset) {
+                    closeSequentialLocked(content);
+                    InputStream input = getContext().getContentResolver().openInputStream(content.uri);
+                    if (input == null) throw new IOException("Document provider returned no input stream.");
+                    content.sequential = input;
+                    content.sequentialPosition = 0;
+                    skipFully(input, offset);
+                    content.sequentialPosition = offset;
                 }
-                if (input.read() < 0) throw new IOException("Document ended before the requested offset.");
-                skipped++;
+                byte[] bytes = readUpTo(content.sequential, requestedBytes);
+                content.sequentialPosition += bytes.length;
+                if (bytes.length < requestedBytes) closeSequentialLocked(content);
+                return bytes;
+            } catch (SecurityException error) {
+                closeSequentialLocked(content);
+                throw new IOException("Document read permission expired. Pick the file again.", error);
+            } catch (IOException error) {
+                closeSequentialLocked(content);
+                throw error;
             }
-
-            byte[] bytes = new byte[requestedBytes];
-            int count = 0;
-            while (count < requestedBytes) {
-                int read = input.read(bytes, count, requestedBytes - count);
-                if (read < 0) break;
-                if (read == 0) continue;
-                count += read;
-            }
-            if (count == bytes.length) return bytes;
-            byte[] result = new byte[count];
-            System.arraycopy(bytes, 0, result, 0, count);
-            return result;
-        } catch (SecurityException error) {
-            throw new IOException("Document read permission expired. Pick the file again.", error);
         }
+    }
+
+    private static void skipFully(InputStream input, long offset) throws IOException {
+        long skipped = 0;
+        while (skipped < offset) {
+            long amount = input.skip(offset - skipped);
+            if (amount > 0) {
+                skipped += amount;
+                continue;
+            }
+            if (input.read() < 0) throw new IOException("Document ended before the requested offset.");
+            skipped++;
+        }
+    }
+
+    private static byte[] readUpTo(InputStream input, int requestedBytes) throws IOException {
+        byte[] bytes = new byte[requestedBytes];
+        int count = 0;
+        while (count < requestedBytes) {
+            int read = input.read(bytes, count, requestedBytes - count);
+            if (read < 0) break;
+            if (read == 0) continue;
+            count += read;
+        }
+        if (count == bytes.length) return bytes;
+        byte[] result = new byte[count];
+        System.arraycopy(bytes, 0, result, 0, count);
+        return result;
+    }
+
+    private static void closeSequential(PickedContent content) {
+        if (content == null) return;
+        synchronized (content) {
+            closeSequentialLocked(content);
+        }
+    }
+
+    private static void closeSequentialLocked(PickedContent content) {
+        if (content.sequential == null) return;
+        try {
+            content.sequential.close();
+        } catch (IOException ignored) {
+            // Best-effort: the stream is abandoned either way.
+        }
+        content.sequential = null;
+        content.sequentialPosition = 0;
     }
 
     private static final class PickedContent {
@@ -517,6 +562,14 @@ public final class DocumentContentPlugin extends Plugin {
         final String displayName;
         final String mimeType;
         final long sizeBytes;
+        /**
+         * The open stream of a sequential read and the byte it is positioned at
+         * (#3191). A 100 MB upload reads ~1600 chunks; reopening the provider
+         * and skipping to each offset would re-read the file per chunk on
+         * providers that cannot seek. Guarded by this object's monitor.
+         */
+        InputStream sequential;
+        long sequentialPosition;
 
         PickedContent(String fileId, Uri uri, String displayName, String mimeType, long sizeBytes) {
             this.fileId = fileId;

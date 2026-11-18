@@ -99,9 +99,12 @@
       "suite": "Android platform input adapter",
       "tests": [
         "reads selected documents in ordered bounded chunks and returns exact attachment bytes",
-        "preserves valid files when one selection is over the shared native transfer limit",
-        "rejects mismatched chunk identity and still releases the native document reference",
-        "materializes incoming shared text and files before delivering the share callback",
+        "admits normal phone photos far above the 512 KiB editor limit with the default attachment limits (#3191)",
+        "refuses an over-limit file with a readable human-sized reason and keeps the valid ones",
+        "refuses the part of a selection past the batch limit in plain words",
+        "enforces the file limit while streaming a document whose size the provider did not report",
+        "rejects mismatched chunk identity with a readable message",
+        "delivers incoming shared text and open file references without reading them",
         "registers before starting one turn, filters foreign events, and stops the matching request",
         "cancels a request and drops even a late queued partial or final event",
         "cancels a pending native start without allowing its eventual turn or events through"
@@ -206,6 +209,12 @@
         "uploads bytes through a resolved path and prevents implicit overwrite",
         "stages sanitized attachment names, preserves partial success, and returns retention candidates",
         "does not return completed uploads as attachments after cancellation",
+        "streams a 1.7 MB photo through bounded .part chunks and renames it into place byte-exact (#3191)",
+        "removes the partial file when one file is cancelled mid-upload and keeps the rest of the batch",
+        "removes the partial file when the host refuses a later chunk",
+        "sweeps a .part a dropped connection left behind on the next upload to that folder, never a live one (#3191)",
+        "refuses a source that grows past the attachment limit while streaming and leaves nothing behind",
+        "keeps the text editor read limit at 512 KiB, separate from the 100 MiB attachment limit (#3191)",
         "leaves the remote tree untouched for an empty attachment batch",
         "rejects files above the native transfer limit before issuing a write",
         "rejects stale generations before requests and after in-flight responses",
@@ -992,10 +1001,12 @@
     "tests/unit/androidAttachments.test.ts": {
       "suite": "Android shared composer attachments",
       "tests": [
-        "preserves picker bytes behind opaque handles and stages them on the current native generation",
-        "retains successfully uploaded paths when another source fails",
-        "advances progress only after native acknowledgement and removes the bar on completion",
-        "refuses an outdated generation through the existing file staging guard and clears progress after errors"
+        "keeps picked documents open behind opaque handles and streams them on the current native generation",
+        "shows an over-limit pick as a readable chip error instead of throwing a diagnostic",
+        "shows per-file progress from acknowledged writes and lets one file be cancelled",
+        "retains uploaded paths when another file fails and keeps the failed document open for a retry",
+        "streams in-memory bytes (a pasted or annotated image) through the same chunked path",
+        "refuses an outdated generation through the existing file staging guard and clears the chips after errors"
       ]
     },
     "tests/unit/androidForwardResume.test.ts": {
@@ -1137,6 +1148,14 @@
         "names the chunk and position when a bundle has an undeclared reference",
         "the old es2020 target minifies the real xterm module into an undeclared write (the shipped bug)",
         "the Android build target minifies the real xterm module with no undeclared identifier"
+      ]
+    },
+    "tests/unit/androidUploadChips.test.ts": {
+      "suite": "Android composer upload chips",
+      "tests": [
+        "shows an over-limit file on its own chip in plain words with a human size, never a byte count (#3191)",
+        "shows each uploading file with acknowledged progress and its own Cancel",
+        "renders nothing when no upload is in flight or refused"
       ]
     }
   }

@@ -1,9 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  bytesAttachmentSource,
   createFileWorkspaceService,
+  DEFAULT_FILE_READ_BYTES,
   MAX_SFTP_FILE_BYTES,
   type AttachmentSource,
 } from '../../src/session/files';
+import { ATTACHMENT_WRITE_CHUNK_BYTES, MAX_ATTACHMENT_FILE_BYTES } from '../../src/session/attachmentLimits';
 import type { SshCapabilityPlugin, SshConnectionRef, SshSftpEntry } from '../../src/native/sshCapability';
 
 interface MockFile {
@@ -27,6 +30,7 @@ interface MockSftp {
     read: ReturnType<typeof vi.fn>;
     write: ReturnType<typeof vi.fn>;
     conditionalWrite: ReturnType<typeof vi.fn>;
+    chunk: ReturnType<typeof vi.fn>;
     mkdir: ReturnType<typeof vi.fn>;
     rename: ReturnType<typeof vi.fn>;
     remove: ReturnType<typeof vi.fn>;
@@ -128,6 +132,25 @@ function createMockSftp(seed?: {
     return { requestId: options.requestId, status: 'written' as const, bytesWritten: content.byteLength };
   };
   const conditionalWrite = vi.fn(atomicWrite);
+  // SshCapabilityPlugin.sftpWriteChunk: offset 0 creates exclusively, later
+  // chunks must start exactly at the file's end.
+  const chunk = vi.fn(async (options: { requestId: string; path: string; offset: number; dataBase64: string }) => {
+    const content = base64ToBytes(options.dataBase64);
+    if (content.byteLength > 512 * 1024) throw new Error('SFTP write exceeds 512 KiB.');
+    const existing = files.get(options.path);
+    if (options.offset === 0) {
+      if (existing) throw new Error(`Already exists: ${options.path}`);
+      files.set(options.path, { bytes: content, modifiedEpochMs: 2_000 });
+    } else {
+      if (!existing) throw new Error(`Missing: ${options.path}`);
+      if (existing.bytes.byteLength !== options.offset) throw new Error('offset mismatch');
+      const joined = new Uint8Array(existing.bytes.byteLength + content.byteLength);
+      joined.set(existing.bytes);
+      joined.set(content, existing.bytes.byteLength);
+      files.set(options.path, { bytes: joined, modifiedEpochMs: 2_000 });
+    }
+    return { requestId: options.requestId, bytesWritten: content.byteLength, sizeBytes: files.get(options.path)!.bytes.byteLength };
+  });
   const mkdir = vi.fn(async (options: { requestId: string; path: string }) => {
     directories.add(options.path);
     return { requestId: options.requestId };
@@ -151,6 +174,7 @@ function createMockSftp(seed?: {
     sftpRead: read,
     sftpWrite: write,
     sftpWriteIfUnchanged: conditionalWrite,
+    sftpWriteChunk: chunk,
     sftpMkdir: mkdir,
     sftpRename: rename,
     sftpDelete: remove,
@@ -160,7 +184,7 @@ function createMockSftp(seed?: {
     files,
     directories,
     atomicWrite,
-    calls: { list, read, write, conditionalWrite, mkdir, rename, remove },
+    calls: { list, read, write, conditionalWrite, chunk, mkdir, rename, remove },
   };
 }
 
@@ -372,14 +396,15 @@ describe('SFTP file workspace policy and byte-I/O adapter', () => {
     const service = serviceFor(mock);
     const valid = new TextEncoder().encode('attachment');
     const attachments: AttachmentSource[] = [
-      { name: '../plan for review?.md', bytes: valid },
-      { name: 'too-large.bin', bytes: new Uint8Array(MAX_SFTP_FILE_BYTES + 1) },
+      bytesAttachmentSource('../plan for review?.md', valid),
+      { name: 'too-large.bin', sizeBytes: 11, read: async () => ({ bytes: new Uint8Array(11), eof: true }) },
     ];
     const staged = await service.stageAttachments({
       directory: 'uploads',
       scopeKey: 'Host A/session',
       timestamp: '20260102-030405',
       attachments,
+      maxFileBytes: 10,
     });
 
     expect(staged.directory).toBe('/home/alex/project/uploads/host-a-session');
@@ -389,6 +414,7 @@ describe('SFTP file workspace policy and byte-I/O adapter', () => {
       sizeBytes: valid.length,
     }] });
     expect(mock.files.has(`${staged.directory}/20260102-030405-02-too-large.bin`)).toBe(false);
+    expect(staged.failures).toEqual([{ sourceName: 'too-large.bin', sourceIndex: 1, message: expect.stringMatching(/^This file is .* MB; the limit is .* MB\.$/) }]);
 
     mock.files.set(`${staged.directory}/old.txt`, { bytes: valid, modifiedEpochMs: 1_000 });
     mock.files.set(`${staged.directory}/new.txt`, { bytes: valid, modifiedEpochMs: 9_500 });
@@ -404,20 +430,161 @@ describe('SFTP file workspace policy and byte-I/O adapter', () => {
   it('does not return completed uploads as attachments after cancellation', async () => {
     const mock = createMockSftp({ directories: ['/home/alex/project/uploads'] });
     const service = serviceFor(mock);
-    let checks = 0;
     const staged = await service.stageAttachments({
       directory: 'uploads',
       scopeKey: 'session-a',
       timestamp: '20260102-030405',
       attachments: [
-        { name: 'first.txt', bytes: new TextEncoder().encode('one') },
-        { name: 'second.txt', bytes: new TextEncoder().encode('two') },
+        bytesAttachmentSource('first.txt', new TextEncoder().encode('one')),
+        bytesAttachmentSource('second.txt', new TextEncoder().encode('two')),
       ],
-      isCancelled: () => ++checks >= 3,
+      // Cancelled once the first file has been renamed into place.
+      isCancelled: () => mock.calls.rename.mock.calls.length >= 1,
     });
 
     expect(staged.decision).toEqual({ kind: 'cancelled', attachments: [], completedUploadCount: 1 });
-    expect(mock.calls.write).toHaveBeenCalledTimes(1);
+    expect(mock.calls.chunk).toHaveBeenCalledTimes(1);
+  });
+
+  it('streams a 1.7 MB photo through bounded .part chunks and renames it into place byte-exact (#3191)', async () => {
+    const mock = createMockSftp({ directories: ['/home/alex/project/uploads'] });
+    const service = serviceFor(mock);
+    const photo = new Uint8Array(1_700_000);
+    for (let index = 0; index < photo.length; index += 1) photo[index] = (index * 31 + 7) % 251;
+    const progress: Array<[number, number]> = [];
+    const staged = await service.stageAttachments({
+      directory: 'uploads',
+      scopeKey: 'session',
+      timestamp: '20261118-101500',
+      attachments: [bytesAttachmentSource('PXL_20261118_101530789.jpg', photo, 'image/jpeg')],
+      onProgress: (index, written) => progress.push([index, written]),
+    });
+
+    const finalPath = '/home/alex/project/uploads/session/20261118-101500-01-PXL_20261118_101530789.jpg';
+    expect(staged.failures).toEqual([]);
+    expect(staged.decision).toMatchObject({ kind: 'complete', attachments: [{ path: finalPath, sizeBytes: photo.length }] });
+    // Buffer comparison: a deep toEqual over 1.7 M elements is needlessly slow.
+    expect(Buffer.from(mock.files.get(finalPath)!.bytes).equals(Buffer.from(photo))).toBe(true);
+    expect(mock.files.has(`${finalPath}.part`)).toBe(false);
+    expect(mock.calls.write).not.toHaveBeenCalled();
+    const chunks = mock.calls.chunk.mock.calls.map(([options]) => options as { path: string; offset: number; dataBase64: string });
+    expect(chunks.map((chunk) => chunk.offset)).toEqual([0, 524_288, 1_048_576, 1_572_864]);
+    expect(chunks.every((chunk) => chunk.path === `${finalPath}.part`)).toBe(true);
+    expect(chunks.every((chunk) => atob(chunk.dataBase64).length <= ATTACHMENT_WRITE_CHUNK_BYTES)).toBe(true);
+    expect(mock.calls.rename).toHaveBeenCalledWith(expect.objectContaining({ path: `${finalPath}.part`, destination: finalPath }));
+    expect(progress).toEqual([[0, 524_288], [0, 1_048_576], [0, 1_572_864], [0, 1_700_000]]);
+  });
+
+  it('removes the partial file when one file is cancelled mid-upload and keeps the rest of the batch', async () => {
+    const mock = createMockSftp({ directories: ['/home/alex/project/uploads'] });
+    const service = serviceFor(mock);
+    const large = new Uint8Array(3 * ATTACHMENT_WRITE_CHUNK_BYTES).fill(9);
+    let cancelFirst = false;
+    const staged = await service.stageAttachments({
+      directory: 'uploads',
+      scopeKey: 'session',
+      timestamp: '20261118-101500',
+      attachments: [bytesAttachmentSource('video.mp4', large), bytesAttachmentSource('note.txt', new Uint8Array([1, 2]))],
+      // The user taps Cancel after the host acknowledged the first chunk.
+      onProgress: (index) => { if (index === 0) cancelFirst = true; },
+      isSourceCancelled: (index) => index === 0 && cancelFirst,
+    });
+
+    expect(staged.failures).toEqual([{ sourceName: 'video.mp4', sourceIndex: 0, message: 'Upload cancelled.', cancelled: true }]);
+    expect(staged.decision).toMatchObject({ kind: 'partial', attachments: [{ sourceName: 'note.txt' }] });
+    const left = [...mock.files.keys()].filter((path) => path.includes('video.mp4'));
+    expect(left).toEqual([]);
+    expect(mock.calls.remove).toHaveBeenCalledWith(expect.objectContaining({
+      path: '/home/alex/project/uploads/session/20261118-101500-01-video.mp4.part',
+    }));
+  });
+
+  it('removes the partial file when the host refuses a later chunk', async () => {
+    const mock = createMockSftp({ directories: ['/home/alex/project/uploads'] });
+    const service = serviceFor(mock);
+    const real = mock.calls.chunk.getMockImplementation()!;
+    mock.calls.chunk.mockImplementation(async (options: { offset: number }) => {
+      if (options.offset > 0) throw new Error('No space left on device');
+      return real(options);
+    });
+    const staged = await service.stageAttachments({
+      directory: 'uploads',
+      scopeKey: 'session',
+      timestamp: '20261118-101500',
+      attachments: [bytesAttachmentSource('photo.jpg', new Uint8Array(ATTACHMENT_WRITE_CHUNK_BYTES + 10))],
+    });
+
+    expect(staged.failures).toEqual([{ sourceName: 'photo.jpg', sourceIndex: 0, message: 'No space left on device' }]);
+    expect([...mock.files.keys()].filter((path) => path.includes('photo.jpg'))).toEqual([]);
+  });
+
+  it('sweeps a .part a dropped connection left behind on the next upload to that folder, never a live one (#3191)', async () => {
+    const mock = createMockSftp({ directories: ['/home/alex/project/uploads'] });
+    const service = serviceFor(mock);
+    const folder = '/home/alex/project/uploads/session';
+    // First upload: the connection drops after the first chunk, so neither the
+    // next chunk nor the cleanup delete can reach the host.
+    const real = mock.calls.chunk.getMockImplementation()!;
+    mock.calls.chunk.mockImplementation(async (options: { offset: number }) => {
+      if (options.offset > 0) throw new Error('connection lost');
+      return real(options);
+    });
+    mock.calls.remove.mockRejectedValueOnce(new Error('connection lost'));
+    const dropped = await service.stageAttachments({
+      directory: 'uploads', scopeKey: 'session', timestamp: '20261118-100000',
+      attachments: [bytesAttachmentSource('video.mp4', new Uint8Array(ATTACHMENT_WRITE_CHUNK_BYTES + 1))],
+    });
+    expect(dropped.failures[0]?.message).toBe('connection lost');
+    const orphan = `${folder}/20261118-100000-01-video.mp4.part`;
+    expect(mock.files.has(orphan), 'the dropped upload left its .part').toBe(true);
+    mock.calls.chunk.mockImplementation(real);
+    // Its last write was 11 minutes ago; another upload is writing right now.
+    mock.files.get(orphan)!.modifiedEpochMs = 1_000_000;
+    const live = `${folder}/20261118-101000-01-other.mp4.part`;
+    mock.files.set(live, { bytes: new Uint8Array(8), modifiedEpochMs: 1_000_000 + 11 * 60_000 - 5_000 });
+    const oldDone = `${folder}/20261118-090000-01-done.jpg`;
+    mock.files.set(oldDone, { bytes: new Uint8Array(4), modifiedEpochMs: 1 });
+
+    const next = await service.stageAttachments({
+      directory: 'uploads', scopeKey: 'session', timestamp: '20261118-101100',
+      attachments: [bytesAttachmentSource('photo.jpg', new Uint8Array([1, 2, 3]))],
+      nowMillis: 1_000_000 + 11 * 60_000,
+    });
+
+    expect(next.failures).toEqual([]);
+    expect(mock.files.has(orphan), 'the stale .part is swept').toBe(false);
+    expect(mock.files.has(live), 'a .part written seconds ago belongs to a live upload').toBe(true);
+    expect(mock.files.has(oldDone), 'finished attachments are retention\'s business, not this sweep').toBe(true);
+    expect(mock.files.has(`${folder}/20261118-101100-01-photo.jpg`)).toBe(true);
+  });
+
+  it('refuses a source that grows past the attachment limit while streaming and leaves nothing behind', async () => {
+    const mock = createMockSftp({ directories: ['/home/alex/project/uploads'] });
+    const service = serviceFor(mock);
+    const staged = await service.stageAttachments({
+      directory: 'uploads',
+      scopeKey: 'session',
+      timestamp: '20261118-101500',
+      maxFileBytes: ATTACHMENT_WRITE_CHUNK_BYTES + 1,
+      attachments: [{
+        name: 'clip.mov', mimeType: 'video/quicktime', sizeBytes: null,
+        read: async (_offset, maxBytes) => ({ bytes: new Uint8Array(maxBytes), eof: false }),
+      }],
+    });
+
+    expect(staged.failures[0]?.message).toMatch(/^This video is .* MB; the limit is .* MB\.$/);
+    expect([...mock.files.keys()].filter((path) => path.includes('clip.mov'))).toEqual([]);
+  });
+
+  it('keeps the text editor read limit at 512 KiB, separate from the 100 MiB attachment limit (#3191)', async () => {
+    expect(MAX_SFTP_FILE_BYTES).toBe(512 * 1024);
+    expect(DEFAULT_FILE_READ_BYTES).toBe(512 * 1024);
+    expect(MAX_ATTACHMENT_FILE_BYTES).toBe(100 * 1024 * 1024);
+    const mock = createMockSftp({ files: { '/home/alex/project/big.txt': { bytes: new Uint8Array(MAX_SFTP_FILE_BYTES + 1), modifiedEpochMs: 1_000 } } });
+    const service = serviceFor(mock);
+    await expect(service.readFile('big.txt', MAX_SFTP_FILE_BYTES + 1)).rejects.toMatchObject({ code: 'file-too-large' });
+    await expect(service.readFile('big.txt')).rejects.toMatchObject({ code: 'file-too-large' });
+    expect(mock.calls.read).not.toHaveBeenCalled();
   });
 
   it('leaves the remote tree untouched for an empty attachment batch', async () => {

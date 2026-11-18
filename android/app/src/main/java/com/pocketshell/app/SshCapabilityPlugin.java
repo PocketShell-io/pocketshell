@@ -1008,6 +1008,68 @@ public final class SshCapabilityPlugin extends Plugin {
         });
     }
 
+    /**
+     * One chunk of a resumable attachment upload (#3191). Offset 0 creates the
+     * target exclusively (a fresh {@code .part} file); every later chunk must
+     * land exactly at the target's current end, so a lost or duplicated chunk
+     * fails instead of corrupting the file. Each call stays bounded by the
+     * same per-call transfer cap; the JavaScript uploader owns the whole-file
+     * cap, progress and cancellation.
+     */
+    @PluginMethod
+    public void sftpWriteChunk(PluginCall call) {
+        run(call, "sftpWriteChunk", options -> {
+            String requestId = requiredString(options, "requestId");
+            SshConnection connection = requireConnection(options);
+            String path = requiredString(options, "path");
+            String rootPath = requiredString(options, "rootPath");
+            long offset = requiredLong(options, "offset");
+            if (offset < 0) throw new PluginFailure("INVALID_ARGUMENT", "offset is outside its supported range.");
+            String encoded = options.getString("dataBase64");
+            if (encoded == null) throw new PluginFailure("INVALID_ARGUMENT", "dataBase64 is required.");
+            byte[] bytes;
+            try {
+                bytes = Base64.decode(encoded, Base64.DEFAULT);
+            } catch (IllegalArgumentException error) {
+                throw new PluginFailure("INVALID_ARGUMENT", "SFTP content is not valid base64.", error);
+            }
+            if (bytes.length > MAX_SFTP_TRANSFER_BYTES) throw new PluginFailure("INVALID_ARGUMENT", "SFTP write exceeds 512 KiB.");
+            SFTPClient client = requireSftp(connection);
+            long size;
+            synchronized (connection.sftpLock) {
+                try {
+                    ResolvedSftpPath resolved = resolveSftpPath(client, rootPath, path, true);
+                    boolean regular = resolved.exists
+                        && resolved.attributes.getType() == net.schmizz.sshj.sftp.FileMode.Type.REGULAR;
+                    refuseChunk(SftpWriteChunks.chunkRefusal(offset, resolved.exists, regular, offset));
+                    Set<OpenMode> modes = offset == 0
+                        ? new HashSet<>(Arrays.asList(OpenMode.WRITE, OpenMode.CREAT, OpenMode.EXCL))
+                        : new HashSet<>(Arrays.asList(OpenMode.WRITE));
+                    try (RemoteFile file = client.open(resolved.path, modes)) {
+                        // The size is re-read through the opened handle: what this chunk appends to.
+                        if (offset > 0) refuseChunk(SftpWriteChunks.chunkRefusal(offset, true, true, file.fetchAttributes().getSize()));
+                        SftpWriteChunks.write(file::write, offset, bytes);
+                        size = file.fetchAttributes().getSize();
+                    }
+                } catch (Exception error) {
+                    throw failureFor(error);
+                }
+            }
+            return ack(requestId).put("bytesWritten", bytes.length).put("sizeBytes", size);
+        });
+    }
+
+    private static void refuseChunk(String code) throws PluginFailure {
+        if (code == null) return;
+        switch (code) {
+            case "SFTP_FILE_EXISTS": throw new PluginFailure(code, "SFTP write target already exists.");
+            case "SFTP_NOT_FOUND": throw new PluginFailure(code, "The partial upload is gone from the host.");
+            case "SFTP_NOT_FILE": throw new PluginFailure(code, "SFTP write target is not a regular file.");
+            case "SFTP_OFFSET_MISMATCH": throw new PluginFailure(code, "The partial upload on the host does not end where this chunk starts.");
+            default: throw new PluginFailure("INVALID_ARGUMENT", "offset is outside its supported range.");
+        }
+    }
+
     @PluginMethod
     public void sftpWriteIfUnchanged(PluginCall call) {
         run(call, "sftpWriteIfUnchanged", options -> {

@@ -70,35 +70,96 @@ describe('Android platform input adapter', () => {
 
     expect(documents.pickFiles).toHaveBeenCalledWith({ mimeType: '*/*', multiple: true });
     expect(result.failures).toEqual([]);
-    expect(result.sources).toHaveLength(1);
-    expect(result.sources[0]).toMatchObject({ kind: 'bytes', name: 'notes.txt', mimeType: 'text/plain' });
-    expect((result.sources[0] as { kind: 'bytes'; data: Uint8Array }).data).toEqual(originalBytes);
-    expect(documents.readPickedFileChunk.mock.calls.map(([request]) => request.offset)).toEqual([0, 3, 6, 9, 12, 15, 18]);
+    expect(result.documents).toEqual([{ fileId: 'picked', name: 'notes.txt', mimeType: 'text/plain', sizeBytes: originalBytes.byteLength }]);
+    // Picking reads nothing: the uploader streams the document later.
+    expect(documents.readPickedFileChunk).not.toHaveBeenCalled();
+    const first = await service.readDocumentChunk(result.documents[0]!, 0, 7);
+    expect(first.eof).toBe(false);
+    const rest = await service.readDocumentChunk(result.documents[0]!, 7, 64);
+    expect(rest.eof).toBe(true);
+    expect(new Uint8Array([...first.bytes, ...rest.bytes])).toEqual(originalBytes);
+    expect(documents.readPickedFileChunk.mock.calls.map(([request]) => request.offset)).toEqual([0, 3, 6, 7, 10, 13, 16]);
+    expect(await service.readDocument(result.documents[0]!)).toEqual(originalBytes);
+    await service.releaseDocument(result.documents[0]!);
     expect(documents.releasePickedFile).toHaveBeenCalledWith({ fileId: 'picked' });
   });
 
-  it('preserves valid files when one selection is over the shared native transfer limit', async () => {
+  it('admits normal phone photos far above the 512 KiB editor limit with the default attachment limits (#3191)', async () => {
+    // The maintainer's two failing camera JPEGs and the third 1.67 MB pick.
+    const documents = makeDocumentPlugin({});
+    documents.pickFiles.mockResolvedValue({ cancelled: false, files: [
+      { fileId: 'a', name: 'PXL_20261118_101500123.jpg', mimeType: 'image/jpeg', sizeBytes: 627_672 },
+      { fileId: 'b', name: 'PXL_20261118_101512456.jpg', mimeType: 'image/jpeg', sizeBytes: 667_110 },
+      { fileId: 'c', name: 'PXL_20261118_101530789.jpg', mimeType: 'image/jpeg', sizeBytes: 1_670_000 },
+    ] });
+    const service = createPlatformInputService(
+      documents as unknown as DocumentContentPlugin,
+      makeSpeechPlugin() as unknown as SpeechRecognitionPlugin,
+    );
+
+    const result = await service.pickAttachments();
+
+    expect(result.failures).toEqual([]);
+    expect(result.documents.map((document) => document.fileId)).toEqual(['a', 'b', 'c']);
+    expect(documents.releasePickedFile).not.toHaveBeenCalled();
+  });
+
+  it('refuses an over-limit file with a readable human-sized reason and keeps the valid ones', async () => {
     const documents = makeDocumentPlugin({ small: new Uint8Array([0, 1, 2]) });
     documents.pickFiles.mockResolvedValue({ cancelled: false, files: [
-      { fileId: 'large', name: 'large.bin', mimeType: 'application/octet-stream', sizeBytes: 5 },
+      { fileId: 'large', name: 'IMG_0001.jpg', mimeType: 'image/jpeg', sizeBytes: 120 * 1024 * 1024 },
       { fileId: 'small', name: 'small.bin', mimeType: 'application/octet-stream', sizeBytes: 3 },
     ] });
     const service = createPlatformInputService(
       documents as unknown as DocumentContentPlugin,
       makeSpeechPlugin() as unknown as SpeechRecognitionPlugin,
-      { chunkBytes: 2, maxFileBytes: 4, maxBatchBytes: 8 },
     );
 
     const result = await service.pickAttachments();
 
-    expect(result.sources).toHaveLength(1);
-    expect(result.sources[0]).toMatchObject({ kind: 'bytes', name: 'small.bin' });
-    expect(result.failures).toEqual([{ name: 'large.bin', message: 'This transfer supports files up to 4 bytes.' }]);
-    expect(documents.readPickedFileChunk.mock.calls.map(([request]) => request.fileId)).toEqual(['small', 'small']);
-    expect(documents.releasePickedFile).toHaveBeenCalledTimes(2);
+    expect(result.documents.map((document) => document.name)).toEqual(['small.bin']);
+    expect(result.failures).toEqual([{
+      name: 'IMG_0001.jpg', mimeType: 'image/jpeg', sizeBytes: 120 * 1024 * 1024,
+      message: 'This photo is 120.0 MB; the limit is 100.0 MB.',
+    }]);
+    expect(result.failures[0]!.message).not.toMatch(/\d{5,}|bytes/);
+    expect(documents.releasePickedFile).toHaveBeenCalledWith({ fileId: 'large' });
+    expect(documents.releasePickedFile).toHaveBeenCalledTimes(1);
   });
 
-  it('rejects mismatched chunk identity and still releases the native document reference', async () => {
+  it('refuses the part of a selection past the batch limit in plain words', async () => {
+    const documents = makeDocumentPlugin({});
+    documents.pickFiles.mockResolvedValue({ cancelled: false, files: [
+      { fileId: 'one', name: 'one.mp4', mimeType: 'video/mp4', sizeBytes: 90 * 1024 * 1024 },
+      { fileId: 'two', name: 'two.mp4', mimeType: 'video/mp4', sizeBytes: 90 * 1024 * 1024 },
+      { fileId: 'three', name: 'three.mp4', mimeType: 'video/mp4', sizeBytes: 90 * 1024 * 1024 },
+    ] });
+    const service = createPlatformInputService(
+      documents as unknown as DocumentContentPlugin,
+      makeSpeechPlugin() as unknown as SpeechRecognitionPlugin,
+    );
+
+    const result = await service.pickAttachments();
+
+    expect(result.documents.map((document) => document.fileId)).toEqual(['one', 'two']);
+    expect(result.failures.map((failure) => failure.message)).toEqual([
+      'Together these files are over the 200.0 MB limit for one selection. Pick fewer files.',
+    ]);
+  });
+
+  it('enforces the file limit while streaming a document whose size the provider did not report', async () => {
+    const documents = makeDocumentPlugin({ unknown: new Uint8Array(12) });
+    documents.pickFiles.mockResolvedValue({ cancelled: false, files: [{ fileId: 'unknown', name: 'clip.mov', mimeType: null, sizeBytes: null }] });
+    const service = createPlatformInputService(
+      documents as unknown as DocumentContentPlugin,
+      makeSpeechPlugin() as unknown as SpeechRecognitionPlugin,
+      { chunkBytes: 4, maxFileBytes: 8, maxBatchBytes: 8 },
+    );
+    const { documents: [document] } = await service.pickAttachments();
+    await expect(service.readDocumentChunk(document!, 0, 12)).rejects.toThrow('This video is');
+  });
+
+  it('rejects mismatched chunk identity with a readable message', async () => {
     const documents = makeDocumentPlugin({ picked: new Uint8Array([1, 2]) });
     documents.pickFiles.mockResolvedValue({ cancelled: false, files: [picked('picked', 'notes.bin', new Uint8Array([1, 2]))] });
     documents.readPickedFileChunk.mockResolvedValue({
@@ -112,12 +173,10 @@ describe('Android platform input adapter', () => {
 
     const result = await service.pickAttachments();
 
-    expect(result.sources).toEqual([]);
-    expect(result.failures[0]?.message).toBe('Android returned an unreadable part of the file. Pick it again.');
-    expect(documents.releasePickedFile).toHaveBeenCalledWith({ fileId: 'picked' });
+    await expect(service.readDocumentChunk(result.documents[0]!, 0, 4)).rejects.toThrow('Android returned an unreadable part of the file. Pick it again.');
   });
 
-  it('materializes incoming shared text and files before delivering the share callback', async () => {
+  it('delivers incoming shared text and open file references without reading them', async () => {
     const bytes = new TextEncoder().encode('from another app');
     const documents = makeDocumentPlugin({ shareFile: bytes });
     const service = createPlatformInputService(
@@ -141,10 +200,11 @@ describe('Android platform input adapter', () => {
       requestId: 'share-1',
       subject: 'Shared subject',
       text: 'Shared body',
-      attachments: [{ kind: 'bytes', name: 'shared.txt', mimeType: 'text/plain', data: bytes }],
+      documents: [{ fileId: 'shareFile', name: 'shared.txt', mimeType: 'text/plain', sizeBytes: bytes.byteLength }],
       failures: [],
     });
-    expect(documents.releasePickedFile).toHaveBeenCalledWith({ fileId: 'shareFile' });
+    expect(documents.readPickedFileChunk).not.toHaveBeenCalled();
+    expect(documents.releasePickedFile).not.toHaveBeenCalled();
   });
 
   it('registers before starting one turn, filters foreign events, and stops the matching request', async () => {
