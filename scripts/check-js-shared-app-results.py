@@ -30,6 +30,7 @@ METHOD_CLASSES = {'aThreeFileUploadShowsTheBarMidFlightAndLeavesNoResidueAfterCo
  'androidShareStreamsReachTheChosenSessionOnTheRealHost': 'com.pocketshell.app.smoke.J11ShareUploadJourney',
  'androidSingleShareReachesTheChosenSessionOnTheRealHost': 'com.pocketshell.app.smoke.J11ShareUploadJourney',
  'cdInsideOpenShellKeepsTheTerminalMounted': 'com.pocketshell.app.smoke.J28CdKeepsTerminalJourney',
+ 'androidBackWalksSubviewsThenHostListThenBackgrounds': 'com.pocketshell.app.smoke.J25AndroidBackJourney',
  'changedHostKeyIsRefusedWithVisibleMessage': 'com.pocketshell.app.smoke.J01ConnectAndTrustJourney',
  'firstContactHostKeyAsksAndHonoursRejectOnceAndAlways': 'com.pocketshell.app.smoke.J01ConnectAndTrustJourney',
  'hostAddedThroughFormConnectsToFixture': 'com.pocketshell.app.smoke.J21HostAddConnectJourney',

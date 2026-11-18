@@ -1047,6 +1047,12 @@
         "reuses an existing ordinary shell and never creates one after canonicalization fails"
       ]
     },
+    "tests/unit/androidBack.test.ts": {
+      "suite": "Android Back",
+      "tests": [
+        "walks Ports, the workspace and the host list, then minimises instead of exiting"
+      ]
+    },
     "tests/unit/androidAuthLoss.test.ts": {
       "suite": "Android native auth loss shared-store custody",
       "tests": [

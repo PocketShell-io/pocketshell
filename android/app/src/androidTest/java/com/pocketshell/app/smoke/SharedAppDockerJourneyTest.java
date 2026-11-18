@@ -1247,6 +1247,139 @@ public abstract class SharedAppDockerJourneyTest {
                 listed.getString("stdout").contains(id));
     }
 
+    /**
+     * #3140: system Back from a workspace subview must walk back, not exit.
+     * Ports -> workspace, Settings overlay -> closed, workspace -> host list,
+     * host list -> the app is backgrounded (activity stopped, process and page
+     * alive), not finished. Each press is the real Android Back key.
+     */
+    public void androidBackWalksSubviewsThenHostListThenBackgrounds() throws Exception {
+        String run = "j25-" + Long.toString(System.currentTimeMillis(), 36);
+        connectFixtureAndAttach(run);
+
+        // Count every PTY write the app makes: Back must never reach the shell.
+        evalString("(() => {window.__ps3140writes = 0;const np = window.Capacitor.nativePromise.bind(window.Capacitor);"
+                + "window.Capacitor.nativePromise = (plugin, method, options) => {"
+                + "if (plugin === 'SshCapability' && method === 'writePty') window.__ps3140writes += 1;"
+                + "return np(plugin, method, options);}; return 'ok';})()");
+
+        // Inline composer, typed into with the real (scripted) keyboard up. Android
+        // routes Back to the IME first on a stock keyboard (the system's job, not
+        // the app's); the scripted test IME has no input view to consume it, so the
+        // press reaches the app, which must collapse the composer, keep its draft
+        // and stay in the workspace.
+        if (!exists(".composer")) click("button.rail");
+        awaitJsTrue("!!document.querySelector('.composer textarea.draft')");
+        focusJ19FormInputWithNativeIme(".composer textarea.draft");
+        setValue(".composer textarea.draft", "draft kept by back 3140");
+        awaitJsTrue("!!document.querySelector('.composer') && !!document.querySelector('.workspace')");
+        screenshot("j25-composer-open");
+        // First Back with the keyboard up: the system closes the keyboard, the
+        // app sees nothing, so the composer is still open.
+        assertTrue("the keyboard is up before the first Back", imeVisible());
+        pressAndroidBack();
+        awaitImeHidden();
+        assertTrue("the first Back only closed the keyboard; the composer is still open", exists(".composer"));
+        pressAndroidBack();
+        awaitJsTrue("!document.querySelector('.composer') && !!document.querySelector('.workspace')");
+        click("button.rail");
+        awaitJsTrue("!!document.querySelector('.composer textarea.draft')");
+        assertEquals("Back keeps the composer draft", "draft kept by back 3140",
+                evalString("document.querySelector('.composer textarea.draft').value"));
+        click("button.rail");
+        awaitJsTrue("!document.querySelector('.composer')");
+
+        // A dialog: Back closes the New session dialog, stays in the workspace.
+        click("button[title='New session in any folder']");
+        awaitJsTrue("!!document.querySelector('.overlay-panel')");
+        if (imeVisible()) {
+            // The dialog focused a field: that Back belongs to the keyboard.
+            pressAndroidBack();
+            awaitImeHidden();
+            assertTrue("the first Back only closed the keyboard", exists(".overlay-panel"));
+        }
+        pressAndroidBack();
+        awaitJsTrue("!document.querySelector('.overlay-panel') && !!document.querySelector('.workspace')");
+        assertAppAlive("Back from the New session dialog");
+
+        click("button[title^='Port forwarding']");
+        awaitJsTrue("!!document.querySelector('.port-panel')");
+        screenshot("j25-ports-open");
+        pressAndroidBack();
+        awaitJsTrue("!document.querySelector('.port-panel') && !!document.querySelector('.workspace')");
+        assertAppAlive("Back from Ports");
+
+        click("button[title='Settings']");
+        awaitJsTrue("!!document.querySelector('.overlay-panel')");
+        screenshot("j25-settings-open");
+        pressAndroidBack();
+        awaitJsTrue("!document.querySelector('.overlay-panel') && !!document.querySelector('.workspace')");
+        assertAppAlive("Back from Settings");
+
+        // A focused terminal: Back navigates; it must not write ESC or any byte.
+        // (Back from Ports landed on the empty host workspace, so reopen the folder.)
+        openFolder("ps-shared-" + run);
+        awaitJsTrue(VISIBLE_TERMINAL + ".includes('$')");
+        evalString("(() => {const t = " + VISIBLE_TEXTAREA + "; if (!t) return 'no terminal'; t.focus(); return document.activeElement === t ? 'focused' : 'not focused';})()");
+        awaitJsTrue("document.activeElement === " + VISIBLE_TEXTAREA);
+        String writesBefore = evalString("String(window.__ps3140writes)");
+        SystemClock.sleep(1000);
+        boolean keyboardUp = imeVisible();
+        Log.i(TAG, "J25_TERMINAL_FOCUSED keyboard=" + keyboardUp);
+        if (keyboardUp) {
+            // A visible keyboard takes that Back (the system's job); the terminal still got no bytes.
+            pressAndroidBack();
+            awaitImeHidden();
+            assertTrue("the keyboard's Back left the workspace in place", exists(".workspace"));
+        }
+        pressAndroidBack();
+        awaitJsTrue("!!document.querySelector('.picker .host-list') && !document.querySelector('.workspace')");
+        assertAppAlive("Back from the workspace");
+        assertEquals("Back sends no bytes to the shell", writesBefore, evalString("String(window.__ps3140writes)"));
+        screenshot("j25-host-list");
+
+        pressAndroidBack();
+        long deadline = SystemClock.uptimeMillis() + 10_000;
+        while (SystemClock.uptimeMillis() < deadline
+                && scenario.getState() != androidx.lifecycle.Lifecycle.State.CREATED
+                && scenario.getState() != androidx.lifecycle.Lifecycle.State.DESTROYED) {
+            Thread.sleep(100);
+        }
+        assertEquals("Back at the host list backgrounds the app (stopped, not finished)",
+                androidx.lifecycle.Lifecycle.State.CREATED, scenario.getState());
+        // Return like a launcher tap: the stopped activity comes back, not a new process.
+        android.content.Context target = InstrumentationRegistry.getInstrumentation().getTargetContext();
+        target.startActivity(new android.content.Intent(target, MainActivity.class)
+                .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK
+                        | android.content.Intent.FLAG_ACTIVITY_REORDER_TO_FRONT));
+        scenario.moveToState(androidx.lifecycle.Lifecycle.State.RESUMED);
+        awaitJsTrue("!!document.querySelector('.picker .host-list')");
+        assertEquals("the same page survived: no cold launch", 1, pageStartCount());
+    }
+
+    private void awaitImeHidden() throws Exception {
+        long deadline = SystemClock.uptimeMillis() + 10_000;
+        while (SystemClock.uptimeMillis() < deadline && imeVisible()) SystemClock.sleep(100);
+        assertTrue("the keyboard closed", !imeVisible());
+    }
+
+    private boolean imeVisible() {
+        final boolean[] visible = new boolean[1];
+        scenario.onActivity(activity -> {
+            androidx.core.view.WindowInsetsCompat insets = androidx.core.view.ViewCompat.getRootWindowInsets(activity.getWindow().getDecorView());
+            visible[0] = insets != null && insets.isVisible(androidx.core.view.WindowInsetsCompat.Type.ime());
+        });
+        return visible[0];
+    }
+
+    private void pressAndroidBack() {
+        InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK);
+    }
+
+    private void assertAppAlive(String step) {
+        assertEquals(step + " must not finish the app", androidx.lifecycle.Lifecycle.State.RESUMED, scenario.getState());
+    }
+
     /** A real Android drag over a raw-mode terminal must not send arrow bytes. */
     public void scrollTerminalDoesNotSendInputBytes() throws Exception {
         String run = "j15-" + Long.toString(System.currentTimeMillis(), 36);

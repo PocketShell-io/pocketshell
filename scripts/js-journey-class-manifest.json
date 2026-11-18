@@ -25,6 +25,7 @@
     "J22ForwardServiceFgsJourney",
     "J23InlineDictationJourney",
     "J24SettingsReachJourney",
-    "J28CdKeepsTerminalJourney"
+    "J28CdKeepsTerminalJourney",
+    "J25AndroidBackJourney"
   ]
 }

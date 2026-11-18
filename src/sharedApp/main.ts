@@ -5,7 +5,8 @@ import '@xterm/xterm/css/xterm.css';
 // The shared tokens, primitives and Inter — the desktop's and web's first import.
 import '@ui/styles.css';
 import { provideApi } from '@ui/app/ipc';
-import { dismissTopLayer, provideExtensions } from '@ui/app/extensions';
+import { provideExtensions } from '@ui/app/extensions';
+import { handleAndroidBack } from './androidBack';
 import { recordDiagError } from '@ui/app/diag';
 import { runInstalledDataMigration } from '@/migration/installedDataMigration';
 import AndroidAppRoot from './AndroidAppRoot.vue';
@@ -68,16 +69,10 @@ export function mountSharedApp(target: string | Element): void {
   app.onUnmount(releaseAuthLoss);
   app.mount(target);
 
-  // Android Back closes the topmost open layer (an overlay, a prompt), then
-  // walks the shared app's history, then leaves the app.
+  // Android Back: the shared app consumes it (top layer, subview, workspace,
+  // in that order); at the host list root nothing is left, so the app goes to
+  // the background. Minimised, not exited: the SSH session survives.
   void CapacitorApp.addListener('backButton', () => {
-    if (dismissTopLayer()) return;
-    if (router.currentRoute.value.name === 'hosts') {
-      void CapacitorApp.exitApp();
-    } else if (router.options.history.state.back) {
-      router.back();
-    } else {
-      void router.push({ name: 'hosts' });
-    }
+    handleAndroidBack(router, () => void CapacitorApp.minimizeApp());
   });
 }
