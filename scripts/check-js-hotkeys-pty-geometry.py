@@ -130,6 +130,8 @@ def _expect_near(value: object, expected: float, label: str) -> None:
 # measured on API 35 (run js3060-hk03), not the old 32px one-line error chip.
 ERROR_RECOVERY_STATUS_ROW_HEIGHT_PX = 64
 ERROR_RECOVERY_DOCK_HEIGHT_PX = 113
+# Compact 13px terminal default (#3138): at least 45 columns at the 144px cap.
+COMPACT_MIN_COLS = 45
 
 
 def validate_error_status_dock(stage: object) -> None:
@@ -186,11 +188,16 @@ def validate_error_status_dock(stage: object) -> None:
     if isinstance(visible_rows, bool) or not isinstance(visible_rows, int) or visible_rows < 5:
         raise OracleFailure("error dock leaves fewer than five terminal rows visible")
     runtime = stage.get("runtimeGeometry")
-    if not isinstance(runtime, dict) or runtime.get("cols") != 38 or runtime.get("rows") != 6:
-        raise OracleFailure("error dock changed the accepted API 35 38×6 PTY grid")
+    # The 144px cap holds the accepted six-row grid; the column count follows the
+    # terminal font (47 at the 13px compact default of #3138, 38 at the old 16px),
+    # so pin the compact floor and the settled status, not a font-specific constant.
+    cols = runtime.get("cols") if isinstance(runtime, dict) else None
+    if (not isinstance(runtime, dict) or isinstance(cols, bool) or not isinstance(cols, int)
+            or cols < COMPACT_MIN_COLS or runtime.get("rows") != 6):
+        raise OracleFailure(f"error dock changed the accepted API 35 six-row compact PTY grid (>={COMPACT_MIN_COLS} cols)")
     if (stage.get("resizePending") != 0 or stage.get("resizeFailures") != 0
-            or stage.get("resizeStatus") != "38 × 6 accepted by SSH"):
-        raise OracleFailure("error dock geometry is not settled at the accepted 38×6 SSH size")
+            or stage.get("resizeStatus") != f"{cols} × 6 accepted by SSH"):
+        raise OracleFailure(f"error dock geometry is not settled at the accepted {cols}×6 SSH size")
 
 
 def self_test() -> int:
@@ -199,16 +206,16 @@ def self_test() -> int:
          "resizePending": 0, "resizeFailures": 0,
          "resizeStatus": f"{cols} × {rows} accepted by SSH"}
         for name, cols, rows in (
-            ("dictation-ready-ime-open", 38, 6),
-            ("dictation-listening-ime-open", 38, 6),
-            ("dictation-listening-ctrl-open-ime-open", 38, 6),
-            ("dictation-stop-awaiting-final", 38, 6),
-            ("dictation-final-inserted", 38, 6),
-            ("dictation-post-stop-keyboard-input", 38, 6),
-            ("dictation-error-ime-open", 38, 6),
-            ("dictation-reattached-ime-open", 38, 6),
-            ("dictation-background-cancel-resumed", 37, 24),
-            ("dictation-post-resume-ime-open", 38, 6),
+            ("dictation-ready-ime-open", 47, 6),
+            ("dictation-listening-ime-open", 47, 6),
+            ("dictation-listening-ctrl-open-ime-open", 47, 6),
+            ("dictation-stop-awaiting-final", 47, 6),
+            ("dictation-final-inserted", 47, 6),
+            ("dictation-post-stop-keyboard-input", 47, 6),
+            ("dictation-error-ime-open", 47, 6),
+            ("dictation-reattached-ime-open", 47, 6),
+            ("dictation-background-cancel-resumed", 45, 24),
+            ("dictation-post-resume-ime-open", 47, 6),
         )
     ]
     stop_waiting_stage = next(stage for stage in stages if stage["stage"] == "dictation-stop-awaiting-final")
@@ -220,11 +227,11 @@ def self_test() -> int:
     })
     journey = {"geometryTrace": stages}
     cases = [
-        ("keyboard and IME-hidden local grids match independent host samples", "6 38\n24 37\n" * 10, True),
-        ("host PTY mismatch at IME-hidden resume is rejected", "6 38\n" * 10, False),
-        ("unacknowledged local resume geometry is rejected", "6 38\n24 37\n" * 10, False),
-        ("journey missing the pre-final Stop checkpoint is rejected", "6 38\n24 37\n" * 10, False),
-        ("Stop checkpoint without a transcribing dock is rejected", "6 38\n24 37\n" * 10, False),
+        ("keyboard and IME-hidden local grids match independent host samples", "6 47\n24 45\n" * 10, True),
+        ("host PTY mismatch at IME-hidden resume is rejected", "6 47\n" * 10, False),
+        ("unacknowledged local resume geometry is rejected", "6 47\n24 45\n" * 10, False),
+        ("journey missing the pre-final Stop checkpoint is rejected", "6 47\n24 45\n" * 10, False),
+        ("Stop checkpoint without a transcribing dock is rejected", "6 47\n24 45\n" * 10, False),
     ]
     failed = False
 
@@ -251,10 +258,10 @@ def self_test() -> int:
         "terminalViewportDockCapPx": 144,
         "terminalGridViewport": {"top": 0, "bottom": 144, "height": 144},
         "visibleTerminalRows": 5,
-        "runtimeGeometry": {"cols": 38, "rows": 6},
+        "runtimeGeometry": {"cols": 47, "rows": 6},
         "resizePending": 0,
         "resizeFailures": 0,
-        "resizeStatus": "38 × 6 accepted by SSH",
+        "resizeStatus": "47 × 6 accepted by SSH",
     }
     next(stage for stage in journey["geometryTrace"]
          if stage["stage"] == "dictation-error-ime-open").update(error_stage)
@@ -281,7 +288,7 @@ def self_test() -> int:
         }, False),
         ("error dock with fewer than five rows fails", {**error_stage, "visibleTerminalRows": 4}, False),
         ("error dock with a changed PTY grid fails", {
-            **error_stage, "runtimeGeometry": {"cols": 38, "rows": 5},
+            **error_stage, "runtimeGeometry": {"cols": 47, "rows": 5},
         }, False),
     ]
     for label, stage, should_pass in error_dock_cases:

@@ -1247,6 +1247,199 @@ public abstract class SharedAppDockerJourneyTest {
                 listed.getString("stdout").contains(id));
     }
 
+    /**
+     * #3140: system Back from a workspace subview must walk back, not exit.
+     * Ports -> workspace, Settings overlay -> closed, workspace -> host list,
+     * host list -> the app is backgrounded (activity stopped, process and page
+     * alive), not finished. Each press is the real Android Back key.
+     */
+    public void androidBackWalksSubviewsThenHostListThenBackgrounds() throws Exception {
+        String run = "j25-" + Long.toString(System.currentTimeMillis(), 36);
+        connectFixtureAndAttach(run);
+
+        // Count every PTY write the app makes: Back must never reach the shell.
+        evalString("(() => {window.__ps3140writes = 0;const np = window.Capacitor.nativePromise.bind(window.Capacitor);"
+                + "window.Capacitor.nativePromise = (plugin, method, options) => {"
+                + "if (plugin === 'SshCapability' && method === 'writePty') window.__ps3140writes += 1;"
+                + "return np(plugin, method, options);}; return 'ok';})()");
+
+        // Inline composer, typed into with the real (scripted) keyboard up. Android
+        // routes Back to the IME first on a stock keyboard (the system's job, not
+        // the app's); the scripted test IME has no input view to consume it, so the
+        // press reaches the app, which must collapse the composer, keep its draft
+        // and stay in the workspace.
+        if (!exists(".composer")) click("button.rail");
+        awaitJsTrue("!!document.querySelector('.composer textarea.draft')");
+        focusJ19FormInputWithNativeIme(".composer textarea.draft");
+        setValue(".composer textarea.draft", "draft kept by back 3140");
+        awaitJsTrue("!!document.querySelector('.composer') && !!document.querySelector('.workspace')");
+        screenshot("j25-composer-open");
+        // First Back with the keyboard up: the system closes the keyboard, the
+        // app sees nothing, so the composer is still open.
+        assertTrue("the keyboard is up before the first Back", imeVisible());
+        pressAndroidBack();
+        awaitImeHidden();
+        assertTrue("the first Back only closed the keyboard; the composer is still open", exists(".composer"));
+        pressAndroidBack();
+        awaitJsTrue("!document.querySelector('.composer') && !!document.querySelector('.workspace')");
+        click("button.rail");
+        awaitJsTrue("!!document.querySelector('.composer textarea.draft')");
+        assertEquals("Back keeps the composer draft", "draft kept by back 3140",
+                evalString("document.querySelector('.composer textarea.draft').value"));
+        click("button.rail");
+        awaitJsTrue("!document.querySelector('.composer')");
+
+        // A dialog: Back closes the New session dialog, stays in the workspace.
+        click("button[title='New session in any folder']");
+        awaitJsTrue("!!document.querySelector('.overlay-panel')");
+        if (imeVisible()) {
+            // The dialog focused a field: that Back belongs to the keyboard.
+            pressAndroidBack();
+            awaitImeHidden();
+            assertTrue("the first Back only closed the keyboard", exists(".overlay-panel"));
+        }
+        pressAndroidBack();
+        awaitJsTrue("!document.querySelector('.overlay-panel') && !!document.querySelector('.workspace')");
+        assertAppAlive("Back from the New session dialog");
+
+        click("button[title^='Port forwarding']");
+        awaitJsTrue("!!document.querySelector('.port-panel')");
+        screenshot("j25-ports-open");
+        pressAndroidBack();
+        awaitJsTrue("!document.querySelector('.port-panel') && !!document.querySelector('.workspace')");
+        assertAppAlive("Back from Ports");
+
+        click("button[title='Settings']");
+        awaitJsTrue("!!document.querySelector('.overlay-panel')");
+        screenshot("j25-settings-open");
+        pressAndroidBack();
+        awaitJsTrue("!document.querySelector('.overlay-panel') && !!document.querySelector('.workspace')");
+        assertAppAlive("Back from Settings");
+
+        // A focused terminal: Back navigates; it must not write ESC or any byte.
+        // (Back from Ports landed on the empty host workspace, so reopen the folder.)
+        openFolder("ps-shared-" + run);
+        awaitJsTrue(VISIBLE_TERMINAL + ".includes('$')");
+        evalString("(() => {const t = " + VISIBLE_TEXTAREA + "; if (!t) return 'no terminal'; t.focus(); return document.activeElement === t ? 'focused' : 'not focused';})()");
+        awaitJsTrue("document.activeElement === " + VISIBLE_TEXTAREA);
+        String writesBefore = evalString("String(window.__ps3140writes)");
+        SystemClock.sleep(1000);
+        boolean keyboardUp = imeVisible();
+        Log.i(TAG, "J25_TERMINAL_FOCUSED keyboard=" + keyboardUp);
+        if (keyboardUp) {
+            // A visible keyboard takes that Back (the system's job); the terminal still got no bytes.
+            pressAndroidBack();
+            awaitImeHidden();
+            assertTrue("the keyboard's Back left the workspace in place", exists(".workspace"));
+        }
+        pressAndroidBack();
+        awaitJsTrue("!!document.querySelector('.picker .host-list') && !document.querySelector('.workspace')");
+        assertAppAlive("Back from the workspace");
+        assertEquals("Back sends no bytes to the shell", writesBefore, evalString("String(window.__ps3140writes)"));
+        screenshot("j25-host-list");
+
+        pressAndroidBack();
+        long deadline = SystemClock.uptimeMillis() + 10_000;
+        while (SystemClock.uptimeMillis() < deadline
+                && scenario.getState() != androidx.lifecycle.Lifecycle.State.CREATED
+                && scenario.getState() != androidx.lifecycle.Lifecycle.State.DESTROYED) {
+            Thread.sleep(100);
+        }
+        assertEquals("Back at the host list backgrounds the app (stopped, not finished)",
+                androidx.lifecycle.Lifecycle.State.CREATED, scenario.getState());
+        // Return like a launcher tap: the stopped activity comes back, not a new process.
+        android.content.Context target = InstrumentationRegistry.getInstrumentation().getTargetContext();
+        target.startActivity(new android.content.Intent(target, MainActivity.class)
+                .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK
+                        | android.content.Intent.FLAG_ACTIVITY_REORDER_TO_FRONT));
+        scenario.moveToState(androidx.lifecycle.Lifecycle.State.RESUMED);
+        awaitJsTrue("!!document.querySelector('.picker .host-list')");
+        assertEquals("the same page survived: no cold launch", 1, pageStartCount());
+    }
+
+    private void awaitImeHidden() throws Exception {
+        long deadline = SystemClock.uptimeMillis() + 10_000;
+        while (SystemClock.uptimeMillis() < deadline && imeVisible()) SystemClock.sleep(100);
+        assertTrue("the keyboard closed", !imeVisible());
+    }
+
+    private boolean imeVisible() {
+        final boolean[] visible = new boolean[1];
+        scenario.onActivity(activity -> {
+            androidx.core.view.WindowInsetsCompat insets = androidx.core.view.ViewCompat.getRootWindowInsets(activity.getWindow().getDecorView());
+            visible[0] = insets != null && insets.isVisible(androidx.core.view.WindowInsetsCompat.Type.ime());
+        });
+        return visible[0];
+    }
+
+    private void pressAndroidBack() {
+        InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK);
+    }
+
+    private void assertAppAlive(String step) {
+        assertEquals(step + " must not finish the app", androidx.lifecycle.Lifecycle.State.RESUMED, scenario.getState());
+    }
+
+    /**
+     * #3105: on the normal phone UI, New session lists the host's real folders
+     * (not "Search 0 folders here"), a session started in a listed folder runs
+     * visible input/output, and the Files tab lists that folder, opens a file,
+     * edits it and saves it. The runner seeds {@code ~/<run>-j27/proj-one/notes.txt}
+     * and, after the run, reads the file, the terminal's proof file and the host
+     * session list over its own SSH connection (the independent oracle).
+     */
+    public void newSessionFolderPickerAndFilesEditWorkOnTheRealHost() throws Exception {
+        String run = sessionRun();
+        String root = run + "-j27";
+        String marker = "PS3105_$((6*7))_" + run;
+        openFixtureHost(run);
+        awaitJsTrue("document.querySelectorAll('.dir-header').length > 0");
+
+        click("button[title='New session in any folder']");
+        awaitJsTrue("!!document.querySelector('.new-session')");
+        Thread.sleep(2000);
+        click(".new-session .icon-btn[title='Home folder']");
+        Thread.sleep(1000);
+        awaitJsTrue("[...document.querySelectorAll('.folder-row .folder-name')].some((n)=>n.textContent.trim()==="
+                + JSONObject.quote(root) + ")");
+        assertFalse("the folder picker must list the host's folders, not 'Search 0 folders here'",
+                evalString("document.querySelector(\"input[aria-label='Search folders in this directory']\")?.placeholder ?? ''")
+                        .startsWith("Search 0 "));
+        committedScreenshot("j27-new-session-folders");
+        for (String name : new String[] {root, "proj-one"}) {
+            evalString("(() => {const row=[...document.querySelectorAll('.folder-row')].find((n)=>n.querySelector('.folder-name')?.textContent.trim()==="
+                    + JSONObject.quote(name) + "); if(!row) throw new Error('no folder row ' + " + JSONObject.quote(name)
+                    + "); row.click(); return 'ok';})()");
+            if (name.equals(root)) {
+                awaitJsTrue("[...document.querySelectorAll('.folder-row .folder-name')].some((n)=>n.textContent.trim()==='proj-one')");
+            }
+        }
+        awaitJsTrue("(document.querySelector('.preview-path')?.textContent ?? '').includes(" + JSONObject.quote(root + "/proj-one") + ")");
+        click("button[title='Create the session and leave it at a plain shell']");
+        awaitJsTrue("!document.querySelector('.new-session') && " + VISIBLE_TERMINAL + ".includes('$')");
+        typeLine("echo " + marker + " | tee terminal-proof.txt");
+        awaitTerminalLine("PS3105_42_" + run);
+        committedScreenshot("j27-new-session-terminal");
+
+        click("button.tab.add");
+        awaitJsTrue("[...document.querySelectorAll('.menu-item')].some((n)=>n.textContent.trim()==='New Files tab')");
+        evalString("(() => {const item=[...document.querySelectorAll('.menu-item')].find((n)=>n.textContent.trim()==='New Files tab');"
+                + "item.click(); return 'ok';})()");
+        awaitJsTrue("[...document.querySelectorAll('.file-tree .entry .nm')].some((n)=>n.getAttribute('title')==='notes.txt')");
+        committedScreenshot("j27-files-listing");
+        evalString("(() => {const nm=[...document.querySelectorAll('.file-tree .entry .nm')].find((n)=>n.getAttribute('title')==='notes.txt');"
+                + "nm.closest('.entry').click(); return 'ok';})()");
+        awaitJsTrue("!!document.querySelector('.cm-content') && document.querySelector('.cm-content').textContent.includes('before-edit')");
+        String edited = "edited-on-phone-" + run;
+        evalString("(() => {const c=document.querySelector('.cm-content'); c.focus(); document.execCommand('selectAll');"
+                + "return String(document.execCommand('insertText', false, " + JSONObject.quote(edited + "\n") + "));})()");
+        awaitJsTrue("document.querySelector('.save-btn') && !document.querySelector('.save-btn').disabled");
+        click(".save-btn");
+        awaitJsTrue("!document.querySelector('.editor-bar .dirty') && !document.querySelector('.file-error')"
+                + " && document.querySelector('.save-btn')?.disabled === true");
+        committedScreenshot("j27-files-saved");
+    }
+
     /** A real Android drag over a raw-mode terminal must not send arrow bytes. */
     public void scrollTerminalDoesNotSendInputBytes() throws Exception {
         String run = "j15-" + Long.toString(System.currentTimeMillis(), 36);
@@ -1295,6 +1488,67 @@ public abstract class SharedAppDockerJourneyTest {
         Log.i(TAG, "J15_HOST_SCROLL_ORACLE " + recorded);
         screenshot("j15-scrolled-terminal");
         assertEquals("scrolling sends no input bytes, including arrow sequences, to the host", "", recorded.getString("stdout").trim());
+    }
+
+    /**
+     * #3146: a `cd` inside an open aplexer shell makes the host report a new
+     * `workspace` for the same session id. The tree may file the session under
+     * its new folder, but the open terminal must stay: no second PTY open, the
+     * same xterm DOM node, the same transport.
+     */
+    public void cdInsideOpenShellKeepsTheTerminalMounted() throws Exception {
+        String run = "j28-" + Long.toString(System.currentTimeMillis(), 36);
+        connectFixtureAndAttach(run);
+        installRecoveryRecorder();
+        JSONObject live = latestLiveJournalEntry();
+        String tag = "shell-" + run;
+        // Mark the visible xterm node: a remount creates a new element without the mark.
+        assertEquals("marked", evalString("(() => {const n=[...document.querySelectorAll('.xterm')]"
+                + ".find((e)=>e.offsetParent!==null); if(!n) return 'none'; n.__ps3146='mounted'; return 'marked';})()"));
+        int opensBefore = Integer.parseInt(evalString("String(window.__ps2954.opens.length)"));
+        int closesBefore = Integer.parseInt(evalString("String(window.__ps2954.closes.length)"));
+        int dialsBefore = nativeDialCount();
+        int xtermBefore = Integer.parseInt(evalString("String(document.querySelectorAll('.xterm').length)"));
+        screenshot("j28-before-cd");
+        typeLine("cd /tmp && echo J28_CD_DONE");
+        awaitJsTrue(VISIBLE_TERMINAL + ".includes('J28_CD_DONE')", 15_000);
+        // Host oracle: the session's aplexer workspace follows the cwd (this is the premise).
+        String snapshotCmd = "PATH=\"$HOME/.local/bin:$PATH\" a --json snapshot";
+        JSONObject moved = null;
+        for (int attempt = 0; attempt < 20 && moved == null; attempt++) {
+            JSONObject snap = awaitNativeExec("j28-snap-" + run + "-" + attempt, live.getString("transportId"),
+                    live.getString("generationId"), snapshotCmd);
+            JSONArray rows = new JSONArray(snap.getString("stdout"));
+            for (int i = 0; i < rows.length(); i++) {
+                JSONObject row = rows.getJSONObject(i);
+                if (tag.equals(row.optString("tag")) && "/tmp".equals(row.optString("workspace"))) moved = row;
+            }
+            if (moved == null) SystemClock.sleep(500);
+        }
+        assertNotNull("the host reports the session's workspace as /tmp after the cd", moved);
+        // Wait out two session-tree polls (5s each): the tree re-lists and re-groups.
+        awaitJsTrue("[...document.querySelectorAll('.dir-header')].some((n)=>n.textContent.includes('tmp'))", 30_000);
+        SystemClock.sleep(11_000);
+        screenshot("j28-after-cd-and-polls");
+        assertEquals("the same xterm DOM node is still mounted and visible", "mounted",
+                evalString("(() => {const n=[...document.querySelectorAll('.xterm')].find((e)=>e.offsetParent!==null);"
+                        + "return n ? String(n.__ps3146 ?? 'remounted') : 'gone';})()"));
+        assertEquals("no extra xterm instance was created", xtermBefore,
+                Integer.parseInt(evalString("String(document.querySelectorAll('.xterm').length)")));
+        assertEquals("no second PTY was opened (no re-attach)", opensBefore,
+                Integer.parseInt(evalString("String(window.__ps2954.opens.length)")));
+        assertEquals("no PTY was closed", closesBefore,
+                Integer.parseInt(evalString("String(window.__ps2954.closes.length)")));
+        assertEquals("no new native dial", dialsBefore, nativeDialCount());
+        assertTrue("the terminal still shows the typed command", terminalShows("J28_CD_DONE"));
+        Log.i(TAG, "J28_CD_ORACLE opens=" + opensBefore + " closes=" + closesBefore + " moved=" + moved.optString("workspace"));
+        // And it still takes input after the poll.
+        typeLine("echo J28_STILL_HERE");
+        awaitJsTrue(VISIBLE_TERMINAL + ".includes('J28_STILL_HERE')", 15_000);
+    }
+
+    private boolean terminalShows(String needle) throws Exception {
+        return Boolean.parseBoolean(evalString("String(" + VISIBLE_TERMINAL + ".includes(" + JSONObject.quote(needle) + "))"));
     }
 
     protected void openAddHostForm() throws Exception {
@@ -1847,6 +2101,27 @@ public abstract class SharedAppDockerJourneyTest {
     }
 
     /** Evidence only: the runner pulls /data/local/tmp/ps2952-*.png next to the results. */
+    /**
+     * A screenshot of what the journey just asserted: waits for two animation
+     * frames and the WebView's committed visual state before capture (the plain
+     * {@link #screenshot} can race a repaint and show an earlier screen).
+     */
+    protected void committedScreenshot(String name) throws Exception {
+        String token = Long.toString(SystemClock.uptimeMillis());
+        evalString("(() => {window.__ps3105Painted=null;requestAnimationFrame(()=>requestAnimationFrame(()=>window.__ps3105Painted="
+                + JSONObject.quote(token) + "));return 'scheduled';})()");
+        awaitJsTrue("window.__ps3105Painted===" + JSONObject.quote(token), 5000);
+        CountDownLatch committed = new CountDownLatch(1);
+        scenario.onActivity(activity -> activity.getBridge().getWebView().postVisualStateCallback(
+                SystemClock.uptimeMillis(), new WebView.VisualStateCallback() {
+                    @Override public void onComplete(long requestId) { committed.countDown(); }
+                }));
+        assertTrue("WebView must commit the asserted screen before capture", committed.await(5, TimeUnit.SECONDS));
+        InstrumentationRegistry.getInstrumentation().waitForIdleSync();
+        SystemClock.sleep(250);
+        screenshot(name);
+    }
+
     protected void screenshot(String name) {
         ScriptedIme.shell("screencap -p /data/local/tmp/ps2952-" + name + ".png");
     }

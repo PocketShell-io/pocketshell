@@ -1,7 +1,7 @@
 #!/usr/bin/python3 -I
 """Qualify JS-first Android feature journeys without accepting a vacuous run.
 
-The manifest names the 24 user-visible journeys mapped from the removed
+The manifest names the 26 user-visible journeys mapped from the removed
 app2 suite. Qualification stays BLOCK until every registered journey executes.
 Packaged mode reads canonical same-run lane reports, never the overwritten
 shared Gradle output or convenience copies of phase reports.
@@ -30,7 +30,7 @@ ROOT = Path(__file__).resolve().parent.parent
 MANIFEST = ROOT / "scripts/js-journey-class-manifest.json"
 DEFAULT_RESULTS_DIR = ROOT / "android/app/build/outputs/androidTest-results/connected/debug"
 SELF_TEST_CASES = 9
-REQUIRED_CLASS_COUNT = 24
+REQUIRED_CLASS_COUNT = 26
 
 
 def _new_result(required: list[str]) -> dict[str, Any]:
@@ -297,7 +297,7 @@ def self_test() -> int:
     green = [(name, "runsJourney", "passed") for name in required]
     first, last = required[0], required[-1]
     probes: list[tuple[str, list[tuple[str, str, str]] | None, bool]] = [
-        ("exact non-empty 24-class journey report passes", green, True),
+        ("exact non-empty 26-class journey report passes", green, True),
         ("missing reports block", None, False),
         ("missing journey class blocks", [case for case in green if case[0] != first], False),
         ("zero tests block", [(name, "", "zero") for name in required], False),

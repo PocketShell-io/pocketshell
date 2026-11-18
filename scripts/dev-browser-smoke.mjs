@@ -38,7 +38,7 @@ const repoRoot = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const PHONE = { viewport: { width: 412, height: 915 }, deviceScaleFactor: 2, isMobile: false, hasTouch: false };
 
 /** Standalone so Playwright evaluates one complete sample in the page's RAF poll. */
-export function viewportReadiness({ geometry: supplied, expected } = {}) {
+export function viewportReadiness({ geometry: supplied, expected, measureOnly } = {}) {
   let geometry = supplied;
   if (!geometry) {
     const rect = element => {
@@ -46,14 +46,28 @@ export function viewportReadiness({ geometry: supplied, expected } = {}) {
       const r = element.getBoundingClientRect();
       return { top: r.top, bottom: r.bottom, left: r.left, right: r.right, height: r.height, width: r.width };
     };
-    const style = getComputedStyle(document.body);
+    // The shared AppRoot owns the inset padding on #app (S1, core AppRoot.vue): the
+    // safe box is the viewport minus that padding, and "app" is #app's content box.
+    const appElement = document.querySelector('#app');
+    const style = getComputedStyle(appElement);
+    const appRect = rect(appElement);
+    const pad = {
+      top: parseFloat(style.paddingTop), bottom: parseFloat(style.paddingBottom),
+      left: parseFloat(style.paddingLeft), right: parseFloat(style.paddingRight),
+    };
+    const content = {
+      top: appRect.top + pad.top, bottom: appRect.bottom - pad.bottom, left: appRect.left + pad.left,
+      right: appRect.right - pad.right,
+    };
+    content.height = content.bottom - content.top;
+    content.width = content.right - content.left;
     const screen = [...document.querySelectorAll('.xterm-screen')].find(element => element.offsetParent !== null);
     geometry = {
       viewport: { width: innerWidth, height: innerHeight },
-      safe: { top: parseFloat(style.paddingTop), bottom: innerHeight - parseFloat(style.paddingBottom),
-        left: parseFloat(style.paddingLeft), right: innerWidth - parseFloat(style.paddingRight) },
-      app: rect(document.querySelector('#app')), workspace: rect(document.querySelector('.workspace')), terminal: rect(screen),
+      safe: { top: pad.top, bottom: innerHeight - pad.bottom, left: pad.left, right: innerWidth - pad.right },
+      app: content, workspace: rect(document.querySelector('.workspace')), terminal: rect(screen),
     };
+    if (measureOnly) return geometry;
     window.__psViewportReadiness = { at: performance.now(), expected, geometry };
   }
   const { safe } = geometry;
@@ -398,13 +412,7 @@ async function mockJourneys(browser, base, smoke) {
           document.documentElement.style.setProperty('--ps-inset-top', `${top}px`);
           document.documentElement.style.setProperty('--ps-inset-bottom', `${bottom}px`);
         }, item);
-        const measure = () => sharedPage.evaluate(() => {
-          const rect = element => { const r = element.getBoundingClientRect(); return { top: r.top, bottom: r.bottom, left: r.left, right: r.right, height: r.height }; };
-          const style = getComputedStyle(document.body);
-          const safe = { top: parseFloat(style.paddingTop), bottom: innerHeight - parseFloat(style.paddingBottom), left: parseFloat(style.paddingLeft), right: innerWidth - parseFloat(style.paddingRight) };
-          const screen = [...document.querySelectorAll('.xterm-screen')].find(element => element.offsetParent !== null);
-          return { safe, app: rect(document.querySelector('#app')), workspace: rect(document.querySelector('.workspace')), terminal: rect(screen) };
-        });
+        const measure = () => sharedPage.evaluate(viewportReadiness, { measureOnly: true });
         let failedGeometry = null;
         let failedOperand = null;
         try {

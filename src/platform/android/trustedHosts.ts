@@ -35,13 +35,19 @@ export function createAndroidTrustedHosts(deps: {
       await account(accountId);
     },
   };
-  async function install(host: TrustedHostRecord): Promise<void> {
+  /**
+   * `alreadyVerified` is set only by validatePairing, which has just loaded the revision floors and
+   * authenticated this exact descriptor in the same operation (#3137): the load and read are not repeated.
+   */
+  async function installHost(host: TrustedHostRecord, alreadyVerified: boolean): Promise<void> {
     await account(host.accountId);
     const store = deps.store;
     if (store.state !== 'unlocked' || store.vaultId !== host.vaultId || store.epoch !== host.epoch || host.status !== 'active') throw new Error('Unlock the current vault to connect to this server.');
-    const floors = await revisions.load(host.accountId, host.vaultId);
-    const current = await store.getTrustedHost(host.accountId, host, floors[await trustedHostSlot(host)] ?? 0);
-    if (current.kind !== 'ok' || !sameDescriptor(current.host, host)) throw new Error('This server trust record changed. Reload servers.');
+    if (!alreadyVerified) {
+      const floors = await revisions.load(host.accountId, host.vaultId);
+      const current = await store.getTrustedHost(host.accountId, host, floors[await trustedHostSlot(host)] ?? 0);
+      if (current.kind !== 'ok' || !sameDescriptor(current.host, host)) throw new Error('This server trust record changed. Reload servers.');
+    }
     const binding = store.getHostBinding(host.hostAlias);
     if (!binding || binding.gatewayAuth !== 'managed' || binding.keyId !== host.keyId) throw new Error('This server has no matching vault key.');
     await account(host.accountId);
@@ -59,7 +65,8 @@ export function createAndroidTrustedHosts(deps: {
     const current = await deps.store.getTrustedHost(accountId, row, Math.max(row.trustedRevision ?? 0, floors[await trustedHostSlot(row)] ?? 0));
     if (current.kind !== 'ok' || current.host.status !== 'active' || current.host.keyId !== row.vaultKeyId
       || current.host.hostAlias !== row.hostAlias || current.host.username !== row.username) throw new Error('This server trust record is unavailable or changed. Reload servers.');
-    await install(current.host);
+    await installHost(current.host, true);
   }
+  const install = (host: TrustedHostRecord) => installHost(host, false);
   return { revisions, install, validatePairing };
 }

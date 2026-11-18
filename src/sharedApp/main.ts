@@ -5,7 +5,8 @@ import '@xterm/xterm/css/xterm.css';
 // The shared tokens, primitives and Inter — the desktop's and web's first import.
 import '@ui/styles.css';
 import { provideApi } from '@ui/app/ipc';
-import { dismissTopLayer, provideExtensions } from '@ui/app/extensions';
+import { provideExtensions } from '@ui/app/extensions';
+import { handleAndroidBack } from './androidBack';
 import { recordDiagError } from '@ui/app/diag';
 import { runInstalledDataMigration } from '@/migration/installedDataMigration';
 import AndroidAppRoot from './AndroidAppRoot.vue';
@@ -17,6 +18,7 @@ import { googleSync } from '@/native/googleSync';
 import { bindAndroidAuthLoss } from '@/platform/android/authLoss';
 import { androidPlatform, keyVaultPlatform, lockAndroidVaultAfterAuthLoss } from './platform';
 import { androidTerminalInputAdapter } from '@/platform/android/terminalImeInput';
+import { bundledOnlyFontProfile, provideFontProfile } from '@ui/app/fontProfile';
 import { ANDROID_MONO_FALLBACK, applyAndroidInsets, bindAndroidBottomInsets } from './androidShell';
 import { keyboardInsets } from '@/native/keyboardInsets';
 import VaultSettingsSection from '@ui/app/components/vault/VaultSettingsSection.vue';
@@ -27,6 +29,9 @@ import VaultSettingsSection from '@ui/app/components/vault/VaultSettingsSection.
  */
 export function mountSharedApp(target: string | Element): void {
   provideApi(androidPlatform.api);
+  // The phone bundles one monospace face and has no installed fonts to offer:
+  // the terminal's fallback tail and the Settings picker both follow this (#3138).
+  provideFontProfile(bundledOnlyFontProfile(ANDROID_MONO_FALLBACK));
   // The account key vault (key-vault W4): core's shared unlock sheet, which
   // AppRoot mounts, over the phone's store and Keystore-sealed remember.
   const vault = provideKeyVault(keyVaultPlatform)!;
@@ -43,7 +48,7 @@ export function mountSharedApp(target: string | Element): void {
   applyAndroidInsets();
   // The shared app root (theme and typography watchers, diag strip, outlet),
   // the same component desktop and web mount, plus the phone's own gates.
-  const app = createApp(AndroidAppRoot, { monoFallback: ANDROID_MONO_FALLBACK });
+  const app = createApp(AndroidAppRoot);
   app.onUnmount(bindAndroidBottomInsets(keyboardInsets));
   app.config.errorHandler = (err): void => {
     recordDiagError('render', err);
@@ -64,16 +69,10 @@ export function mountSharedApp(target: string | Element): void {
   app.onUnmount(releaseAuthLoss);
   app.mount(target);
 
-  // Android Back closes the topmost open layer (an overlay, a prompt), then
-  // walks the shared app's history, then leaves the app.
+  // Android Back: the shared app consumes it (top layer, subview, workspace,
+  // in that order); at the host list root nothing is left, so the app goes to
+  // the background. Minimised, not exited: the SSH session survives.
   void CapacitorApp.addListener('backButton', () => {
-    if (dismissTopLayer()) return;
-    if (router.currentRoute.value.name === 'hosts') {
-      void CapacitorApp.exitApp();
-    } else if (router.options.history.state.back) {
-      router.back();
-    } else {
-      void router.push({ name: 'hosts' });
-    }
+    handleAndroidBack(router, () => void CapacitorApp.minimizeApp());
   });
 }

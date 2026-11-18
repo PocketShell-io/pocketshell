@@ -39,6 +39,21 @@ public final class GoogleSyncSession {
     static final class AuthenticationState {
         private static final java.util.Map<Object, AuthenticationState> SCOPES = new java.util.WeakHashMap<>();
         boolean invalidated;
+        /** Backend-verified subject (issue #3137); bounded by {@link #verifiedUntil} and every credential change. */
+        String verifiedSubject;
+        long verifiedUntil;
+        /** Bumped on every identity invalidation so an in-flight verification cannot cache a stale answer. */
+        long identityGeneration;
+        /**
+         * Bumped on every credential replacement or removal (sign-in, sign-out, dropped record). A request
+         * started under an older epoch may not renew, cache an identity, or drop the newer credentials.
+         */
+        long credentialEpoch;
+        void forgetIdentity() {
+            verifiedSubject = null;
+            verifiedUntil = 0L;
+            identityGeneration++;
+        }
         static synchronized AuthenticationState forScope(Object scope) {
             return SCOPES.computeIfAbsent(scope, ignored -> new AuthenticationState());
         }
@@ -89,6 +104,17 @@ public final class GoogleSyncSession {
     private final String apiBaseUrl;
     private final LongSupplier nowEpochSeconds;
 
+    /** A verified identity is reused for at most this long, and never past the ID token's own expiry. */
+    static final long VERIFIED_IDENTITY_TTL_SECONDS = 60L;
+
+    /** Debug timing sink ("backend GET /me 120ms"); the plugin routes it to logcat. Never carries a token. */
+    static volatile java.util.function.Consumer<String> timingLog;
+
+    private static void timing(String line) {
+        java.util.function.Consumer<String> sink = timingLog;
+        if (sink != null) sink.accept(line);
+    }
+
     GoogleSyncSession(TokenStore store, SignInProvider provider, Transport transport, String apiBaseUrl,
             LongSupplier nowEpochSeconds) {
         this.store = store;
@@ -115,35 +141,92 @@ public final class GoogleSyncSession {
         }
     }
 
-    /** Verify this native Google subject with the fixed backend authorizer before exposing public identity. */
+    /**
+     * Verify this native Google subject with the fixed backend authorizer before exposing public identity.
+     * A successful verification is reused for up to {@link #VERIFIED_IDENTITY_TTL_SECONDS} (and never past the
+     * stored token's expiry) while the stored subject is unchanged; sign-in, sign-out, any 401 and any dropped
+     * credential forget it. The network call runs outside the authentication lock.
+     */
     String verifiedAccountId() throws SyncAuthException {
+        String before;
+        long generation;
+        long epoch;
+        GoogleIdToken token;
         synchronized (authentication) {
-            String before = currentAccountSubject();
-            Response response = request("GET", null, null);
-            if (response.status == 401) {
-                dropExpired();
-                throw new SyncAuthException(SyncAuthException.NOT_SIGNED_IN, "Sign in to verify your account.");
+            token = storedToken();
+            if (token == null) throw new SyncAuthException(SyncAuthException.NOT_SIGNED_IN, "Sign in with Google first.");
+            before = token.subject;
+            long now = nowEpochSeconds.getAsLong();
+            if (before.equals(authentication.verifiedSubject) && now < authentication.verifiedUntil) {
+                return "google:" + before;
             }
-            if (response.status != 200) throw new SyncAuthException(SyncAuthException.NETWORK, "Account verification is temporarily unavailable.");
-            String verifiedSubject;
-            try { verifiedSubject = new org.json.JSONObject(response.body).getString("sub"); }
-            catch (Exception invalid) { throw new SyncAuthException(SyncAuthException.INVALID_REQUEST, "Account verification returned an invalid response."); }
-            if (response.status != 200 || !before.equals(verifiedSubject) || !before.equals(currentAccountSubject())) {
+            generation = authentication.identityGeneration;
+            epoch = authentication.credentialEpoch;
+            if (token.isExpired(now)) token = renew(token);
+        }
+        Response response = send("GET", "/me", null, token);
+        if (response.status == 401) {
+            synchronized (authentication) {
+                token = renewAfter401(token, epoch);
+            }
+            response = send("GET", "/me", null, token);
+        }
+        if (response.status == 401) {
+            synchronized (authentication) {
+                // Only the credentials this verification started with may be dropped.
+                if (epoch == authentication.credentialEpoch) dropExpired();
+            }
+            throw new SyncAuthException(SyncAuthException.NOT_SIGNED_IN, "Sign in to verify your account.");
+        }
+        if (response.status != 200) throw new SyncAuthException(SyncAuthException.NETWORK, "Account verification is temporarily unavailable.");
+        String verifiedSubject;
+        try { verifiedSubject = new org.json.JSONObject(response.body).getString("sub"); }
+        catch (Exception invalid) { throw new SyncAuthException(SyncAuthException.INVALID_REQUEST, "Account verification returned an invalid response."); }
+        synchronized (authentication) {
+            if (epoch != authentication.credentialEpoch) {
+                // The account changed while this verification was in flight: say nothing about the new one.
+                throw new SyncAuthException(SyncAuthException.NOT_SIGNED_IN, "The signed-in account changed. Try again.");
+            }
+            GoogleIdToken after = storedToken();
+            if (!before.equals(verifiedSubject) || after == null || !before.equals(after.subject)) {
                 dropExpired();
                 throw new SyncAuthException(SyncAuthException.NOT_SIGNED_IN, "Sign in to verify your account.");
             }
             if (!before.matches("[0-9A-Za-z_-]{1,128}")) throw invalid();
+            if (generation == authentication.identityGeneration) {
+                long now = nowEpochSeconds.getAsLong();
+                authentication.verifiedSubject = before;
+                authentication.verifiedUntil = Math.min(now + VERIFIED_IDENTITY_TTL_SECONDS,
+                        after.expiresAtEpochSeconds - GoogleSyncConfig.EXPIRY_SKEW_SECONDS);
+            }
             return "google:" + before;
         }
     }
 
-    Response listSettings() throws SyncAuthException {
+    /**
+     * Renew the ID token ahead of the first action when it expires within {@code withinSeconds}, so the
+     * silent renewal is off the user's critical path (issue #3137). Best effort: failures surface on the
+     * next real request exactly as before.
+     */
+    void renewIfExpiringWithin(long withinSeconds) {
         synchronized (authentication) {
-            GoogleIdToken token = usableToken();
-            Response response = send("GET", "/settings", null, token);
-            if (response.status == 401) response = send("GET", "/settings", null, renew(token));
-            return response;
+            long started = System.nanoTime();
+            try {
+                GoogleIdToken token = storedToken();
+                if (token == null || token.expiresAtEpochSeconds - nowEpochSeconds.getAsLong() > withinSeconds) return;
+                GoogleIdToken next = GoogleIdToken.parse(provider.obtainIdToken(false));
+                if (next.subject.equals(token.subject) && !next.isExpired(nowEpochSeconds.getAsLong())) write(next.token);
+            } catch (SyncAuthException | RuntimeException ignored) {
+                // Never authoritative: silent timeouts, a missing/finishing activity and generic provider
+                // errors all leave the stored sign-in alone. Only a server 401 on a real request drops it.
+            } finally {
+                timing("token pre-renewal " + (System.nanoTime() - started) / 1_000_000L + "ms");
+            }
         }
+    }
+
+    Response listSettings() throws SyncAuthException {
+        return sendAuthenticated("GET", "/settings", null, true);
     }
 
     /**
@@ -164,17 +247,17 @@ public final class GoogleSyncSession {
      * echoes the Google token back instead of minting a scoped one.
      */
     GatewayBrokerExchange gatewayTokenExchange() throws SyncAuthException {
-        synchronized (authentication) {
-            GoogleIdToken token = usableToken();
-            // Empty body by contract: an explicit zero-length body, so the
-            // exchange is a POST with Content-Length: 0 on every HTTP stack.
-            Response response = send("POST", "/gateway/token", "", token);
-            if (response.status == 401) {
-                token = renew(token);
-                response = send("POST", "/gateway/token", "", token);
-            }
-            return new GatewayBrokerExchange(response, token.token);
+        GoogleIdToken token;
+        long epoch;
+        synchronized (authentication) { token = usableToken(); epoch = authentication.credentialEpoch; }
+        // Empty body by contract: an explicit zero-length body, so the
+        // exchange is a POST with Content-Length: 0 on every HTTP stack.
+        Response response = send("POST", "/gateway/token", "", token);
+        if (response.status == 401) {
+            synchronized (authentication) { token = renewAfter401(token, epoch); }
+            response = send("POST", "/gateway/token", "", token);
         }
+        return new GatewayBrokerExchange(response, token.token);
     }
 
     /** One broker exchange answer plus the bearer-echo check for its parse. */
@@ -205,6 +288,8 @@ public final class GoogleSyncSession {
     Status signIn() throws SyncAuthException {
         synchronized (authentication) {
             GoogleIdToken token = GoogleIdToken.parse(provider.obtainIdToken(true));
+            authentication.forgetIdentity();
+            authentication.credentialEpoch++;
             write(token.token);
             return new Status(true, token.email);
         }
@@ -214,6 +299,8 @@ public final class GoogleSyncSession {
     void signOut() throws SyncAuthException {
         synchronized (authentication) {
             authentication.invalidated = true;
+            authentication.forgetIdentity();
+            authentication.credentialEpoch++;
             try {
                 store.clear();
             } catch (IOException error) {
@@ -230,16 +317,7 @@ public final class GoogleSyncSession {
      * can age out between the check and the server.
      */
     Response request(String method, String slot, String body) throws SyncAuthException {
-        synchronized (authentication) {
-            String path = pathFor(method, slot, body);
-            GoogleIdToken token = usableToken();
-            Response response = send(method, path, body, token);
-            if (response.status == 401) {
-                token = renew(token);
-                response = send(method, path, body, token);
-            }
-            return response;
-        }
+        return sendAuthenticated(method, pathFor(method, slot, body), body, true);
     }
 
     /**
@@ -247,7 +325,7 @@ public final class GoogleSyncSession {
      * initialization. Reset and verifier replacement are not exposed.
      */
     Response requestVault(String method, String endpoint, String body) throws SyncAuthException {
-        synchronized (authentication) {
+        {
             String path;
             if ("GET".equals(method) && "vault/status".equals(endpoint) && body == null) {
                 path = "/vault/status";
@@ -259,19 +337,39 @@ public final class GoogleSyncSession {
             } else {
                 throw invalid();
             }
-            GoogleIdToken token = usableToken();
-            Response response = send(method, path, body, token);
-            if (response.status == 401 && !"/vault/verify".equals(path)) {
-                token = renew(token);
-                response = send(method, path, body, token);
-            }
-            return response;
+            return sendAuthenticated(method, path, body, !"/vault/verify".equals(path));
         }
+    }
+
+    /** Token selection/renewal under the lock; the network exchange itself outside it. */
+    private Response sendAuthenticated(String method, String path, String body, boolean retryAfterRenewal)
+            throws SyncAuthException {
+        GoogleIdToken token;
+        long epoch;
+        synchronized (authentication) { token = usableToken(); epoch = authentication.credentialEpoch; }
+        Response response = send(method, path, body, token);
+        if (response.status == 401 && retryAfterRenewal) {
+            synchronized (authentication) { token = renewAfter401(token, epoch); }
+            response = send(method, path, body, token);
+        }
+        return response;
+    }
+
+    /** Another caller may already have renewed the token this one just had refused. */
+    private GoogleIdToken renewAfter401(GoogleIdToken used, long epoch) throws SyncAuthException {
+        if (epoch != authentication.credentialEpoch) {
+            // Signed out, signed in elsewhere or dropped since this request started: never resurrect it.
+            throw new SyncAuthException(SyncAuthException.NOT_SIGNED_IN, "The Google sign-in changed during the request.");
+        }
+        GoogleIdToken stored = storedToken();
+        if (stored != null && !stored.token.equals(used.token) && stored.subject.equals(used.subject)
+                && !stored.isExpired(nowEpochSeconds.getAsLong())) return stored;
+        return renew(used);
     }
 
     /** Account-bound vault IO remains on the original subject across asynchronous KDF work. */
     Response requestBound(String method, String slot, String endpoint, String body, String accountId) throws SyncAuthException {
-        synchronized (authentication) {
+        {
             if (accountId != null && (!accountId.matches("google:[0-9A-Za-z_-]{1,128}")
                     || !accountId.equals("google:" + currentAccountSubject()))) throw invalid();
             // First setup must always name the verified account; it cannot be an unscoped write.
@@ -334,9 +432,14 @@ public final class GoogleSyncSession {
         headers.put("Accept", "application/json");
         headers.put("Authorization", "Bearer " + token.token);
         if (body != null) headers.put("Content-Type", "application/json");
+        long started = System.nanoTime();
         try {
-            return transport.send(method, apiBaseUrl + path, Collections.unmodifiableMap(headers), body);
+            Response response = transport.send(method, apiBaseUrl + path, Collections.unmodifiableMap(headers), body);
+            if (response.status == 401) synchronized (authentication) { authentication.forgetIdentity(); }
+            timing("backend " + method + " " + path + " " + response.status + " " + (System.nanoTime() - started) / 1_000_000L + "ms");
+            return response;
         } catch (IOException error) {
+            timing("backend " + method + " " + path + " failed " + (System.nanoTime() - started) / 1_000_000L + "ms");
             // The transport's message can name the host; it never carries the
             // header, but keep only the class so no future change can leak one.
             throw new SyncAuthException(SyncAuthException.NETWORK,
@@ -352,6 +455,15 @@ public final class GoogleSyncSession {
 
     /** Silently renew for the same Google account, or drop the sign-in. */
     private GoogleIdToken renew(GoogleIdToken previous) throws SyncAuthException {
+        long started = System.nanoTime();
+        try {
+            return renewUntimed(previous);
+        } finally {
+            timing("token renewal " + (System.nanoTime() - started) / 1_000_000L + "ms");
+        }
+    }
+
+    private GoogleIdToken renewUntimed(GoogleIdToken previous) throws SyncAuthException {
         GoogleIdToken next;
         try {
             next = GoogleIdToken.parse(provider.obtainIdToken(false));
@@ -372,6 +484,8 @@ public final class GoogleSyncSession {
 
     private void dropExpired() {
         authentication.invalidated = true;
+        authentication.forgetIdentity();
+        authentication.credentialEpoch++;
         try {
             store.clear();
         } catch (IOException ignored) {

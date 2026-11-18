@@ -3,7 +3,7 @@
 
 The JS path is deliberately a dispatch guard, not a feature-coverage claim. It
 proves that each journey-shaped androidTest class is selected by one of the
-seventeen packaged lanes, and that the lane's exact method
+eighteen packaged lanes, and that the lane's exact method
 contract agrees with both its source and result checker. The independent
 24-class feature qualification gate independently requires their real JUnit execution.
 
@@ -136,9 +136,19 @@ LANES = (
             ("com.pocketshell.app.smoke.J15TerminalScrollJourney", frozenset({'scrollTerminalDoesNotSendInputBytes'})),
             ("com.pocketshell.app.smoke.J19HostFormImeJourney", frozenset({'tunnelFormSubmitRemainsReachableWithTheIme', 'hostFormSubmitRemainsReachableWithTheIme'})),
             ("com.pocketshell.app.smoke.J21HostAddConnectJourney", frozenset({'hostAddedThroughFormConnectsToFixture','guestSshConnectsWithoutGoogleOrVaultAndTypesIntoRealHost'})),
+            ("com.pocketshell.app.smoke.J25AndroidBackJourney", frozenset({'androidBackWalksSubviewsThenHostListThenBackgrounds'})),
             ("com.pocketshell.app.smoke.J11ShareUploadJourney", frozenset({"androidSingleShareReachesTheChosenSessionOnTheRealHost", "androidShareStreamsReachTheChosenSessionOnTheRealHost"})),
             ("com.pocketshell.app.smoke.J20ComposerUploadProgressJourney", frozenset({"aThreeFileUploadShowsTheBarMidFlightAndLeavesNoResidueAfterCompletion"})),
+            ("com.pocketshell.app.smoke.J28CdKeepsTerminalJourney", frozenset({"cdInsideOpenShellKeepsTheTerminalMounted"})),
+            ("com.pocketshell.app.smoke.J27NewSessionAndFilesJourney", frozenset({"newSessionFolderPickerAndFilesEditWorkOnTheRealHost"})),
         ),
+    ),
+    LaneContract(
+        name="s1-layout",
+        class_name="com.pocketshell.app.smoke.J26S1LayoutJourney",
+        child_runner="scripts/connected-js-s1-layout.sh",
+        result_checker="scripts/check-js-s1-layout-results.py",
+        methods=frozenset({"hitTargetsAndWorkspaceBottomHoldAtPhoneWidth"}),
     ),
     LaneContract(
         name="key-vault-docker",
@@ -501,7 +511,7 @@ def check_js(repo_root: Path) -> list[Finding]:
         findings.append(Finding("ERROR", "JS-first packaged lane dispatcher is empty; refusing a zero-lane pass"))
         return findings
 
-    # A fixed seventeen-lane inventory makes an empty/partially deleted registry a
+    # A fixed eighteen-lane inventory makes an empty/partially deleted registry a
     # hard error. This is the current packaged suite only, not the 24-class
     # feature-journey inventory in scripts/js-journey-class-manifest.json.
     required_lanes = {
@@ -522,9 +532,10 @@ def check_js(repo_root: Path) -> list[Finding]:
         "account-picker",
         "gateway-docker",
         "account-vault",
+        "s1-layout",
     }
     if {lane.name for lane in LANES} != required_lanes:
-        findings.append(Finding("ERROR", "required seventeen-lane packaged journey inventory changed"))
+        findings.append(Finding("ERROR", "required eighteen-lane packaged journey inventory changed"))
 
     expanded = [LaneContract(lane.name, name, lane.child_runner, lane.result_checker, methods)
                 for lane in LANES for name, methods in lane.classes()]
@@ -831,7 +842,7 @@ def self_test() -> int:
         for lane in LANES:
             _write_fixture(root, lane)
         result = check(root, "auto")
-        probe("all seventeen exact packaged lane class/method groups dispatch", result == 0, True)
+        probe("all eighteen exact packaged lane class/method groups dispatch", result == 0, True)
 
         shared = next(lane for lane in LANES if lane.name == "shared-app")
         shared_runner = root / shared.child_runner

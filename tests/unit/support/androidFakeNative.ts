@@ -63,6 +63,11 @@ export class FakeNative {
     { name: 'custom-engine', available: true },
     { name: 'shell', available: true },
   ]);
+  /** What the one-script host bootstrap probe prints (ends with its marker). */
+  bootstrapProbeStdout = [
+    'path.pocketshell=/home/u/.local/bin/pocketshell', 'version.pocketshell=pocketshell 0.6.0',
+    'path.a=/home/u/.local/bin/a', 'version.a=a 0.1.26', 'installer=uv', 'PS_PROBE_END',
+  ].join('\n') + '\n';
   /** While true every dial fails the way an unreachable host does (retryable). */
   refuseDials = false;
   /**
@@ -121,6 +126,11 @@ export class FakeNative {
         }
         if (options.command === 'a engines --json') {
           return { ...base, exitCode: this.engineCatalogExitCode, stdout: this.engineCatalogStdout };
+        }
+        if (options.command.includes('PS_PROBE_END')) {
+          // The single-exec host bootstrap probe (core hostBootstrap.ts, #3137): a
+          // complete key=value answer ending in the marker.
+          return { ...base, exitCode: 0, stdout: this.bootstrapProbeStdout };
         }
         if (options.command === 'printf %s "$HOME"') return { ...base, exitCode: 0, stdout: '/home/u' };
         if (options.command.includes('usage --json')) {

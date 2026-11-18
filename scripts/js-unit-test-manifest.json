@@ -984,7 +984,9 @@
       "suite": "Android forwards over the shared core controller",
       "tests": [
         "starts automatic forwarding on connection mount before any Ports API read and restores on generation swap",
-        "remembers auto-off and user force-off across app recreation"
+        "remembers auto-off and user force-off across app recreation",
+        "never scans the host without forwarding intent or a Ports subscriber, and defers a restore scan past connect",
+        "keeps scanning while a manual forward is live and stops once it is removed"
       ]
     },
     "tests/unit/androidAttachments.test.ts": {
@@ -1027,7 +1029,15 @@
         "refuses missing invalid rollback or revoked descriptors without phone key fallback",
         "refuses unbound mismatched and non-managed vault credentials",
         "rechecks account after native work and preserves no saved row on an account switch",
-        "loads protected revision floors and supplies them to authenticated descriptor verification"
+        "loads protected revision floors and supplies them to authenticated descriptor verification",
+        "validates a pairing with one revision load and one trusted-host read (#3137)",
+        "still refuses an account change between validation and install (#3137)"
+      ]
+    },
+    "tests/unit/androidDesktopChrome.test.ts": {
+      "suite": "Android desktop-chrome capability (#3139)",
+      "tests": [
+        "declares app.desktopChrome === false so the shared Settings hides desktop-only controls and copy"
       ]
     },
     "tests/unit/androidFreshShell.test.ts": {
@@ -1035,6 +1045,12 @@
       "tests": [
         "creates an ordinary home shell from a canonical POSIX or Windows SFTP directory through the controller",
         "reuses an existing ordinary shell and never creates one after canonicalization fails"
+      ]
+    },
+    "tests/unit/androidBack.test.ts": {
+      "suite": "Android Back",
+      "tests": [
+        "walks Ports, the workspace and the host list, then minimises instead of exiting"
       ]
     },
     "tests/unit/androidAuthLoss.test.ts": {
@@ -1075,6 +1091,41 @@
         "real Google account lookup SIGN_IN_CANCELLED with cleanup failure false settles without a native lease or callback deadlock",
         "real Google auth loss while native hold is pending completes cleanup with final wipe failure false",
         "real Google auth loss while native hold is pending completes cleanup with final wipe failure true"
+      ]
+    },
+    "tests/unit/bundledMonoFont.test.ts": {
+      "suite": "bundled monospace font (#3138)",
+      "tests": [
+        "puts JetBrains Mono first in the Android stacks and --font-mono",
+        "defaults the phone terminal to 13px (50 columns across full-width 412dp)",
+        "emits both complete JetBrains Mono woff2 files into the built bundle"
+      ]
+    },
+    "tests/unit/androidFiles.test.ts": {
+      "suite": "Android Files and folder-picker adapters (#3105)",
+      "tests": [
+        "lists a folder as core DirEntry rows without dot entries (the New session folder picker and the Files tree)",
+        "is no longer the unsupported stub for any file verb",
+        "stats, reads text as UTF-8 and binary with the size cap, and refuses folders and oversize files",
+        "edits and saves a file; a second save and a create/mkdir/rename/delete/rmdir round trip reach the host",
+        "never overwrites a file another client changed or deleted since it was opened",
+        "refuses a write over the native 512 KiB limit and a call on a closed connection",
+        "creates a folder, derives a session name and creates and renames a session through the host",
+        "reports a folder past the native entry cap as truncated instead of showing it as complete",
+        "never returns a read cut short by the native cap (a buffer that could be saved back over the real file)",
+        "a file never read this session is written only if unchanged since a stat; a new path is simply created",
+        "createFolder, deriveName, rename and clone quote the hostile name \"my folder\" with core's quoting only",
+        "createFolder, deriveName, rename and clone quote the hostile name \"it's\" with core's quoting only",
+        "createFolder, deriveName, rename and clone quote the hostile name \"a$b\" with core's quoting only",
+        "createFolder, deriveName, rename and clone quote the hostile name \"x;y\" with core's quoting only",
+        "createFolder, deriveName, rename and clone quote the hostile name \"back`tick`\" with core's quoting only",
+        "createFolder, deriveName, rename and clone quote the hostile name \"multi\\nline\" with core's quoting only",
+        "createFolder, deriveName, rename and clone quote the hostile name \"\u00fcn\u00ef-\u6587\u4ef6\" with core's quoting only",
+        "createFolder, deriveName, rename and clone quote the hostile name \"$(touch pwn)\" with core's quoting only",
+        "createFolder, deriveName, rename and clone quote the hostile name \"-rf\" with core's quoting only",
+        "rejects folder names that could escape the parent and keeps Windows-style parents joined with a slash",
+        "clones a repository and reports the printed path, progress and a classified failure",
+        "acknowledges warnings: one target, all, and the benign already-acked race"
       ]
     }
   }

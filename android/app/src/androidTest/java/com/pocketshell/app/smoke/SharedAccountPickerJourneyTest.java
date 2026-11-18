@@ -172,7 +172,7 @@ public final class SharedAccountPickerJourneyTest {
         tapDomCenter(".picker .header-actions .account-action");
         awaitJsTrue("!!document.querySelector('[data-testid=android-account] .passphrase-field input:not([disabled])')");
         setValue("[data-testid=android-account] .passphrase-field input", PASSPHRASE);
-        tapDomCenter("[data-testid=android-account] .host-heading .btn-ghost");
+        tapDomCenter("[data-testid=android-account] [data-testid=account-check]");
         awaitJsTrue("document.querySelector('[data-testid=android-account] .account-message')?.textContent.trim()"
                 + " === 'Your account has 2 synced hosts.'", SYNC_TIMEOUT_MILLIS);
         assertEquals("decrypting settings uploads nothing", 0, backend.puts.size());

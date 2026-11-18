@@ -246,6 +246,9 @@ export class MockHost {
   /** Run one non-interactive command the way `exec` would on the box. */
   exec(command: string): MockExecResult {
     const inner = unwrapCommand(command);
+    // The shared host bootstrap probe is ONE script (core hostBootstrap.ts, #3137)
+    // ending in this marker; answer it in the same key=value shape it prints.
+    if (inner.includes('echo PS_PROBE_END')) return this.bootstrapProbe(inner);
     if (inner.startsWith('echo "<<<PS_SS_TLN>>>"')) return { exitCode: 0, stdout: listenerScan(), stderr: '' };
     if (inner.startsWith('for pid in ')) {
       const pids = inner.slice('for pid in '.length).split(';')[0].trim().split(/\s+/u).map(Number);
@@ -270,6 +273,20 @@ export class MockHost {
     if (shell) return { exitCode: shell.exitCode, stdout: shell.output, stderr: '' };
     this.log(`[dev mock] host has no answer for: ${inner}`);
     return failure(127, `mock host: command not found: ${words[0] ?? inner}`);
+  }
+
+  private bootstrapProbe(script: string): MockExecResult {
+    const lines: string[] = [];
+    const probed = [...script.matchAll(/p=\$\(command -v (\w+)\)/gu)].map((match) => match[1]!);
+    for (const tool of new Set(probed)) {
+      const version = MOCK_TOOLS[tool];
+      if (!version) continue;
+      lines.push(`path.${tool}=/usr/local/bin/${tool}`, `version.${tool}=${version}`);
+    }
+    lines.push(`installer=${MOCK_TOOLS.uv ? 'uv' : ''}`);
+    if (script.includes('daemon.running') && MOCK_TOOLS.pocketshell) lines.push('daemon.running=0', 'daemon.enabled=0');
+    lines.push('PS_PROBE_END');
+    return { exitCode: 0, stdout: `${lines.join('\n')}\n`, stderr: '' };
   }
 
   private pocketshell(args: string[], inner: string): MockExecResult {

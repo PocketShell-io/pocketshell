@@ -3,6 +3,7 @@ package com.pocketshell.app;
 import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
@@ -130,6 +131,57 @@ public final class EphemeralCredentialsTest {
         } catch (IOException expected) {
             assertEquals(EphemeralCredentials.MAX_HELD, store.size());
         }
+    }
+
+    private static final String ACCOUNT = "google:sub-1";
+    private static final String VAULT = "A".repeat(22);
+    private static final String KEY_ID = "B".repeat(22);
+
+    private static EphemeralCredentials.Held holdBound(EphemeralCredentials store, byte[] key, String keyId) throws Exception {
+        EphemeralCredentials.Held held = store.hold(key);
+        store.bind(held.handleId, ACCOUNT, VAULT, 1, keyId);
+        return held;
+    }
+
+    @Test public void anIdenticalBoundHoldIsAnsweredFromTheCacheWithoutAParse() throws Exception {
+        EphemeralCredentials store = new EphemeralCredentials();
+        byte[] key = throwawayKey();
+        EphemeralCredentials.Held first = holdBound(store, key, KEY_ID);
+        assertEquals(first, store.findHeld(ACCOUNT, VAULT, 1, KEY_ID, key));
+        assertEquals("a hit must not hold a second copy", 1, store.size());
+        assertNull(store.findHeld("google:other", VAULT, 1, KEY_ID, key));
+        assertNull(store.findHeld(ACCOUNT, VAULT, 2, KEY_ID, key));
+        assertNull(store.findHeld(ACCOUNT, VAULT, 1, "C".repeat(22), key));
+    }
+
+    @Test public void signOutOrVaultLockWipeInvalidatesTheCache() throws Exception {
+        EphemeralCredentials store = new EphemeralCredentials();
+        byte[] key = throwawayKey();
+        holdBound(store, key, KEY_ID);
+        store.wipeAll();
+        assertNull(store.findHeld(ACCOUNT, VAULT, 1, KEY_ID, key));
+    }
+
+    @Test public void releasingTheHandleInvalidatesTheCache() throws Exception {
+        EphemeralCredentials store = new EphemeralCredentials();
+        byte[] key = throwawayKey();
+        EphemeralCredentials.Held held = holdBound(store, key, KEY_ID);
+        store.release(held.handleId);
+        assertNull(store.findHeld(ACCOUNT, VAULT, 1, KEY_ID, key));
+    }
+
+    @Test public void aChangedKeyUnderTheSameIdentityNeverHitsAndReplacesTheStaleHandle() throws Exception {
+        EphemeralCredentials store = new EphemeralCredentials();
+        byte[] oldKey = throwawayKey();
+        EphemeralCredentials.Held old = holdBound(store, oldKey, KEY_ID);
+        byte[] newKey = throwawayKey();
+        assertNull("different bytes must miss", store.findHeld(ACCOUNT, VAULT, 1, KEY_ID, newKey));
+        // A rotated key (different bytes) bound to the same identity zeroes the stale handle.
+        EphemeralCredentials.Held rotated = holdBound(store, newKey, KEY_ID);
+        assertFalse(store.contains(old.handleId));
+        assertTrue(store.contains(rotated.handleId));
+        assertEquals(rotated, store.findHeld(ACCOUNT, VAULT, 1, KEY_ID, newKey));
+        assertNull(store.findHeld(ACCOUNT, VAULT, 1, KEY_ID, oldKey));
     }
 
     @Test public void onlyPrefixedHandlesAreEphemeral() {

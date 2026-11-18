@@ -59,6 +59,13 @@ public class J21HostAddConnectJourney extends SharedAppDockerJourneyTest {
         screenshot("j21-guest-real-terminal");
         OnboardingViewportCapture.capture(scenario,evalString("JSON.stringify((()=>{const r=[...document.querySelectorAll('.xterm-screen')].find(n=>n.offsetParent!==null).getBoundingClientRect();return {left:r.left,top:r.top,right:r.right,bottom:r.bottom,innerWidth:innerWidth};})())"),sessionRun(),"guest-terminal-viewport");
         android.util.Log.i(TAG,"GUEST_VISIBLE_TERMINAL "+evalString(VISIBLE_TERMINAL));
+        // #3137: the merged single-exec bootstrap probe ran against the real fixture host
+        // and parsed: the store holds a result naming the installed helper.
+        String bootstrapStore="(()=>{const provides=document.querySelector('#app')?.__vue_app__?._context?.provides;"
+            +"const pinia=provides&&Reflect.ownKeys(provides).map(k=>provides[k]).find(v=>v?._s instanceof Map);"
+            +"return pinia?._s.get('connection')?.bootstrap;})()";
+        awaitJsTrue("(()=>{const b="+bootstrapStore+";return !!b&&b.platform==='posix'&&b.pocketshell?.installed===true&&!!b.pocketshell.path&&typeof b.pocketshell.version==='string';})()");
+        android.util.Log.i(TAG,"HOST_BOOTSTRAP_PROBE "+evalString("JSON.stringify("+bootstrapStore+")"));
         assertEquals("no native Google account chooser or renewal",0,googleCalls.get());
         assertEquals("no account HTTP call",0,accountHttp.get());
         assertFalse("no vault prompt after real local SSH",exists("[data-testid=vault-unlock-gate]"));

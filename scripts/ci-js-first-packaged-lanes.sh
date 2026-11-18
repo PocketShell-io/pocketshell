@@ -24,6 +24,7 @@ account_sync_status=0
 account_picker_status=0
 gateway_status=0
 shared_app_status=0
+s1_layout_status=0
 account_vault_status=0
 forward_service_status=0
 key_vault_status=0
@@ -275,6 +276,23 @@ else
   shared_app_status=$?
 fi
 
+fi
+
+if lane_selected s1_layout; then
+# Mobile layout class proof (#3120, S1 of #3118): 48px hit targets under the
+# real coarse pointer and workspace bottom containment with non-zero bar insets,
+# measured from the live WebView at 412x915dp and 360x800dp (wm density, always
+# restored). Reuses the shared-app lane's isolated fixture and the prepared
+# i2855ci APKs; its runner runs the exact-result checker itself.
+if scripts/connected-js-s1-layout.sh \
+  --suffix i2855ci \
+  --port 2243 \
+  --test-only; then
+  s1_layout_status=0
+else
+  s1_layout_status=$?
+fi
+
 # The account key vault (key-vault W4): a web-saved vault key dialled from
 # memory after one passphrase, no key picker; remember on this device. Reuses
 # the validated shared-app pool identity; its actual dials use a separate real gateway.
@@ -336,16 +354,16 @@ fi
 
 fi
 
-printf 'Packaged API 35 lane statuses: smoke=%s lifecycle=%s usage-ports=%s files=%s composer=%s composer-junit-copy=%s composer-junit=%s hotkeys=%s hotkeys-junit=%s durable-storage=%s settings=%s voice-settings=%s forward-service=%s account-sync=%s account-picker=%s gateway=%s shared-app=%s account-vault=%s key-vault=%s signed-upgrade=%s smoke-junit-copy=%s\n' \
+printf 'Packaged API 35 lane statuses: smoke=%s lifecycle=%s usage-ports=%s files=%s composer=%s composer-junit-copy=%s composer-junit=%s hotkeys=%s hotkeys-junit=%s durable-storage=%s settings=%s voice-settings=%s forward-service=%s account-sync=%s account-picker=%s gateway=%s shared-app=%s s1-layout=%s account-vault=%s key-vault=%s signed-upgrade=%s smoke-junit-copy=%s\n' \
   "$smoke_status" "$lifecycle_status" "$usage_status" "$files_status" "$composer_status" \
   "$composer_junit_copy_status" "$composer_junit_status" "$hotkeys_status" \
-  "$hotkeys_junit_status" "$durable_status" "$settings_status" "$voice_settings_status" "$forward_service_status" "$account_sync_status" "$account_picker_status" "$gateway_status" "$shared_app_status" \
+  "$hotkeys_junit_status" "$durable_status" "$settings_status" "$voice_settings_status" "$forward_service_status" "$account_sync_status" "$account_picker_status" "$gateway_status" "$shared_app_status" "$s1_layout_status" \
   "$account_vault_status" "$key_vault_status" "$signed_upgrade_status" "$copy_status"
 
 if (( smoke_status != 0 || lifecycle_status != 0 || usage_status != 0 || files_status != 0 || voice_settings_status != 0 || forward_service_status != 0 \
       || composer_status != 0 || composer_junit_copy_status != 0 || composer_junit_status != 0 \
       || hotkeys_status != 0 || hotkeys_junit_status != 0 || durable_status != 0 \
-      || settings_status != 0 || account_sync_status != 0 || account_picker_status != 0 || gateway_status != 0 || shared_app_status != 0 || account_vault_status != 0 || key_vault_status != 0 \
+      || settings_status != 0 || account_sync_status != 0 || account_picker_status != 0 || gateway_status != 0 || shared_app_status != 0 || s1_layout_status != 0 || account_vault_status != 0 || key_vault_status != 0 \
       || signed_upgrade_status != 0 || copy_status != 0 )); then
   exit 1
 fi

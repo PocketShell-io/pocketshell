@@ -435,8 +435,12 @@ describe('Android PocketShellApi platform', () => {
     expect(await created.api.projects.home(result.connectionId!)).toEqual({ ok: true, home: '/home/u', error: null });
     expect((await created.api.helper.usage(result.connectionId!))).toHaveLength(1);
     const bootstrap = await created.api.helper.bootstrap(result.connectionId!);
-    expect(bootstrap.pocketshell.installed).toBe(false);
-    expect(native.execs.some((command) => command.includes('command -v pocketshell'))).toBe(true);
+    expect(bootstrap.pocketshell).toEqual({ installed: true, path: '/home/u/.local/bin/pocketshell', version: 'pocketshell 0.6.0' });
+    // ONE exec carried the whole probe (#3137); its fake output was parsed, not re-probed per tool.
+    const probes = native.execs.filter((command) => command.includes('PS_PROBE_END'));
+    expect(probes).toHaveLength(1);
+    expect(bootstrap.installer).toBe('uv');
+    expect(bootstrap.aplexer).toMatchObject({ installed: true, path: '/home/u/.local/bin/a' });
     expect(await created.api.agent.kinds(result.connectionId!)).toEqual(['claude', 'custom-engine']);
     expect(native.execs).toContain('a engines --json');
   });
@@ -481,7 +485,7 @@ describe('Android PocketShellApi platform', () => {
 
   it('refuses unimplemented work by name instead of pretending', async () => {
     const { created } = platform();
-    await expect(created.api.sftp.list('android-1', '/')).rejects.toBeInstanceOf(UnsupportedCapability);
+    await expect(created.api.sftp.upload({ connectionId: 'android-1', localPath: '/a', remotePath: '/b', transferId: 't' })).rejects.toBeInstanceOf(UnsupportedCapability);
     await expect(created.api.forwards.addManual('android-1', { kind: 'local', listenHost: '', listenPort: 1, destHost: '', destPort: 1 }))
       .rejects.toThrow('Only loopback local tunnels are supported.');
     expect(await created.api.forwards.list('android-1')).toEqual([]);

@@ -3203,7 +3203,7 @@ public abstract class ComposerJourneySupport {
                 + "const rendered=rows.filter(row=>row.right!==null);"
                 + "const maxRowRight=rendered.length?Math.max(...rendered.map(row=>row.right)):null;"
                 + "const maxRowCells=rendered.length?Math.max(...rendered.map(row=>row.cells)):0;"
-                + "const overflowingRows=screenBox?rendered.filter(row=>row.right>screenBox.right+0.5).map(row=>({index:row.index,text:row.text,cells:row.cells})):[];"
+                + "const overflowingRows=screenBox?rendered.filter(row=>row.right>screenBox.right+1.5).map(row=>({index:row.index,text:row.text,cells:row.cells})):[];"
                 + "const stopIndex=stopNeedle?rows.findIndex(row=>row.text.includes(stopNeedle)):-1;"
                 + "let startIndex=rows.findIndex(row=>row.text.includes(startNeedle));"
                 + "const wrappedCommandRows=[];"
@@ -3236,6 +3236,14 @@ public abstract class ComposerJourneySupport {
         return fidelity;
     }
 
+    /**
+     * Fractional-advance faces (bundled JetBrains Mono at 13px, #3138) let a
+     * full-width row render up to ~0.1 cell (under 1px) past the xterm screen
+     * from sub-pixel letter-spacing rounding. A genuinely clipped or extra
+     * glyph is a whole cell (>= 1), so a quarter cell still catches it.
+     */
+    private static final double ROW_SUBPIXEL_CELLS = 0.25;
+
     private static void assertTerminalGridFidelity(String stage, JSONObject fidelity, boolean requireFullGridHeight)
             throws JSONException {
         assertTrue(stage + " must record the fitted xterm grid: " + fidelity,
@@ -3260,8 +3268,8 @@ public abstract class ComposerJourneySupport {
         assertEquals(stage + " every rendered row must fit the xterm screen; clipped rows lose characters at each wrap: "
                 + fidelity, 0, fidelity.getJSONArray("overflowingRows").length());
         assertTrue(stage + " no rendered row may be wider than the accepted column count: " + fidelity,
-                fidelity.getDouble("maxRowCells") <= cols + 0.05
-                        && fidelity.getDouble("maxRowRight") <= screen.getDouble("right") + 0.5);
+                fidelity.getDouble("maxRowCells") <= cols + ROW_SUBPIXEL_CELLS
+                        && fidelity.getDouble("maxRowRight") <= screen.getDouble("right") + 1.5);
         JSONArray wrapped = fidelity.getJSONArray("wrappedCommandRows");
         assertTrue(stage + " must measure a wrapped long command, not only short rows: " + fidelity,
                 wrapped.length() >= 2);
@@ -3271,7 +3279,7 @@ public abstract class ComposerJourneySupport {
             assertTrue(stage + " must measure a one- or two-cell next glyph: " + fidelity,
                     nextGlyphCells >= 1 && nextGlyphCells <= 2);
             assertTrue(stage + " wrapped command row " + index + " must fill the accepted width without exceeding it: "
-                    + fidelity, cells >= cols - nextGlyphCells - 0.05 && cells <= cols + 0.05);
+                    + fidelity, cells >= cols - nextGlyphCells - ROW_SUBPIXEL_CELLS && cells <= cols + ROW_SUBPIXEL_CELLS);
         }
     }
 

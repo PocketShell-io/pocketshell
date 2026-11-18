@@ -32,6 +32,12 @@ import org.json.JSONObject;
 @CapacitorPlugin(name = "SshKeyVault")
 public final class SshKeyVaultPlugin extends Plugin {
     private static final long MAX_DOCUMENT_BYTES = CredentialHandleVault.MAX_KEY_BYTES;
+    /** Vault-key holds run here, never on Capacitor's shared plugin thread. */
+    private static final java.util.concurrent.ExecutorService HOLD_EXECUTOR = java.util.concurrent.Executors.newCachedThreadPool(runnable -> {
+        Thread thread = new Thread(runnable, "pocketshell-vault-hold");
+        thread.setDaemon(true);
+        return thread;
+    });
     private final Map<String, PickedKeyDocument> pickedDocuments = new LinkedHashMap<>();
 
     @PluginMethod
@@ -152,26 +158,28 @@ public final class SshKeyVaultPlugin extends Plugin {
         request.remove("privateKeyPem");
         byte[] bytes = EphemeralCredentials.utf8(pem);
         pem = null;
-        try {
-            EphemeralCredentials.Held held = EphemeralCredentials.INSTANCE.hold(bytes);
-            if (request.has("accountId")) {
-                try {
-                    String accountId = request.getString("accountId");
-                    GatewaySyncSession account = new GatewaySyncSession(getContext(), this::getActivity);
-                    if (!("google:" + account.subject()).equals(accountId)) throw new IOException("The signed-in account changed.");
-                    EphemeralCredentials.INSTANCE.bind(held.handleId, accountId, request.getString("vaultId"), request.getLong("epoch"), request.getString("keyId"));
-                    if (!("google:" + account.subject()).equals(accountId)) throw new IOException("The signed-in account changed.");
-                } catch (Exception error) { EphemeralCredentials.INSTANCE.release(held.handleId); throw error; }
+        // Off Capacitor's shared plugin thread (#3141): the cold hold costs ~1.4 s
+        // and used to stall every other plugin's calls behind it.
+        HOLD_EXECUTOR.execute(() -> {
+            long started = System.nanoTime();
+            String path = "error";
+            try {
+                // Built lazily: a cache hit never touches the account session.
+                VaultKeyHold.Result result = VaultKeyHold.hold(EphemeralCredentials.INSTANCE, request, bytes,
+                    () -> new GatewaySyncSession(getContext(), this::getActivity).subject());
+                EphemeralCredentials.Held held = result.held;
+                path = result.path;
+                call.resolve(new JSObject()
+                    .put("handleId", held.handleId)
+                    .put("algorithm", held.algorithm)
+                    .put("fingerprintSha256", held.fingerprintSha256));
+            } catch (Exception error) {
+                reject(call, "VAULT_KEY_INVALID", safeMessage(error));
+            } finally {
+                java.util.Arrays.fill(bytes, (byte) 0);
+                android.util.Log.i("PocketShellVault", "holdVaultKey path=" + path + " ms=" + (System.nanoTime() - started) / 1_000_000L);
             }
-            call.resolve(new JSObject()
-                .put("handleId", held.handleId)
-                .put("algorithm", held.algorithm)
-                .put("fingerprintSha256", held.fingerprintSha256));
-        } catch (Exception error) {
-            reject(call, "VAULT_KEY_INVALID", safeMessage(error));
-        } finally {
-            java.util.Arrays.fill(bytes, (byte) 0);
-        }
+        });
     }
 
     /** Zero and forget held vault keys: the listed handles, or all of them (vault locked). */

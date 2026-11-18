@@ -330,6 +330,15 @@ export function createMockSshPlugin(options: MockSshOptions): MockSshPlugin {
       if (!file) fail('SFTP_NOT_FOUND', 'The SFTP path does not exist.');
       return { requestId: request.requestId, ...ref(connection), path, isDirectory: file.kind === 'directory' };
     },
+    async sftpStat(request) {
+      requireConnection(request).sftp = true;
+      const { path, file } = sftpPath(request, true);
+      if (!file) fail('SFTP_NOT_FOUND', 'The SFTP path does not exist.');
+      return {
+        requestId: request.requestId, path, type: file.kind, isDirectory: file.kind === 'directory',
+        sizeBytes: file.content.length, modifiedEpochMs: file.modifiedEpochMs, accessedEpochMs: 0,
+      };
+    },
     async sftpList(request) {
       const connection = requireConnection(request);
       connection.sftp = true;

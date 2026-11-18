@@ -106,7 +106,10 @@ INLINE_DICTATION_LISTENING_STATUS_ROW_HEIGHT_PX = 40
 INLINE_DICTATION_RECOVERY_STATUS_ROW_HEIGHT_PX = 64
 CATALOG_SHEET_HEIGHT_PX = 96
 ACCEPTED_ANDROID_TERMINAL_VIEWPORT_CAP_PX = 144
-API35_ACCEPTED_TERMINAL_GRID = (38, 6)
+# The 144px cap holds six rows; the column count follows the terminal font (47 at
+# the 13px compact default of #3138, 38 at the old 16px), so pin a floor.
+API35_ACCEPTED_TERMINAL_ROWS = 6
+API35_MIN_COMPACT_COLS = 45
 # WebView can round shared rectangle edges apart by a tiny fraction; larger overlaps remain failures.
 TERMINAL_VIEWPORT_ROUNDING_EPSILON_CSS_PX = 0.01
 
@@ -1389,8 +1392,10 @@ def validate_journey(journey: object) -> None:
         raise ExtractionFailure("keyboard-up baseline did not establish the min(144px, measured viewport) cap")
     if (journey.get("androidApi") == 35
             and accepted_keyboard_cap == ACCEPTED_ANDROID_TERMINAL_VIEWPORT_CAP_PX
-            and (keyboard_grid.get("cols"), keyboard_grid.get("rows")) != API35_ACCEPTED_TERMINAL_GRID):
-        raise ExtractionFailure("API 35 keyboard-up baseline must lock the accepted 144px / 38×6 terminal grid")
+            and (not isinstance(keyboard_grid.get("cols"), int)
+                 or keyboard_grid.get("cols") < API35_MIN_COMPACT_COLS
+                 or keyboard_grid.get("rows") != API35_ACCEPTED_TERMINAL_ROWS)):
+        raise ExtractionFailure("API 35 keyboard-up baseline must lock the accepted 144px / six-row compact terminal grid")
     for stage_name in ("after-navigation-row-taps", "before-fast-keys", "fast-keys-main-open-ime-up",
                        "fast-keys-ctrl-open-ime-up", "fast-keys-closed-ime-up"):
         grid = by_name[stage_name].get("runtimeGeometry")
@@ -1747,9 +1752,9 @@ def self_test() -> int:
         ("attach and background cancellation use cancel requests without stopped events", sample_journey(), True),
         ("legacy finish and stopped-event dictation contract rejected",
          with_legacy_stopped_event_dictation(sample_journey()), False),
-        ("API 35 keyboard-up baseline locks 144px and the 38x6 PTY grid", sample_journey(), True),
+        ("API 35 keyboard-up baseline locks 144px and the six-row compact PTY grid", sample_journey(), True),
         ("six narrow dock controls fit 330px without horizontal scrolling", sample_journey(), True),
-        ("API 35 144px viewport with a 38x7 PTY grid rejected",
+        ("API 35 144px viewport with a 47x7 PTY grid rejected",
          with_api35_extra_keyboard_row(sample_journey()), False),
         ("API 35 172px keyboard-up viewport cap rejected",
          with_api35_expanded_keyboard_viewport(sample_journey()), False),
@@ -2167,7 +2172,7 @@ def sample_dock_key_long_press() -> dict[str, object]:
 
 def sample_journey() -> dict[str, object]:
     base = {
-        "runtimeGeometry": {"cols": 38, "rows": 6, "cellHeight": 22.6},
+        "runtimeGeometry": {"cols": 47, "rows": 6, "cellHeight": 22.6},
         "visibleTerminalRows": 6,
         "terminalInputAcks": 3,
         "hotkeyWrites": [],
@@ -2384,7 +2389,7 @@ def sample_journey() -> dict[str, object]:
     reattached = {
         **dictation_idle,
         "keyboardComposerMode": True,
-        "runtimeGeometry": {"cols": 38, "rows": 6, "cellHeight": 22.6},
+        "runtimeGeometry": {"cols": 47, "rows": 6, "cellHeight": 22.6},
     }
     dictate_text = "echo test"
     dictate_hex = dictate_text.encode("utf-8").hex()
@@ -2459,7 +2464,7 @@ def sample_journey() -> dict[str, object]:
     error = {
         **dictation_idle,
         "resizeAcks": 6,
-        "resizeStatus": "38 × 6 accepted by SSH",
+        "resizeStatus": "47 × 6 accepted by SSH",
         "inlineDictationTone": "warning",
         "inlineDictationStatusText": "Terminal · Warning · Dictation failed: network. Nothing was inserted; copy your text below.",
         "inlineDictationStatusRow": {**listening["inlineDictationStatusRow"], "height": 64},
@@ -2530,10 +2535,10 @@ def sample_journey() -> dict[str, object]:
         "resizeAcks": 6,
         "resizePending": 0,
         "resizeFailures": 0,
-        "resizeStatus": "38 × 6 accepted by SSH",
-        "resizeFitEvents": [{"reason": "window-resize", "cols": 38, "rows": 6,
+        "resizeStatus": "47 × 6 accepted by SSH",
+        "resizeFitEvents": [{"reason": "window-resize", "cols": 47, "rows": 6,
                               "requestId": 6, "atMs": 130}],
-        "resizeAckEvents": [{"requestId": 6, "cols": 38, "rows": 6, "attachEpoch": 2,
+        "resizeAckEvents": [{"requestId": 6, "cols": 47, "rows": 6, "attachEpoch": 2,
                               "result": "accepted", "atMs": 131}],
     }
     dictation = {
@@ -2654,8 +2659,8 @@ def sample_journey() -> dict[str, object]:
             "keyboardVisibleDuringKeys": True,
             "imeVisibleAfterReturn": True,
             "keyboardVisibleAfterReturn": True,
-            "terminalGridBefore": {"cols": 38, "rows": 6, "cellHeight": 22.6},
-            "terminalGridDuringKeys": {"cols": 38, "rows": 6, "cellHeight": 22.6},
+            "terminalGridBefore": {"cols": 47, "rows": 6, "cellHeight": 22.6},
+            "terminalGridDuringKeys": {"cols": 47, "rows": 6, "cellHeight": 22.6},
             "stableDockControls": [
                 {"label": label, "width": 48, "height": 48, "insideViewport": True,
                  "hitTarget": True,
@@ -3125,7 +3130,7 @@ def with_receiver_setup_resize_events(journey: dict[str, object]) -> dict[str, o
     ready = next(item for item in copied["geometryTrace"] if item["stage"] == "dictation-ready-ime-open")
     fit_events = []
     ack_events = []
-    dimensions = ((38, 5), (39, 7), (38, 6))
+    dimensions = ((47, 5), (48, 7), (47, 6))
     for index, (cols, rows) in enumerate(dimensions):
         request_id = 101 + index
         at_ms = 10.0 + index * 2
@@ -3156,7 +3161,7 @@ def with_receiver_setup_resize_events(journey: dict[str, object]) -> dict[str, o
         stage = next(item for item in copied["geometryTrace"] if item["stage"] == stage_name)
         stage["resizeAcks"] = resize_acks
         if stage_name == "dictation-error-ime-open":
-            stage["resizeStatus"] = "38 × 6 accepted by SSH"
+            stage["resizeStatus"] = "47 × 6 accepted by SSH"
     copied["dictation"]["receiverSetupResizeAcks"] = 3
     copied["dictation"]["resizeAcksAtStableBaseline"] = 7
     copied["dictationBackgroundCancel"]["resizeAcksBeforeResume"] = 7

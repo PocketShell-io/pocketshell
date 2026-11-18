@@ -9,14 +9,15 @@ const host: TrustedHostRecord = { accountId: 'google:subject', vaultId: 'A'.repe
   devicePublicKey: 'C'.repeat(43), status: 'active', updatedAt: '2026-11-05T00:00:00.000Z' };
 function setup() {
   let account: string | null = host.accountId;
+  let accountChecks = 0;
   const values = new Map<string, string>();
   const hosts = new AndroidHostStore({ storage: { getItem: (key) => values.get(key) ?? null, setItem: (key, value) => { values.set(key, value); } }, readLegacyHosts: async () => [] });
   const store = { state: 'unlocked', vaultId: host.vaultId, epoch: host.epoch,
     getTrustedHost: vi.fn(async () => ({ kind: 'ok', host })),
     getHostBinding: vi.fn(() => ({ keyId: host.keyId, gatewayAuth: 'managed' })) };
   const native = { trustedRevisions: vi.fn(async () => ({ floors: {} })), saveTrustedRevision: vi.fn(async () => {}), installTrustedHost: vi.fn(async () => {}) };
-  const api = createAndroidTrustedHosts({ store: store as unknown as KeyVaultStore, accountId: async () => account, native, hosts });
-  return { api, native, hosts, store, account: (next: string | null) => { account = next; } };
+  const api = createAndroidTrustedHosts({ store: store as unknown as KeyVaultStore, accountId: async () => { accountChecks++; return account; }, native, hosts });
+  return { api, checks: () => accountChecks, native, hosts, store, account: (next: string | null) => { account = next; } };
 }
 describe('Android account vault trusted server installation', () => {
   it('installs a validated vault reference and managed route without a local phone key', async () => {
@@ -70,6 +71,22 @@ describe('Android account vault trusted server installation', () => {
     f.store.getTrustedHost.mockResolvedValue({ kind: 'rollback' } as never);
     await expect(f.api.install(host)).rejects.toThrow();
     expect(f.store.getTrustedHost).toHaveBeenCalledWith(host.accountId, host, 5);
+    expect(f.native.installTrustedHost).not.toHaveBeenCalled();
+  });
+  it('validates a pairing with one revision load and one trusted-host read (#3137)', async () => {
+    const f = setup();
+    const row = { ...host, vaultEpoch: host.epoch, trustedRevision: host.revision, vaultKeyId: host.keyId } as never;
+    await f.api.validatePairing(row);
+    expect(f.native.trustedRevisions).toHaveBeenCalledTimes(1);
+    expect(f.store.getTrustedHost).toHaveBeenCalledTimes(1);
+    expect(f.native.installTrustedHost).toHaveBeenCalledTimes(1);
+    expect(f.checks()).toBeLessThanOrEqual(6);
+  });
+  it('still refuses an account change between validation and install (#3137)', async () => {
+    const f = setup();
+    const row = { ...host, vaultEpoch: host.epoch, trustedRevision: host.revision, vaultKeyId: host.keyId } as never;
+    f.native.trustedRevisions.mockImplementation(async () => { f.account('google:other'); return { floors: {} }; });
+    await expect(f.api.validatePairing(row)).rejects.toThrow(/account changed/);
     expect(f.native.installTrustedHost).not.toHaveBeenCalled();
   });
 });
