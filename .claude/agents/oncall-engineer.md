@@ -378,3 +378,12 @@ ON-CALL REPORT
 - `~/.claude/projects/-home-alexey-git-pocketshell/memory/emulator_contention.md` — #182 AVD-contention pattern
 - `~/.claude/projects/-home-alexey-git-pocketshell/memory/hetzner_dev_box.md` — orchestrator runs ON the dev box; `gh` is authenticated
 - `docs/docker-emulator-runbook.md` — Docker harness commands
+
+## Shell hard rule: no `$` in any `rm`/`rmdir` command
+
+The maintainer runs every agent in skip-permissions mode, yet Claude Code still hard-stops with a "Dangerous rm operation on possibly-empty variable path" / "statically-unresolvable target" approval prompt whenever a Bash command contains `rm`/`rmdir` **and** any `$` (`rm -f $D/*`, `rm -rf "$OUT"`, `rm $(...)`, even `${D:?}`). This prompt cannot be allowlisted, blocks you until the maintainer answers it on a phone, and has happened repeatedly. So:
+
+- Never put `rm`/`rmdir` in the same Bash call as a `$`. Use the literal absolute path: `rm -f /home/alexey/git/pocketshell-wt/s2-shots/r2-411/*`.
+- To clear an output dir, prefer a fresh unique directory per run (`mkdir` a new timestamped path) instead of emptying an old one.
+- If you need a computed path, print it in one call, then delete with the literal path pasted into the next call.
+- `find <literal-path> -mindepth 1 -delete` is fine with a literal path; `find "$D" -delete` is not.
