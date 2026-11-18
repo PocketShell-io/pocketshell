@@ -2,7 +2,7 @@
 """Regression layout mirrors run 40190277357's canonical packaged reports.
 
 Class names are synthetic manifest entries: the real run's support classes do
-not implement the 26 required journeys. Never use this fixture to redefine them.
+not implement the required journeys (REQUIRED_CLASS_COUNT). Never use this fixture to redefine them.
 """
 import importlib.util
 import json
@@ -39,9 +39,9 @@ class PackagedResultsTest(unittest.TestCase):
     def test_all_lanes_are_aggregated_without_copy_duplicates(self):
         result = self.qualify()
         self.assertEqual(result["result"], "PASS", result)
-        self.assertEqual(len(result["executedJourneyClasses"]), 26)
-        self.assertEqual(result["executedTests"], 26)
-        self.assertEqual(len(result["reportFiles"]), 26)
+        self.assertEqual(len(result["executedJourneyClasses"]), guard.REQUIRED_CLASS_COUNT)
+        self.assertEqual(result["executedTests"], guard.REQUIRED_CLASS_COUNT)
+        self.assertEqual(len(result["reportFiles"]), guard.REQUIRED_CLASS_COUNT)
         self.assertEqual(guard.qualify_results(self.root / "androidTest-results/connected/debug")["result"], "BLOCK")
 
     def test_missing_required_class_blocks(self):
@@ -76,7 +76,7 @@ class PackagedResultsTest(unittest.TestCase):
         directory.rmdir()
         guard._write_report(self.root / LAYOUT[0], [(self.required[12], "journey", "passed")])
         result = self.qualify()
-        self.assertEqual(len(result["executedJourneyClasses"]), 26)
+        self.assertEqual(len(result["executedJourneyClasses"]), guard.REQUIRED_CLASS_COUNT)
         self.assertEqual(result["result"], "BLOCK")
         self.assertIn("expected exactly one packaged lane directory", " ".join(result["blockers"]))
 
