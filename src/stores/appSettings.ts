@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia';
-import { parseFontSize, TERMINAL_FONT_SIZE_COMPACT_DEFAULT } from '@ui/fonts';
+import { parseFontSize } from '@ui/fonts';
 import { parseThemeChoice, THEME_CHOICE_DEFAULT } from '@ui/themes';
 
 /**
@@ -34,10 +34,19 @@ export interface AppSettings {
   voiceSilenceSeconds: number;
 }
 
+/**
+ * The legacy (pre-#2936) phone shell's terminal size: 13px (#3138). Pinned
+ * here rather than following core's TERMINAL_FONT_SIZE_COMPACT_DEFAULT, which
+ * #3157 moved to 12px for the shared app: the legacy shell's accepted
+ * keyboard-up geometry (J23's six-row grid, the composer journeys) is built on
+ * 13px, and #3157 does not change the legacy shell.
+ */
+export const LEGACY_SHELL_TERMINAL_FONT_SIZE = 13;
+
 export const DEFAULT_APP_SETTINGS: Readonly<AppSettings> = {
   themeChoice: THEME_CHOICE_DEFAULT,
-  // The phone's compact default, Termius' density: 56 columns at 411dp (#3138, #3157). A stored size is kept.
-  terminalFontSize: TERMINAL_FONT_SIZE_COMPACT_DEFAULT,
+  // The legacy shell's phone default: >= 50 columns at 412dp (#3138). A stored size is kept.
+  terminalFontSize: LEGACY_SHELL_TERMINAL_FONT_SIZE,
   voiceLanguage: VOICE_LANGUAGE_AUTO,
   voiceSilenceSeconds: VOICE_SILENCE_DEFAULT_SECONDS,
 };

@@ -33,10 +33,13 @@ describe('bundled monospace font (#3138)', () => {
     expect(BUNDLED_MONO_STACK).not.toContain('Consolas');
   });
 
-  it('defaults the phone terminal to 12px: 56 columns across 411dp with 2px gutters (#3157)', () => {
-    expect(DEFAULT_APP_SETTINGS.terminalFontSize).toBe(TERMINAL_FONT_SIZE_COMPACT_DEFAULT);
-    expect(DEFAULT_APP_SETTINGS.terminalFontSize).toBe(12);
-    expect(Math.floor((411 - 4) / (0.6 * DEFAULT_APP_SETTINGS.terminalFontSize))).toBe(56);
+  it('defaults the shared-app phone terminal to 12px (56 columns across 411dp, 2px gutters) and keeps the legacy shell at 13px (#3157)', () => {
+    // The shared app (default shell): core's compact default.
+    expect(TERMINAL_FONT_SIZE_COMPACT_DEFAULT).toBe(12);
+    expect(Math.floor((411 - 4) / (0.6 * TERMINAL_FONT_SIZE_COMPACT_DEFAULT))).toBe(56);
+    // The legacy shell is unchanged by #3157: still 13px (>= 50 columns at 412dp, #3138).
+    expect(DEFAULT_APP_SETTINGS.terminalFontSize).toBe(13);
+    expect(Math.floor((412 - 16) / (0.6 * DEFAULT_APP_SETTINGS.terminalFontSize))).toBeGreaterThanOrEqual(50);
   });
 
   it('emits both complete JetBrains Mono woff2 files and the symbol fallback into the built bundle', async () => {
