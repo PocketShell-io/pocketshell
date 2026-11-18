@@ -272,9 +272,12 @@ def _screenshot_marker_ocr(
         if not crop_path.is_file():
             raise EvidenceFailure(f"ImageMagick did not produce the marker OCR crop for {path}")
         try:
+            # Use single-text-line mode (--psm 7) rather than single-word (--psm 8):
+            # line-level segmentation gives reliable confidence on long snake_case
+            # markers while still splitting any stray extra words on the row.
             result = subprocess.run(
                 [
-                    "tesseract", str(crop_path), "stdout", "--psm", "8", "tsv",
+                    "tesseract", str(crop_path), "stdout", "--psm", "7", "tsv",
                     "-c", "tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_",
                 ],
                 check=True,
@@ -1037,16 +1040,23 @@ def _self_test() -> int:
             pass
         finally:
             subprocess.run, shutil.which = real_subprocess_run, real_which  # type: ignore[assignment]
-    ocr_commands = [(command[0].rsplit("/", 1)[-1], kwargs) for command, kwargs in ocr_calls]
-    if [name for name, _ in ocr_commands] != ["convert", "tesseract"] or any(
-        kwargs.get("env", {}).get("OMP_THREAD_LIMIT") != "1"
-        or not 60 <= kwargs.get("timeout", 0) <= OCR_SUBPROCESS_TIMEOUT_SECONDS
-        for _, kwargs in ocr_commands
+    ocr_commands = [(command[0].rsplit("/", 1)[-1], command, kwargs) for command, kwargs in ocr_calls]
+    tesseract_commands = [command for name, command, _ in ocr_commands if name == "tesseract"]
+    if (
+        [name for name, _, _ in ocr_commands] != ["convert", "tesseract"]
+        or len(tesseract_commands) != 1
+        or "--psm" not in tesseract_commands[0]
+        or tesseract_commands[0][tesseract_commands[0].index("--psm") + 1] != "7"
+        or any(
+            kwargs.get("env", {}).get("OMP_THREAD_LIMIT") != "1"
+            or not 60 <= kwargs.get("timeout", 0) <= OCR_SUBPROCESS_TIMEOUT_SECONDS
+            for _, _, kwargs in ocr_commands
+        )
     ):
-        print(f"FAIL: screenshot OCR must run single-threaded with a bounded load-tolerant timeout: {ocr_commands}",
+        print(f"FAIL: screenshot OCR must run single-threaded single-line (--psm 7) with a bounded load-tolerant timeout: {ocr_commands}",
               file=sys.stderr)
         return 1
-    print("ok [ocr under load] marker crop and Tesseract run with OMP_THREAD_LIMIT=1 and a bounded timeout")
+    print("ok [ocr under load] marker crop and Tesseract (--psm 7) run with OMP_THREAD_LIMIT=1 and a bounded timeout")
     tag_a, tag_b, tag_c = "metadata-a", "metadata-b", "metadata-c"
     rows = {
         tag: {"tag": tag, "id": f"00000000-0000-4000-8000-00000000000{index}"}
