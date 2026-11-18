@@ -587,7 +587,7 @@ public final class J16SettingsSupportJourney {
         long deadline = SystemClock.uptimeMillis() + timeoutMillis;
         String last = "<not evaluated>";
         while (SystemClock.uptimeMillis() < deadline) {
-            last = evalRaw(expression);
+            last = JsVisibility.pollRaw(this::evalRaw, expression);
             if ("true".equals(last)) return;
             Thread.sleep(100);
         }

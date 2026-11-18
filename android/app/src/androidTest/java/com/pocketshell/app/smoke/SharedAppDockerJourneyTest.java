@@ -161,8 +161,8 @@ public abstract class SharedAppDockerJourneyTest {
         // produced here: localStorage.removeItem is a durable native commit that throws while the page or the native
         // bridge is still starting). So wait for the rendered page first, never let the script throw, and retry until every
         // key is gone.
-        awaitJsTrue("document.readyState === 'complete' && typeof localStorage !== 'undefined'"
-                + " && document.body.innerText.trim().length > 0", 60_000);
+        awaitJsTrue(JsVisibility.nullSafe("document.readyState === 'complete' && typeof localStorage !== 'undefined'"
+                + " && document.body.innerText.trim().length > 0"), 60_000);
         String script = "(() => {const out={removed:0,failed:[]};try{const drop=[];for(let i=0;i<localStorage.length;i++){"
                 + "const k=localStorage.key(i);"
                 + "if(k&&(k.startsWith('ps.workspace.')||k.startsWith('ps.lastFolder.')||k.startsWith('ps.tabOrder.')"
@@ -174,6 +174,7 @@ public abstract class SharedAppDockerJourneyTest {
         while (true) {
             removed = evalString(script);
             if (new JSONObject(removed).getJSONArray("failed").length() == 0) break;
+            Log.w(TAG, "RESET_WORKSPACE_STATE_RETRY a durable removal failed, retrying: " + removed);
             if (SystemClock.uptimeMillis() > deadline) throw new AssertionError("could not reset persisted workspace state: " + removed);
             Thread.sleep(500);
         }
@@ -827,16 +828,16 @@ public abstract class SharedAppDockerJourneyTest {
         long deadline = SystemClock.uptimeMillis() + WAIT_TIMEOUT_MILLIS;
         String last = "<not evaluated>";
         while (SystemClock.uptimeMillis() < deadline) {
-            if (forbidden != null && "true".equals(evalRaw(forbidden))) {
+            if (forbidden != null && "true".equals(JsVisibility.pollRaw(this::evalRaw, forbidden))) {
                 throw new AssertionError("WebView reached a forbidden state: " + forbidden
-                        + " (page=" + evalString("document.body.innerText") + ")");
+                        + " (page=" + JsVisibility.pageText(this::evalRaw) + ")");
             }
-            last = evalRaw(expression);
+            last = JsVisibility.pollRaw(this::evalRaw, expression);
             if ("true".equals(last)) return;
             Thread.sleep(150);
         }
         throw new AssertionError("WebView condition did not become true: " + expression + " (last result: " + last
-                + "; page=" + evalString("document.body.innerText") + ")");
+                + "; page=" + JsVisibility.pageText(this::evalRaw) + ")");
     }
 
     /**
@@ -2282,15 +2283,24 @@ public abstract class SharedAppDockerJourneyTest {
         long deadline = SystemClock.uptimeMillis() + timeoutMillis;
         String last = "<not evaluated>";
         while (SystemClock.uptimeMillis() < deadline) {
-            last = evalRaw(expression);
+            last = JsVisibility.pollRaw(this::evalRaw, expression);
             if ("true".equals(last)) return;
             Thread.sleep(150);
         }
         String diagnostics = connectionDiagnostics();
         Log.e(TAG, "WAIT_FAILED " + expression + " DIAGNOSTICS " + diagnostics);
         throw new AssertionError("WebView condition did not become true: " + expression + " (last result: " + last
-                + "; terminal=" + evalString(VISIBLE_TERMINAL) + "; page=" + evalString("document.body.innerText")
+                + "; terminal=" + safeString(VISIBLE_TERMINAL) + "; page=" + safeString("document.body.innerText")
                 + "; diagnostics=" + diagnostics + ")");
+    }
+
+    /** A diagnostic read that cannot mask the wait's own failure: a cold page (null body) reads as a marker. */
+    private String safeString(String expression) {
+        try {
+            return evalString("(()=>{try{return String(" + expression + ");}catch(e){return '<unavailable: '+e.message+'>';}})()");
+        } catch (Exception error) {
+            return "<unavailable: " + error + ">";
+        }
     }
 
     protected String evalString(String expression) throws Exception {

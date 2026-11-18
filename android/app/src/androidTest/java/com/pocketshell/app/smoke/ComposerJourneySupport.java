@@ -3182,12 +3182,12 @@ public abstract class ComposerJourneySupport {
         long deadline = SystemClock.uptimeMillis() + timeoutMillis;
         String last = "<not evaluated>";
         while (SystemClock.uptimeMillis() < deadline) {
-            last = evalRaw(expression);
+            last = JsVisibility.pollRaw(this::evalRaw, expression);
             if ("true".equals(last)) return;
             Thread.sleep(60);
         }
         throw new AssertionError("WebView condition did not become true: " + expression + " (last=" + last
-                + "; page=" + evalString("document.body.innerText") + ")");
+                + "; page=" + JsVisibility.pageText(this::evalRaw) + ")");
     }
 
     /**

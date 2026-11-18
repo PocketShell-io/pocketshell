@@ -64,13 +64,13 @@ public final class JsVisibility {
         return visibleNode("document.querySelector(" + JSONObject.quote(selector) + ")");
     }
 
-    /** JS boolean expression for an arbitrary node expression (hit-tested when its centre is inside the viewport). */
+    /** JS boolean expression for an arbitrary node expression (laid out, centre inside the viewport, topmost there). */
     public static String visibleNode(String nodeExpr) {
         return "(()=>{const __n=" + nodeExpr + ";if(!__n)return false;"
                 + "const r=__n.getBoundingClientRect();if(r.width<=0||r.height<=0)return false;"
                 + "if(getComputedStyle(__n).display==='none')return false;"
                 + "const x=r.left+r.width/2,y=r.top+r.height/2;"
-                + "if(x<0||y<0||x>innerWidth||y>innerHeight)return true;"
+                + "if(x<0||y<0||x>innerWidth||y>innerHeight)return false;"
                 + "const h=document.elementFromPoint(x,y);return !!h&&__n.contains(h);})()";
     }
 
@@ -99,6 +99,9 @@ public final class JsVisibility {
     public static void prepareForNavigation(String selector, Eval eval) throws Exception {
         if (!isNavigationTarget(selector)) return;
         if (!"true".equals(eval.eval("!!document.querySelector('[data-testid=prompt-composer-scrim]')"))) return;
+        android.util.Log.i("PocketshellImeJourney", "NAV_AUTO_DISMISS composer sheet open before navigating to " + selector
+                + "; tapping its scrim (composer=" + eval.eval("(()=>{const c=document.querySelector('[data-testid=prompt-composer]');"
+                + "return c?JSON.stringify({target:c.dataset.targetKey||null,draftLength:(document.querySelector('#prompt-draft')||{value:''}).value.length}):'none';})()") + ")");
         expectClicked(stripQuotes(eval.eval(click("document.querySelector('[data-testid=prompt-composer-scrim]')"))));
         long deadline = System.currentTimeMillis() + 10_000;
         while (System.currentTimeMillis() < deadline) {
@@ -133,5 +136,33 @@ public final class JsVisibility {
 
     private static String stripQuotes(String raw) {
         return raw != null && raw.length() >= 2 && raw.startsWith("\"") && raw.endsWith("\"") ? raw.substring(1, raw.length() - 1) : raw;
+    }
+
+    /**
+     * One poll of a wait condition: the raw result, or a "<no result: ...>" marker when the page returned null or the
+     * script threw (a cold or navigating page: body not there yet, bridge not ready). A poll loop treats that as "not
+     * ready, keep polling" and reports the last marker on timeout, instead of the first null aborting the wait.
+     */
+    public static String pollRaw(Eval eval, String expression) throws Exception {
+        try {
+            return eval.eval(expression);
+        } catch (org.json.JSONException nullResult) {
+            return "<no result: " + nullResult.getMessage() + ">";
+        }
+    }
+
+    /** Wraps a boolean condition so a throwing page (body or storage not there yet) reads as false, never null. */
+    public static String nullSafe(String condition) {
+        return "(()=>{try{return !!(" + condition + ");}catch(e){return false;}})()";
+    }
+
+    /** Page text for a wait's timeout message; a cold page (null body) reads as a marker instead of masking the timeout. */
+    public static String pageText(Eval eval) {
+        try {
+            String raw = eval.eval("(()=>{try{return document.body.innerText;}catch(e){return '<no body: '+e.message+'>';}})()");
+            return raw;
+        } catch (Exception error) {
+            return "<page unavailable: " + error + ">";
+        }
     }
 }

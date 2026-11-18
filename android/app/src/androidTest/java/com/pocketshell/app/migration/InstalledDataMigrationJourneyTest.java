@@ -345,7 +345,7 @@ public final class InstalledDataMigrationJourneyTest {
         long deadline = SystemClock.uptimeMillis() + MIGRATION_TIMEOUT_MILLIS;
         String latest = "<not evaluated>";
         while (SystemClock.uptimeMillis() < deadline) {
-            latest = evalRaw(expression);
+            latest = JsVisibility.pollRaw(this::evalRaw, expression);
             if ("true".equals(latest)) return;
             Thread.sleep(100);
         }

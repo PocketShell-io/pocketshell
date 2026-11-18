@@ -1279,12 +1279,12 @@ public abstract class UsagePortsJourneySupport {
         long deadline = SystemClock.uptimeMillis() + timeoutMillis;
         String last = "<not evaluated>";
         while (SystemClock.uptimeMillis() < deadline) {
-            last = evalRaw(expression);
+            last = JsVisibility.pollRaw(this::evalRaw, expression);
             if ("true".equals(last)) return;
             Thread.sleep(100);
         }
         throw new AssertionError("WebView condition did not become true: " + expression + " (last result: " + last
-                + "; page=" + evalString("document.body.innerText") + ")");
+                + "; page=" + JsVisibility.pageText(this::evalRaw) + ")");
     }
 
     private String evalString(String expression) throws Exception {

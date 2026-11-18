@@ -832,12 +832,12 @@ public final class J10FilesBrowseEditJourney {
         long deadline = SystemClock.uptimeMillis() + timeoutMillis;
         String last = "<not evaluated>";
         while (SystemClock.uptimeMillis() < deadline) {
-            last = evalRaw(expression);
+            last = JsVisibility.pollRaw(this::evalRaw, expression);
             if ("true".equals(last)) return;
             Thread.sleep(80);
         }
         throw new AssertionError("packaged file journey timed out: " + expression + " (last=" + last
-                + "; page=" + evalString("document.body.innerText") + ")");
+                + "; page=" + JsVisibility.pageText(this::evalRaw) + ")");
     }
 
     private String evalString(String expression) throws Exception {

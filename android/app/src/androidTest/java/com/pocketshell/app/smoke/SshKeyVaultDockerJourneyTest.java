@@ -841,12 +841,12 @@ public abstract class SshKeyVaultDockerJourneyTest {
         long deadline = SystemClock.uptimeMillis() + WAIT_TIMEOUT_MILLIS;
         String last = "<not evaluated>";
         while (SystemClock.uptimeMillis() < deadline) {
-            last = evalRaw("Boolean(" + expression + ")");
+            last = JsVisibility.pollRaw(this::evalRaw, "Boolean(" + expression + ")");
             if ("true".equals(last)) return;
             Thread.sleep(100);
         }
         throw new AssertionError("key-vault journey timed out: " + expression + " (last=" + last
-            + "; page=" + evalString("document.body.innerText") + ")");
+            + "; page=" + JsVisibility.pageText(this::evalRaw) + ")");
     }
 
     private String evalString(String expression) throws Exception {
