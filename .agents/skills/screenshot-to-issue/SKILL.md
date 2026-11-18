@@ -18,6 +18,8 @@ Release assets are not part of the git history, so there's no repo push.
 
 ## 1. One-time: the holding prerelease
 
+`feedback-assets` hit GitHub's 1000-assets-per-release limit on 2026-11-18. Upload new images to `feedback-assets-2` (same URL pattern with that tag); when it fills, create `feedback-assets-3` the same way. Old URLs keep working.
+
 Reuse the `feedback-assets` prerelease as the asset bucket. Create it once if
 missing (it's a prerelease so it never shows as "Latest" and never triggers the
 Build workflow — that only fires on `v*` tags):
