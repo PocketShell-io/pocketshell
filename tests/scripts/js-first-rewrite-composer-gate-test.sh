@@ -161,11 +161,12 @@ def require_contract(source: str, packaged_script: str) -> None:
         raise AssertionError("packaged wrapper ignores the signed-upgrade lane status")
     for lane in ("smoke_status", "lifecycle_status", "usage_status", "files_status", "composer_status",
                  "hotkeys_status", "hotkeys_junit_status", "durable_status", "settings_status",
-                 "account_sync_status", "account_picker_status", "gateway_status", "shared_app_status", "s1_layout_status", "voice_composer_status", "account_vault_status", "key_vault_status", "signed_upgrade_status", "voice_settings_status", "forward_service_status", "copy_status"):
+                 "account_sync_status", "account_picker_status", "gateway_status", "shared_app_status", "s1_layout_status", "voice_composer_status", "account_vault_status", "key_vault_status", "signed_upgrade_status", "voice_settings_status", "forward_service_status", "background_hold_status", "copy_status"):
         if lane not in packaged_script:
             raise AssertionError(f"packaged wrapper does not aggregate {lane}")
     for command, status in (("scripts/connected-js-voice-settings.sh", "voice_settings_status"),
-                            ("scripts/connected-js-forward-service.sh", "forward_service_status")):
+                            ("scripts/connected-js-forward-service.sh", "forward_service_status"),
+                            ("scripts/connected-js-background-hold.sh", "background_hold_status")):
         if command not in packaged_script or f"{status} != 0" not in packaged_script:
             raise AssertionError(f"packaged wrapper must execute and fail closed on {command}")
     if "TEST-*.xml" not in packaged_script or "cp -a --" not in packaged_script:
@@ -185,6 +186,7 @@ def require_contract(source: str, packaged_script: str) -> None:
         ("key-vault", "js-key-vault/js2926-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/instrumentation-results"),
         ("voice-settings", "js-voice-settings/js2857voice-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/instrumentation-results"),
         ("forward-service", "js-forward-service/js3097-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/instrumentation-results"),
+        ("background-hold", "js-background-hold/bg3160-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"),
         ("signed-upgrade", "js-key-vault-upgrade/up2926-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"),
         ("durable-storage", '--run-dir "android/app/build/outputs/js-durable-storage/js2993-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"'),
         ("account-sync", "js-account-sync/js3020-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/instrumentation-results"),
@@ -213,6 +215,7 @@ def require_contract(source: str, packaged_script: str) -> None:
         "scripts/check-js-durable-storage-results.py",
         "scripts/check-js-voice-settings-results.py",
         "scripts/check-js-forward-service-results.py",
+        "scripts/check-js-background-hold-results.py",
         "scripts/check-js-account-sync-results.py",
         "scripts/check-js-account-picker-results.py",
         "scripts/check-js-gateway-results.py",
@@ -672,6 +675,7 @@ with tempfile.TemporaryDirectory(prefix="js rewrite live lane reports ") as temp
         ("check-js-account-vault-results.py", "account-vault"),
         ("check-js-voice-settings-results.py", "voice-settings"),
         ("check-js-forward-service-results.py", "forward-service"),
+        ("check-js-background-hold-results.py", "background-hold"),
     ):
         execute = (
             'exec "$PYTHON" "$ACTUAL_COMPOSER_CHECKER" "$@"\n'
@@ -729,7 +733,7 @@ with tempfile.TemporaryDirectory(prefix="js rewrite live lane reports ") as temp
         raise AssertionError(f"isolated Composer phases did not accept the real run's duplicated summary copy: {result.stderr!r}")
     checked_lines = result_trace.read_text().splitlines()
     checked_lanes = [line.split("\t", 1)[0] for line in checked_lines]
-    if checked_lanes != ["smoke", "lifecycle", "usage-ports", "settings", "account-sync", "account-picker", "gateway", "shared-app", "s1-layout", "voice-composer", "account-vault", "key-vault", "durable-storage", "signed-upgrade", "voice-settings", "forward-service", *(["composer"] * 4)]:
+    if checked_lanes != ["smoke", "lifecycle", "usage-ports", "settings", "account-sync", "account-picker", "gateway", "shared-app", "s1-layout", "voice-composer", "account-vault", "key-vault", "durable-storage", "signed-upgrade", "voice-settings", "forward-service", "background-hold", *(["composer"] * 4)]:
         raise AssertionError(f"the always-run report guard stopped before all present lanes: {checked_lanes!r}")
     for line, phase in zip(checked_lines[-4:], phase_cases, strict=True):
         if f"/phase-{phase} --phase {phase}" not in line:
@@ -750,7 +754,7 @@ subprocess.run(["bash", "-n", str(packaged_lanes_path)], check=True)
 
 def exercise_packaged_lanes(label: str, *, preflight: int = 0, smoke: int = 0, lifecycle: int = 0,
                             usage: int = 0, files: int = 0, composer: int = 0, durable: int = 0, settings: int = 0,
-                            voice_settings: int = 0, forward_service: int = 0,
+                            voice_settings: int = 0, forward_service: int = 0, background_hold: int = 0,
                             account_sync: int = 0, account_picker: int = 0, gateway: int = 0, shared_app: int = 0, s1_layout: int = 0, voice_composer: int = 0,
                             account_vault: int = 0, key_vault: int = 0, signed_upgrade: int = 0, omit_junit: bool = False,
                             fail_junit_copy: bool = False, hotkeys: int = 0,
@@ -877,6 +881,7 @@ def exercise_packaged_lanes(label: str, *, preflight: int = 0, smoke: int = 0, l
             ("connected-js-settings.sh", "settings", "FIXTURE_SETTINGS_STATUS"),
             ("connected-js-voice-settings.sh", "voice-settings", "FIXTURE_VOICE_SETTINGS_STATUS"),
             ("connected-js-forward-service.sh", "forward-service", "FIXTURE_FORWARD_SERVICE_STATUS"),
+            ("connected-js-background-hold.sh", "background-hold", "FIXTURE_BACKGROUND_HOLD_STATUS"),
             ("connected-js-account-sync.sh", "account-sync", "FIXTURE_ACCOUNT_SYNC_STATUS"),
             ("connected-js-account-picker.sh", "account-picker", "FIXTURE_ACCOUNT_PICKER_STATUS"),
             ("connected-js-gateway-docker.sh", "gateway", "FIXTURE_GATEWAY_STATUS"),
@@ -915,6 +920,7 @@ def exercise_packaged_lanes(label: str, *, preflight: int = 0, smoke: int = 0, l
             "FIXTURE_SETTINGS_STATUS": str(settings),
             "FIXTURE_VOICE_SETTINGS_STATUS": str(voice_settings),
             "FIXTURE_FORWARD_SERVICE_STATUS": str(forward_service),
+            "FIXTURE_BACKGROUND_HOLD_STATUS": str(background_hold),
             "FIXTURE_ACCOUNT_SYNC_STATUS": str(account_sync),
             "FIXTURE_ACCOUNT_PICKER_STATUS": str(account_picker),
             "FIXTURE_GATEWAY_STATUS": str(gateway),
@@ -958,11 +964,11 @@ def exercise_packaged_lanes(label: str, *, preflight: int = 0, smoke: int = 0, l
             f"Packaged API 35 lane statuses: smoke={smoke} lifecycle={lifecycle} "
             f"usage-ports={usage} files={files} composer={composer} composer-junit-copy=0 "
             f"composer-junit=0 hotkeys={hotkeys} hotkeys-junit={expected_hotkeys_junit} "
-            f"durable-storage={durable} settings={settings} voice-settings={voice_settings} forward-service={forward_service} account-sync={account_sync} account-picker={account_picker} gateway={gateway} shared-app={shared_app} s1-layout={s1_layout} voice-composer={voice_composer} account-vault={account_vault} key-vault={key_vault} "
+            f"durable-storage={durable} settings={settings} voice-settings={voice_settings} forward-service={forward_service} background-hold={background_hold} account-sync={account_sync} account-picker={account_picker} gateway={gateway} shared-app={shared_app} s1-layout={s1_layout} voice-composer={voice_composer} account-vault={account_vault} key-vault={key_vault} "
             f"signed-upgrade={signed_upgrade} smoke-junit-copy={expected_copy}"
         )
         expected_exit = 1 if any((smoke, lifecycle, usage, files, composer, hotkeys,
-                                  expected_hotkeys_junit, durable, settings, voice_settings, forward_service, account_sync, account_picker, gateway, shared_app, s1_layout, voice_composer, account_vault, key_vault,
+                                  expected_hotkeys_junit, durable, settings, voice_settings, forward_service, background_hold, account_sync, account_picker, gateway, shared_app, s1_layout, voice_composer, account_vault, key_vault,
                                   signed_upgrade, expected_copy)) else 0
         if result.returncode != expected_exit or expected_summary not in result.stdout:
             raise AssertionError(
@@ -971,7 +977,7 @@ def exercise_packaged_lanes(label: str, *, preflight: int = 0, smoke: int = 0, l
             )
         if [line.split("\t", 1)[0] for line in trace_lines] != [
             "smoke", "lifecycle", "usage-ports", "files", "durable-storage", "composer", "hotkeys",
-            "hotkeys-check", "settings", "voice-settings", "account-sync", "account-picker", "gateway", "shared-app", "s1-layout", "voice-composer", "account-vault", "forward-service", "key-vault", "signed-upgrade",
+            "hotkeys-check", "settings", "voice-settings", "account-sync", "account-picker", "gateway", "shared-app", "s1-layout", "voice-composer", "account-vault", "forward-service", "background-hold", "key-vault", "signed-upgrade",
         ]:
             raise AssertionError(f"{label}: wrapper failed to execute every lane in order: {trace_lines!r}")
         if "--run-id js2861-run-1" not in trace_lines[1]:
@@ -1015,6 +1021,8 @@ def exercise_packaged_lanes(label: str, *, preflight: int = 0, smoke: int = 0, l
             raise AssertionError(f"{label}: voice-settings lane arguments/status were not preserved: {trace_lines[9]!r}")
         if trace_lines[17] != f"forward-service\t{forward_service}\t--suffix i3097forward --port 2243 --run-id js3097-run-1":
             raise AssertionError(f"{label}: forward-service lane arguments/status were not preserved: {trace_lines[17]!r}")
+        if trace_lines[18] != f"background-hold\t{background_hold}\t--suffix i3160hold --port 2243 --run-id bg3160-run-1":
+            raise AssertionError(f"{label}: background-hold lane arguments/status were not preserved: {trace_lines[18]!r}")
         if trace_lines[10] != f"account-sync\t{account_sync}\t--suffix i2855ci --run-id js3020-run-1 --test-only":
             raise AssertionError(f"{label}: account-sync lane arguments/status were not preserved: {trace_lines[10]!r}")
         if trace_lines[11] != f"account-picker\t{account_picker}\t--suffix i2855ci --run-id js3063-run-1 --test-only":
@@ -1061,6 +1069,7 @@ exercise_packaged_lanes("missing Fast Keys JUnit is fail-closed", omit_hotkeys_j
 exercise_packaged_lanes("settings failure is fail-closed", settings=27)
 exercise_packaged_lanes("voice-settings failure is fail-closed", voice_settings=41)
 exercise_packaged_lanes("forward-service failure is fail-closed", forward_service=43)
+exercise_packaged_lanes("background-hold failure is fail-closed", background_hold=45)
 exercise_packaged_lanes("account-sync failure is fail-closed", account_sync=33)
 exercise_packaged_lanes("account-picker failure is fail-closed", account_picker=35)
 exercise_packaged_lanes("voice-composer failure is fail-closed", voice_composer=47)

@@ -32,6 +32,7 @@ import androidx.test.platform.app.InstrumentationRegistry;
 import androidx.core.content.FileProvider;
 
 import com.pocketshell.app.DocumentContentIntentTest;
+import com.pocketshell.app.LegacyShellLaunch;
 import com.pocketshell.app.MainActivity;
 
 import org.json.JSONArray;
@@ -84,7 +85,7 @@ public final class JsShellPackagedSmokeTest {
         if (AndroidInputDeliveryProbe.runShell("cmd overlay list").contains("[x] " + BOTTOM_CUTOUT_OVERLAY)) {
             AndroidInputDeliveryProbe.runShell("cmd overlay disable --user 0 " + BOTTOM_CUTOUT_OVERLAY);
         }
-        scenario = ActivityScenario.launch(MainActivity.class);
+        scenario = ActivityScenario.launch(LegacyShellLaunch.intent());
     }
 
     @After

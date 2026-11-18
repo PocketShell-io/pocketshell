@@ -26,6 +26,7 @@ export default defineConfig({
     // client render function so its actual template event bindings are tested.
     testTransformMode: { web: [
       '**/tests/unit/mobileHotkeys.test.ts',
+      '**/tests/unit/fastKeysDock.test.ts',
       '**/tests/unit/composerDictationCancellation.test.ts',
       '**/tests/unit/composerDictationKeepsText.test.ts',
       '**/tests/unit/composerNoSpeechWarning.test.ts',

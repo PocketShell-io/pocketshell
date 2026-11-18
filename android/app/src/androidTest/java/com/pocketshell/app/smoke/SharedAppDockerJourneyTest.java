@@ -1935,9 +1935,9 @@ public abstract class SharedAppDockerJourneyTest {
         var arguments = InstrumentationRegistry.getArguments();
         String host = arguments.getString("sshHost", "10.0.2.2");
         String port = arguments.getString("sshPort");
-        String keyPath = arguments.getString("sshPrivateKeyPath");
+        String keyPath = arguments.getString(fixtureKeyArgument());
         assertNotNull("pass the Docker fixture port with sshPort", port);
-        assertNotNull("pass the runner-staged test key with sshPrivateKeyPath", keyPath);
+        assertNotNull("pass the runner-staged test key with " + fixtureKeyArgument(), keyPath);
 
         // Exactly one shell booted, chosen before the WebView loaded: no
         // default shell first, no reload into the shared one.
@@ -1976,6 +1976,16 @@ public abstract class SharedAppDockerJourneyTest {
             click("[data-testid=host-save]");
             awaitJsTrue(hostRow);
         }
+    }
+
+    /**
+     * The instrumentation argument naming this class's runner-staged key. The
+     * import consumes (deletes) the staged copy, so a class that shares an
+     * instrumentation pass with another key-importing journey gets its own
+     * copy under its own argument (#3158: J30 runs after J23).
+     */
+    protected String fixtureKeyArgument() {
+        return "sshPrivateKeyPath";
     }
 
     /**

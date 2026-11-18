@@ -27,6 +27,11 @@ fixture lane, then compares the captured PTY files with an independent SSH
 host-side byte oracle. The run records API 35 IME, Back, docked tray, key
 reachability, and screenshot evidence. It uses the shared Gradle-output and Android-device locks.
 
+Two journeys run in one instrumentation pass: J23 drives the legacy phone
+shell's dock (opted in explicitly); J30 (#3158) drives the dock the shared
+shell -- the shell the app boots -- contributes to core's terminal.dock,
+answering a Claude-style approval menu with the soft keyboard closed and open.
+
 Start an unclaimed lane with scripts/agents-pool.sh up PORT first. This runner
 does not create or tear down Docker state.
 USAGE
@@ -92,6 +97,7 @@ source "$ROOT_DIR/scripts/lib/disk-preflight.sh"
 source "$ROOT_DIR/scripts/lib/gradle-output-lock.sh"
 source "$ROOT_DIR/scripts/lib/avd-lock.sh"
 source "$ROOT_DIR/scripts/lib/android-input-preflight.sh"
+source "$ROOT_DIR/scripts/lib/android-navigation-mode.sh"
 
 pocketshell_disk_preflight "$ROOT_DIR/android" 'connected-js-hotkeys-docker.sh' || exit $?
 pocketshell_acquire_gradle_output_lock "$ROOT_DIR/android" '' "connected-js-hotkeys-docker.sh suffix=$SUFFIX port=$PORT"
@@ -149,7 +155,12 @@ if results.exists():
 PY
 
 DEVICE_KEY_PATH="/data/local/tmp/pocketshell-$SUFFIX-key.pem"
-test_class='com.pocketshell.app.smoke.J23InlineDictationJourney'
+# J23: the legacy shell's dock. J30 (#3158): the shared shell's dock, the one
+# a phone boots; both must pass (scripts/check-js-hotkeys-journey-results.py).
+DOCK_RUN="$(printf '%s' "$SESSION_BASE" | tr '[:upper:]' '[:lower:]')"
+[[ "$DOCK_RUN" =~ ^[a-z0-9-]{6,40}$ ]] || fail "dock session run id is not a safe folder token: $DOCK_RUN"
+DOCK_FOLDER="$DOCK_RUN-dock"
+DOCK_SESSION_CREATED=0
 asset_logcat="$evidence_dir/hotkeys-assets-live-logcat.txt"
 asset_logcat_pid=""
 prepare_asset_logcat_path() {
@@ -200,14 +211,78 @@ finish_hotkeys_run() {
       if [[ -f "$RESULTS_DIR/$diagnostic" ]]; then cp -- "$RESULTS_DIR/$diagnostic" "$evidence_dir/wrapper-$diagnostic"; fi
     done
   fi
+  # No journey here changes the navigation mode any more (#3158 round 6), but
+  # the recorded mode is put back anyway, so nothing a journey or a crashed
+  # process left behind leaks into a later lane on this emulator (the
+  # launcher state is restored by pocketshell_release_all).
+  if ! pocketshell_android_restore_navigation_mode "$ADB" "$ANDROID_SERIAL" \
+      | tee -a "$evidence_dir/hotkeys-navigation-mode.txt"; then
+    printf 'FAIL: could not restore the navigation mode on %s\n' "$ANDROID_SERIAL" >&2
+    [[ "$exit_status" != 0 ]] || exit_status=1
+  fi
   write_run_exit_metadata "$exit_status"
   if [[ -d "$RESULTS_DIR" ]]; then
     cp -- "$evidence_dir/hotkeys-run-metadata.txt" "$RESULTS_DIR/hotkeys-run-metadata.txt"
   fi
+  if [[ "$DOCK_SESSION_CREATED" == 1 ]]; then
+    # `sessions create --cwd ~/X -- X` names the session `X:X` (folder:tag).
+    ssh_remote "pocketshell sessions kill -- $DOCK_FOLDER:$DOCK_FOLDER >/dev/null 2>&1; rm -rf ~/$DOCK_FOLDER" || true
+  fi
   pocketshell_release_all
   exit "$exit_status"
 }
+# Not in a pipeline: the recorded mode must stay in THIS shell for the trap.
+pocketshell_android_record_navigation_mode "$ADB" "$ANDROID_SERIAL" > "$evidence_dir/hotkeys-navigation-mode.txt" \
+  || fail "could not record the navigation mode on $ANDROID_SERIAL"
+cat "$evidence_dir/hotkeys-navigation-mode.txt"
 trap finish_hotkeys_run EXIT
+
+# #3158 (J30): this run's own session for the shared-shell dock journey, and
+# the host's raw-key approval-menu reader it answers. The reader's own record
+# (~/$DOCK_FOLDER/ps3158-<phase>.hex) is the independent host oracle checked
+# below over this runner's SSH connection, not the app's.
+agents_host_keys="$("$ROOT_DIR/scripts/shared-app-host-key-fixture.py" keys --port "$PORT")" \
+  || fail "no host keys answered on agents port $PORT"
+DOCK_SESSION_CREATED=1
+ssh_remote "rm -rf ~/$DOCK_FOLDER && mkdir -p ~/$DOCK_FOLDER && pocketshell sessions create --json --cwd ~/$DOCK_FOLDER -- $DOCK_FOLDER >/dev/null" \
+  || fail "could not create the J30 dock session $DOCK_FOLDER on lane $PORT"
+ssh_remote "cat > ~/$DOCK_FOLDER/ps3158-approval.py" <<'APPROVAL' \
+  || fail "could not stage the J30 approval-menu reader on lane $PORT"
+# #3158 host fixture: a Claude Code-style numbered approval prompt that reads
+# raw keys. Raw mode (no echo, no line editing, no CR/NL translation, no
+# signals) records every byte the terminal sends until Ctrl+D, then stores and
+# prints them as hex, tagged with the phase. It also reports its PTY's size
+# (rows x cols, what `stty size` prints) when the prompt is shown and again at
+# the end, so the journey can prove the dock caused no remote resize.
+import os, sys, termios, tty
+out, phase = os.path.expanduser(sys.argv[1]), sys.argv[2]
+fd = sys.stdin.fileno()
+saved = termios.tcgetattr(fd)
+os.write(1, ("\x1b[2J\x1b[H Bash command\r\n   rm -f /tmp/ps3158-example\r\n\r\n"
+             " Do you want to proceed?\r\n \x1b[36m\u276f 1. Yes\x1b[0m\r\n"
+             "   2. Yes, and don't ask again for this command\r\n"
+             "   3. No, and tell Claude what to do differently\r\n\r\n"
+             " Esc to cancel \u00b7 Tab to amend\r\n"
+             "\x1b[35m\u23f5\u23f5 bypass permissions on\x1b[0m (shift+tab to cycle)\r\n").encode())
+tty.setraw(fd)
+received = bytearray()
+try:
+    size = os.get_terminal_size(fd)
+    rows, cols = size.lines, size.columns
+    os.write(1, ("PS3158_READY_" + phase + " size=%dx%d\r\n" % (rows, cols)).encode())
+    while True:
+        byte = os.read(fd, 1)
+        if not byte or byte == b"\x04":
+            break
+        received += byte
+finally:
+    termios.tcsetattr(fd, termios.TCSADRAIN, saved)
+with open(out, "w") as record:
+    record.write(received.hex() + "\n")
+size = os.get_terminal_size(fd)
+rows, cols = size.lines, size.columns
+print("PS3158_HEX_" + phase + ":" + received.hex() + ":END size=%dx%d" % (rows, cols))
+APPROVAL
 
 prepare_asset_logcat_path "$asset_logcat"
 [[ "$asset_logcat" != "$RESULTS_DIR/"* ]] || fail 'live artifact collector output must survive Gradle result cleanup'
@@ -221,10 +296,20 @@ kill -0 "$asset_logcat_pid" 2>/dev/null || fail 'could not start the live fast-k
 printf 'Running packaged fast-key Docker journey on %s (API %s), Docker port %s, sessions %s-*.\n' \
   "$ANDROID_SERIAL" "$device_api" "$PORT" "$SESSION_BASE"
 "$ADB" -s "$ANDROID_SERIAL" push "$ROOT_DIR/tests/docker/test_key" "$DEVICE_KEY_PATH" >/dev/null
+# A previous run's J30 screenshots must not stand in for this run's.
+for shot in j30-approval-dock-ime-closed j30-approval-dock-ime-open j30-approval-answered-ime-open j30-dock-page-keys j30-dock-page-more j30-failure; do
+  "$ADB" -s "$ANDROID_SERIAL" shell rm -f "/data/local/tmp/ps2952-$shot.png" >/dev/null 2>&1 || true
+done
+# J30's own copy: each journey's key import consumes the staged file.
+DOCK_DEVICE_KEY_PATH="/data/local/tmp/pocketshell-$SUFFIX-dock-key.pem"
+"$ADB" -s "$ANDROID_SERIAL" push "$ROOT_DIR/tests/docker/test_key" "$DOCK_DEVICE_KEY_PATH" >/dev/null
 if pocketshell_run_without_avd_lock_fd_to_log "$evidence_dir/hotkeys-gradle.log" \
     "$ROOT_DIR/android/gradlew" -p "$ROOT_DIR/android" :app:connectedDebugAndroidTest \
     "-PpocketshellAppIdSuffix=$SUFFIX" \
-    "-Pandroid.testInstrumentationRunnerArguments.class=$test_class" \
+    -Pandroid.testInstrumentationRunnerArguments.class=com.pocketshell.app.smoke.J23InlineDictationJourney,com.pocketshell.app.smoke.J30FastKeyDockJourney \
+    "-Pandroid.testInstrumentationRunnerArguments.sessionRun=$DOCK_RUN" \
+    "-Pandroid.testInstrumentationRunnerArguments.dockSshPrivateKeyPath=$DOCK_DEVICE_KEY_PATH" \
+    "-Pandroid.testInstrumentationRunnerArguments.agentsHostKeysBase64=$(printf '%s' "$agents_host_keys" | base64 -w0)" \
     -Pandroid.testInstrumentationRunnerArguments.sshHost=10.0.2.2 \
     "-Pandroid.testInstrumentationRunnerArguments.sshPort=$PORT" \
     "-Pandroid.testInstrumentationRunnerArguments.sshPrivateKeyPath=$DEVICE_KEY_PATH" \
@@ -252,6 +337,11 @@ else
   "$ADB" -s "$ANDROID_SERIAL" logcat -d -v threadtime -t 5000 > "$RESULTS_DIR/diagnostics-logcat.txt" 2>&1 || true
   "$ADB" -s "$ANDROID_SERIAL" shell dumpsys input_method > "$RESULTS_DIR/diagnostics-input-method.txt" 2>&1 || true
   "$ADB" -s "$ANDROID_SERIAL" exec-out screencap -p > "$RESULTS_DIR/diagnostics-screen.png" 2>&1 || true
+  for shot in j30-approval-dock-ime-closed j30-approval-dock-ime-open j30-approval-answered-ime-open j30-dock-page-keys j30-dock-page-more j30-failure; do
+    "$ADB" -s "$ANDROID_SERIAL" pull "/data/local/tmp/ps2952-$shot.png" "$evidence_dir/$shot.png" >/dev/null 2>&1 || true
+  done
+  ssh_remote "for f in ~/$DOCK_FOLDER/ps3158-*.hex; do printf '%s=' \"\$f\"; cat \"\$f\"; done" \
+    > "$evidence_dir/hotkeys-dock-host-failure-diagnostics.txt" 2>&1 || true
   pocketshell_android_capture_input_diagnostics "$ADB" "$ANDROID_SERIAL" "$evidence_dir/failure-android-input"
   "$ROOT_DIR/scripts/check-android-input-diagnostics.py" --dir "$evidence_dir/failure-android-input" >&2 || true
   "$ROOT_DIR/scripts/extract-js-hotkeys-artifacts.py" --run-id "$ARTIFACT_RUN_ID" --logcat "$asset_logcat" \
@@ -267,15 +357,13 @@ stop_asset_logcat
 # journey's JUnit outcome: only a skip sanctioned by the fail-closed
 # check-js-hotkeys-journey-results.py contract (an unexpired, well-formed
 # journey-quarantine.txt row) may exit green here; anything else fails.
-journey_junit_outcome="$(python3 - "$RESULTS_DIR" <<'PY'
+junit_outcome() {
+python3 - "$RESULTS_DIR" "$1" "$2" <<'PY'
 from pathlib import Path
 import sys
 import xml.etree.ElementTree as ET
 
-REQUIRED_CLASS = "com.pocketshell.app.smoke.J23InlineDictationJourney"
-REQUIRED_METHOD = "fastKeysStayReachableAndWriteExactBytesAcrossImeBackAndReconnect"
-
-results = Path(sys.argv[1])
+results, REQUIRED_CLASS, REQUIRED_METHOD = Path(sys.argv[1]), sys.argv[2], sys.argv[3]
 outcomes = []
 for path in sorted(results.rglob("TEST-*.xml")):
     try:
@@ -300,7 +388,43 @@ elif len(outcomes) == 1:
 else:
     print("duplicate")
 PY
-)"
+}
+journey_junit_outcome="$(junit_outcome com.pocketshell.app.smoke.J23InlineDictationJourney \
+  fastKeysStayReachableAndWriteExactBytesAcrossImeBackAndReconnect)"
+dock_junit_outcome="$(junit_outcome com.pocketshell.app.smoke.J30FastKeyDockJourney \
+  dockAnswersApprovalPromptWithExactBytesImeClosedAndOpen)"
+# #3158: the shared-shell dock's own host oracle runs first, so a sanctioned
+# J23 skip below cannot exit green past an unchecked J30.
+case "$dock_junit_outcome" in
+  passed)
+    # ime-closed / ime-open: the approval answer (2, Esc, Shift+Tab). all-keys:
+    # every byte-sending key on every dock page in page order, ^D (the
+    # reader's terminator) excluded -- J30FastKeyDockJourney.EXPECTED_ALL_KEYS_HEX.
+    expected_approval='321b1b5b5a'
+    expected_all_keys='1b091b5b411b5b420d1b5b5a1b5b441b5b4331323334353637383930031a120c0105150b1702111419090f10130607080a18160e0d1c'
+    for phase in ime-closed all-keys ime-open; do
+      expected_dock="$expected_approval"
+      [[ "$phase" != all-keys ]] || expected_dock="$expected_all_keys"
+      dock_hex="$(ssh_remote "tr -d '[:space:]' < ~/$DOCK_FOLDER/ps3158-$phase.hex")" \
+        || fail "J30 host record ~/$DOCK_FOLDER/ps3158-$phase.hex is missing"
+      [[ "$dock_hex" == "$expected_dock" ]] \
+        || fail "J30 $phase dock PTY bytes mismatch: expected $expected_dock, got ${dock_hex:-<empty>}"
+      printf 'PASS: J30 shared-shell dock %s exact PTY bytes: %s\n' "$phase" "$dock_hex" \
+        | tee -a "$evidence_dir/hotkeys-dock-host-oracle.txt"
+    done
+    for shot in j30-approval-dock-ime-closed j30-approval-dock-ime-open j30-approval-answered-ime-open j30-dock-page-keys j30-dock-page-more; do
+      "$ADB" -s "$ANDROID_SERIAL" pull "/data/local/tmp/ps2952-$shot.png" "$evidence_dir/$shot.png" >/dev/null 2>&1 \
+        || fail "J30 screenshot $shot was not captured"
+      "$ADB" -s "$ANDROID_SERIAL" shell rm -f "/data/local/tmp/ps2952-$shot.png" >/dev/null 2>&1 || true
+    done
+    ;;
+  skipped)
+    : # sanctioned or refused by the exact-result checker below
+    ;;
+  *)
+    fail "packaged J30 dock journey JUnit outcome is ${dock_junit_outcome:-unreadable} despite a green gradle run"
+    ;;
+esac
 case "$journey_junit_outcome" in
   passed)
     : # the executed journey re-verified host-side below

@@ -29,6 +29,7 @@ import type { ConnectionStateEvent } from '@ui/app/api';
 import {
   findSessionRow,
   readSshCapabilityError,
+  RECONNECT_DECLINED_MESSAGE,
   sessionRowToSummary,
   type ConnectResult,
   type ConnectionController,
@@ -103,6 +104,12 @@ interface ConnectionRecord {
   /** Attaches in flight, at most one per session. */
   attaching: PendingAttach[];
   unsubscribe: Array<() => void>;
+  /**
+   * The app just came back and this connection's grace had run out: its
+   * re-attach is the expected, silent return (#3160). Its first attempt is
+   * not announced as "Lost the connection… Reconnecting"; a second attempt is.
+   */
+  quietReturn: boolean;
 }
 
 /**
@@ -255,6 +262,7 @@ export class AndroidConnectionHub {
       controller,
       lastState: null,
       lastAttempt: 0,
+      quietReturn: false,
       shells: [],
       attaching: [],
       unsubscribe: [],
@@ -360,6 +368,9 @@ export class AndroidConnectionHub {
   async attachSession(request: AttachRequest): Promise<{ shellId: ShellId; switched: boolean }> {
     const record = this.recordOf(request.connectionId);
     const controller = record.controller;
+    // Only when the link is down: an await on the live path would let a
+    // keystroke typed during a re-join miss the pending attach below.
+    if (hostLinkDown(controller.getSnapshot())) await this.ensureHostLink(record);
     let row = findSessionRow(controller.getSnapshot().sessions, request);
     if (!row) {
       const refreshed = await controller.refreshSessions();
@@ -408,6 +419,26 @@ export class AndroidConnectionHub {
     record.shells.push(binding);
     settle();
     return { shellId, switched: false };
+  }
+
+  /**
+   * A tab that attaches (or is restored) while its host link is down
+   * connects the host first, through the controller's one recovery path,
+   * instead of failing with "Connect to a host before attaching a session"
+   * and stranding the pane (#3160). An explicit attach is a user action, so
+   * it reconnects even when "Reconnect when I return" is off.
+   */
+  private async ensureHostLink(record: ConnectionRecord): Promise<void> {
+    const controller = record.controller;
+    const snapshot = controller.getSnapshot();
+    if (!hostLinkDown(snapshot) || snapshot.trustDecision) return;
+    if (snapshot.phase === 'background') {
+      // The app's own return owns a backgrounded link (only it cancels the
+      // grace close); a pane joining in the middle of it waits for it.
+      await this.foregroundReturn;
+    } else if (snapshot.phase === 'lost' || snapshot.phase === 'reconnecting' || snapshot.phase === 'error') {
+      await controller.reconnect().catch(() => undefined);
+    }
   }
 
   /** A bare login shell is not a controller operation yet (stage S2). */
@@ -510,15 +541,55 @@ export class AndroidConnectionHub {
     );
   }
 
-  /** Android resumed: each controller reuses or re-dials within its own policy. */
-  async returnToForeground(): Promise<void> {
+  /**
+   * Android resumed: each controller reuses or re-dials within its own
+   * policy, and a connection whose reconnect ladder already gave up gets a
+   * fresh one (#3160) — the foreground resets the retry budget, so a ladder
+   * that ran out while the phone's network was not yet usable never strands
+   * the user on its banner.
+   */
+  async returnToForeground(options: { reconnect?: boolean } = {}): Promise<void> {
+    const reconnect = options.reconnect ?? true;
+    const run = this.returnAll(reconnect);
+    this.foregroundReturn = run;
+    try {
+      await run;
+    } finally {
+      if (this.foregroundReturn === run) this.foregroundReturn = Promise.resolve();
+    }
+  }
+
+  /** The foreground return in flight, for a pane that joins during it. */
+  private foregroundReturn: Promise<void> = Promise.resolve();
+
+  private async returnAll(reconnect: boolean): Promise<void> {
     await Promise.all(
       [...this.records.values()].map(async (record) => {
-        if (record.controller.getSnapshot().phase === 'background') {
-          await record.controller.returnToForeground().catch(() => undefined);
+        const phase = record.controller.getSnapshot().phase;
+        if (phase === 'background') {
+          record.quietReturn = true;
+          try {
+            await record.controller.returnToForeground({ reconnect }).catch(() => undefined);
+          } finally {
+            record.quietReturn = false;
+          }
+        } else if (reconnect && gaveUp(record.controller.getSnapshot())) {
+          await record.controller.reconnect().catch(() => undefined);
         }
       }),
     );
+  }
+
+  /**
+   * The network became usable again (a new default network, or Android
+   * lifting this app's block): retry every connection whose reconnect
+   * ladder gave up, with a fresh budget (#3160). A connection the user chose
+   * to leave closed, or one waiting on a host-key decision, is left alone.
+   */
+  async recoverGivenUp(): Promise<number> {
+    const stranded = [...this.records.values()].filter((record) => gaveUp(record.controller.getSnapshot()));
+    await Promise.all(stranded.map((record) => record.controller.reconnect().catch(() => undefined)));
+    return stranded.length;
   }
 
   /** Test and diagnostics view of the registry. */
@@ -574,6 +645,9 @@ export class AndroidConnectionHub {
     }
     const state = connectionStateFor(snapshot);
     const attempt = state === 'reconnecting' ? snapshot.retryAttempt : 0;
+    // A return past grace re-attaches silently: the pane keeps its content,
+    // and only a FAILED first attempt says the link is lost (#3160).
+    if (record.quietReturn && state === 'reconnecting' && attempt <= 1) return;
     if (state === record.lastState && attempt === record.lastAttempt) return;
     record.lastState = state;
     record.lastAttempt = attempt;
@@ -682,4 +756,19 @@ export function hostKeyChangedMessage(hostLabel: string, pending: PendingHostKey
 /** Normalize a native bridge failure into the message the shared app shows. */
 export function nativeErrorMessage(error: unknown): string {
   return readSshCapabilityError(error).message;
+}
+
+/**
+ * A logical connection the controller's reconnect ladder gave up on: lost,
+ * not by the user's choice (reconnect-on-return off) and not waiting for a
+ * host-key decision.
+ */
+export function gaveUp(snapshot: ConnectionSnapshot): boolean {
+  return snapshot.phase === 'lost' && snapshot.trustDecision === null && snapshot.error !== RECONNECT_DECLINED_MESSAGE;
+}
+
+/** No usable transport under this logical connection right now. */
+export function hostLinkDown(snapshot: ConnectionSnapshot): boolean {
+  return !snapshot.connectionId || snapshot.phase === 'background' || snapshot.phase === 'lost'
+    || snapshot.phase === 'reconnecting';
 }

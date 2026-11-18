@@ -20,6 +20,10 @@ JS-first packaged Android lanes:
   smoke             Exact packaged-shell smoke suite (10 JUnit methods)
   lifecycle         SSH session switching and background-grace journey plus
                     independent Docker host/screenshot evidence
+  background-hold   Background grace hold with a real HOME press and the app
+                    NOT instrumented: same connection within grace (and Doze),
+                    re-attach after grace, recovery after a reconnect gave up
+                    (Docker agents-pool fixture; needs --port; #3160)
   composer-docker   Packaged composer journey plus Docker PTY byte oracles
   hotkeys-docker    Packaged mobile fast-key journey plus Docker PTY byte oracles
   key-vault-docker  SSH key import (file + paste), public-key share, install-on-host, auth and secret-leak journeys
@@ -92,6 +96,9 @@ case "$LANE" in
   lifecycle)
     TARGET="$ROOT_DIR/scripts/connected-js-lifecycle.sh"
     ;;
+  background-hold)
+    TARGET="$ROOT_DIR/scripts/connected-js-background-hold.sh"
+    ;;
   composer-docker)
     TARGET="$ROOT_DIR/scripts/connected-js-composer-docker.sh"
     ;;
@@ -117,7 +124,7 @@ case "$LANE" in
     TARGET="$ROOT_DIR/scripts/connected-js-s1-layout.sh"
     ;;
   *)
-    fail "unknown JS-first connected lane '$LANE'; choose smoke, lifecycle, composer-docker, hotkeys-docker, key-vault-docker, durable-storage, account-sync, account-picker, gateway-docker, or s1-layout"
+    fail "unknown JS-first connected lane '$LANE'; choose smoke, lifecycle, background-hold, composer-docker, hotkeys-docker, key-vault-docker, durable-storage, account-sync, account-picker, gateway-docker, or s1-layout"
     ;;
 esac
 

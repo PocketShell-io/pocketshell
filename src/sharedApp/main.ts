@@ -1,4 +1,4 @@
-import { createApp } from 'vue';
+import { createApp, watch } from 'vue';
 import { createPinia } from 'pinia';
 import { App as CapacitorApp } from '@capacitor/app';
 import '@xterm/xterm/css/xterm.css';
@@ -14,6 +14,8 @@ import './phone.css';
 import { createSharedAppRouter } from './router';
 import { provideKeyVault } from '@ui/app/keyVault';
 import { useSyncStore } from '@ui/app/stores/sync';
+import { useSettingsStore } from '@ui/app/stores/settings';
+import { backgroundHold } from '@/native/backgroundHold';
 import { googleSync } from '@/native/googleSync';
 import { bindAndroidAuthLoss } from '@/platform/android/authLoss';
 import { androidPlatform, keyVaultPlatform, lockAndroidVaultAfterAuthLoss } from './platform';
@@ -24,6 +26,7 @@ import { ANDROID_MONO_FALLBACK, applyAndroidInsets, bindAndroidBottomInsets } fr
 import { keyboardInsets } from '@/native/keyboardInsets';
 import VaultSettingsSection from '@ui/app/components/vault/VaultSettingsSection.vue';
 import AndroidUploadChips from './AndroidUploadChips.vue';
+import FastKeysDock from './extensions/FastKeysDock.vue';
 
 /**
  * Mount the shared PocketShell app (core packages/ui) on Android. This is
@@ -40,7 +43,10 @@ export function mountSharedApp(target: string | Element): void {
   // Android-only behaviour plugs into the shared app's extension points (D42).
   // The soft keyboard's composition reaches the terminal through this adapter
   // (#2952); desktop and web contribute none and keep xterm's own handling.
+  // The fast-key dock is the phone's key row under the terminal (#3158): Esc,
+  // Tab, Shift+Tab, Enter, arrows, Ctrl and digits without a hardware keyboard.
   provideExtensions({
+    'terminal.dock': [{ id: 'fast-keys', component: FastKeysDock }],
     'terminal.inputAdapter': [androidTerminalInputAdapter],
     'settings.sections': [{ id: 'key-vault', title: 'Key vault', component: VaultSettingsSection }],
     // Per-file upload progress, Cancel and size refusals on the composer (#3191).
@@ -72,6 +78,12 @@ export function mountSharedApp(target: string | Element): void {
     lockAndroidVault: lockAndroidVaultAfterAuthLoss,
   });
   app.onUnmount(releaseAuthLoss);
+  // The native grace hold opens when the activity stops, before the WebView
+  // hears about it, so it needs the user's window ahead of time (#3160).
+  const settings = useSettingsStore(pinia);
+  app.onUnmount(watch(() => settings.backgroundGraceMs, (graceMs) => {
+    void backgroundHold.setGrace(graceMs).catch((error: unknown) => recordDiagError('error', error));
+  }, { immediate: true }));
   app.mount(target);
 
   // Android Back: the shared app consumes it (top layer, subview, workspace,

@@ -27,6 +27,7 @@ import androidx.test.platform.app.InstrumentationRegistry;
 import androidx.core.content.FileProvider;
 
 import org.hamcrest.Matchers;
+import com.pocketshell.app.LegacyShellLaunch;
 import com.pocketshell.app.MainActivity;
 
 import org.json.JSONException;
@@ -73,7 +74,7 @@ public final class J10FilesBrowseEditJourney {
     @Before
     public void launchPackagedShell() {
         Intents.init();
-        scenario = ActivityScenario.launch(MainActivity.class);
+        scenario = ActivityScenario.launch(LegacyShellLaunch.intent());
     }
 
     @After

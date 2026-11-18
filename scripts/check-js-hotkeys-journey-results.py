@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Require the exact packaged mobile fast-key Docker journey to execute and pass.
+"""Require the exact packaged mobile fast-key Docker journeys to execute and pass.
+
+Two journeys, each exactly once: J23 (the legacy phone shell's dock) and J30
+(#3158: the dock the shared shell -- the shell a phone boots -- contributes to
+core's terminal.dock). Neither may stand in for the other.
 
 A skipped run is sanctioned ONLY by an unexpired, well-formed row for this
 exact method in scripts/journey-quarantine.txt (policy D36, issue #2355) —
@@ -19,9 +23,17 @@ from datetime import date
 from pathlib import Path
 
 
-REQUIRED_CLASS = "com.pocketshell.app.smoke.J23InlineDictationJourney"
+METHOD_CLASSES = {
+    "fastKeysStayReachableAndWriteExactBytesAcrossImeBackAndReconnect": "com.pocketshell.app.smoke.J23InlineDictationJourney",
+    "dockAnswersApprovalPromptWithExactBytesImeClosedAndOpen": "com.pocketshell.app.smoke.J30FastKeyDockJourney",
+}
+REQUIRED = tuple((class_name, method) for method, class_name in METHOD_CLASSES.items())
+# J23's identity, kept for the self-test probes below.
 REQUIRED_METHOD = "fastKeysStayReachableAndWriteExactBytesAcrossImeBackAndReconnect"
+REQUIRED_CLASS = METHOD_CLASSES[REQUIRED_METHOD]
 REQUIRED_KEY = f"{REQUIRED_CLASS}#{REQUIRED_METHOD}"
+DOCK_METHOD = "dockAnswersApprovalPromptWithExactBytesImeClosedAndOpen"
+DOCK_CLASS = METHOD_CLASSES[DOCK_METHOD]
 DEFAULT_RESULTS_DIR = Path("android/app/build/outputs/androidTest-results/connected/debug")
 DEFAULT_QUARANTINE_FILE = Path(__file__).resolve().parent / "journey-quarantine.txt"
 
@@ -30,7 +42,7 @@ class GateFailure(ValueError):
     """The packaged journey result is missing, extra, skipped, or red."""
 
 
-def quarantine_sanction(quarantine_file: Path):
+def quarantine_sanction(quarantine_file: Path, required_key: str = REQUIRED_KEY):
     """((issue, expires), None) when an unexpired well-formed row sanctions the
     skip; (None, reason) otherwise. Fail-closed in every unclear case."""
     try:
@@ -42,22 +54,22 @@ def quarantine_sanction(quarantine_file: Path):
         if not line.strip() or line.startswith("#"):
             continue
         fields = line.split("\t")
-        if fields[0] != REQUIRED_KEY:
+        if fields[0] != required_key:
             continue
         if len(fields) != 5:
-            return None, f"registry row for {REQUIRED_KEY} is malformed (expected 5 TAB-separated fields, got {len(fields)})"
+            return None, f"registry row for {required_key} is malformed (expected 5 TAB-separated fields, got {len(fields)})"
         _, issue, added, expires, _reason = fields
         try:
             added_date = date.fromisoformat(added)
             expires_date = date.fromisoformat(expires)
         except ValueError:
-            return None, f"registry row for {REQUIRED_KEY} carries a non-ISO date (added={added}, expires={expires})"
+            return None, f"registry row for {required_key} carries a non-ISO date (added={added}, expires={expires})"
         if expires_date <= added_date:
-            return None, f"registry row for {REQUIRED_KEY} expires ({expires}) before it was added ({added})"
+            return None, f"registry row for {required_key} expires ({expires}) before it was added ({added})"
         if date.today() > expires_date:
-            return None, f"registry row for {REQUIRED_KEY} EXPIRED {expires} — resolve or re-triage it per policy D36"
+            return None, f"registry row for {required_key} EXPIRED {expires} — resolve or re-triage it per policy D36"
         return (issue, expires_date), None
-    return None, f"no registry row for {REQUIRED_KEY}"
+    return None, f"no registry row for {required_key}"
 
 
 def require_successful_run_metadata(results_dir: Path, junit_path: Path) -> None:
@@ -133,40 +145,49 @@ def validate_results(results_dir: Path, quarantine_file: Path = DEFAULT_QUARANTI
                     raise GateFailure(f"{path}: testcase is missing its class or method")
                 cases.append((classname, method, case))
 
-    actual = [(classname, method) for classname, method, _ in cases]
-    expected = [(REQUIRED_CLASS, REQUIRED_METHOD)]
+    actual = sorted((classname, method) for classname, method, _ in cases)
+    expected = sorted(REQUIRED)
     if actual != expected:
-        raise GateFailure(f"expected exactly {REQUIRED_CLASS}#{REQUIRED_METHOD}; found {actual or '<zero tests>'}")
-    case = cases[0][2]
-    if list(case.iter("failure")) or list(case.iter("error")):
-        raise GateFailure(f"{REQUIRED_CLASS}#{REQUIRED_METHOD} failed")
-    if list(case.iter("skipped")):
-        sanction, why = quarantine_sanction(quarantine_file)
-        if sanction is None:
-            raise GateFailure(f"{REQUIRED_CLASS}#{REQUIRED_METHOD} was skipped and no unexpired quarantine row sanctions it: {why}")
-        issue, expires = sanction
-        print(f"QUARANTINED (policy D36): {REQUIRED_KEY} skipped; tracked {issue}, expires {expires.isoformat()} ({quarantine_file})")
-        return False
-    return True
+        raise GateFailure(f"expected exactly {expected}; found {actual or '<zero tests>'}")
+    executed_all = True
+    for classname, method, case in cases:
+        key = f"{classname}#{method}"
+        if list(case.iter("failure")) or list(case.iter("error")):
+            raise GateFailure(f"{key} failed")
+        if list(case.iter("skipped")):
+            sanction, why = quarantine_sanction(quarantine_file, key)
+            if sanction is None:
+                raise GateFailure(f"{key} was skipped and no unexpired quarantine row sanctions it: {why}")
+            issue, expires = sanction
+            print(f"QUARANTINED (policy D36): {key} skipped; tracked {issue}, expires {expires.isoformat()} ({quarantine_file})")
+            executed_all = False
+    return executed_all
 
 
 def self_test() -> int:
+    dock = (DOCK_CLASS, DOCK_METHOD, "passed")
     probes = [
-        ("one exact passing packaged journey passes", [(REQUIRED_CLASS, REQUIRED_METHOD, "passed")], True, ""),
+        ("both exact passing packaged journeys pass", [(REQUIRED_CLASS, REQUIRED_METHOD, "passed"), dock], True, ""),
+        ("the legacy J23 journey alone no longer passes (#3158)", [(REQUIRED_CLASS, REQUIRED_METHOD, "passed")], False, ""),
+        ("the shared-shell J30 dock journey alone does not pass", [dock], False, ""),
+        ("a failed J30 dock journey fails", [(REQUIRED_CLASS, REQUIRED_METHOD, "passed"), (DOCK_CLASS, DOCK_METHOD, "failed")], False, ""),
+        ("a duplicated J30 dock journey fails", [(REQUIRED_CLASS, REQUIRED_METHOD, "passed"), dock, dock], False, ""),
+        ("a skipped J30 without its own quarantine row fails", [(REQUIRED_CLASS, REQUIRED_METHOD, "passed"), (DOCK_CLASS, DOCK_METHOD, "skipped")], False,
+         f"{REQUIRED_KEY}\t#3056\t2026-01-01\t2099-01-01\tsynthetic row for the other journey"),
         ("zero reports fail closed", None, False, ""),
         ("zero tests fail closed", [], False, ""),
-        ("missing method fails", [(REQUIRED_CLASS, "other", "passed")], False, ""),
-        ("extra method fails", [(REQUIRED_CLASS, REQUIRED_METHOD, "passed"), (REQUIRED_CLASS, "extra", "passed")], False, ""),
-        ("extra class fails", [(REQUIRED_CLASS, REQUIRED_METHOD, "passed"), ("other.Journey", "run", "passed")], False, ""),
-        ("failed method fails", [(REQUIRED_CLASS, REQUIRED_METHOD, "failed")], False, ""),
-        ("skipped method without a quarantine row fails", [(REQUIRED_CLASS, REQUIRED_METHOD, "skipped")], False, ""),
-        ("skipped with an unexpired registered quarantine passes", [(REQUIRED_CLASS, REQUIRED_METHOD, "skipped")], True,
+        ("missing method fails", [(REQUIRED_CLASS, "other", "passed"), dock], False, ""),
+        ("extra method fails", [(REQUIRED_CLASS, REQUIRED_METHOD, "passed"), (REQUIRED_CLASS, "extra", "passed"), dock], False, ""),
+        ("extra class fails", [(REQUIRED_CLASS, REQUIRED_METHOD, "passed"), ("other.Journey", "run", "passed"), dock], False, ""),
+        ("failed method fails", [(REQUIRED_CLASS, REQUIRED_METHOD, "failed"), dock], False, ""),
+        ("skipped method without a quarantine row fails", [(REQUIRED_CLASS, REQUIRED_METHOD, "skipped"), dock], False, ""),
+        ("skipped with an unexpired registered quarantine passes", [(REQUIRED_CLASS, REQUIRED_METHOD, "skipped"), dock], True,
          f"{REQUIRED_KEY}\t#3056\t2026-01-01\t2099-01-01\tsynthetic unexpired row"),
-        ("skipped with an expired registered quarantine fails", [(REQUIRED_CLASS, REQUIRED_METHOD, "skipped")], False,
+        ("skipped with an expired registered quarantine fails", [(REQUIRED_CLASS, REQUIRED_METHOD, "skipped"), dock], False,
          f"{REQUIRED_KEY}\t#3056\t2026-01-01\t2026-01-15\tsynthetic expired row"),
-        ("skipped with a malformed registry row fails closed", [(REQUIRED_CLASS, REQUIRED_METHOD, "skipped")], False,
+        ("skipped with a malformed registry row fails closed", [(REQUIRED_CLASS, REQUIRED_METHOD, "skipped"), dock], False,
          "this-row-has-no-tabs-at-all"),
-        ("skipped with a row for a different method fails", [(REQUIRED_CLASS, REQUIRED_METHOD, "skipped")], False,
+        ("skipped with a row for a different method fails", [(REQUIRED_CLASS, REQUIRED_METHOD, "skipped"), dock], False,
          f"{REQUIRED_CLASS}#other\t#3056\t2026-01-01\t2099-01-01\tsynthetic other-method row"),
     ]
     failures = 0
@@ -208,10 +229,13 @@ def self_test() -> int:
                          include_metadata: bool = True) -> None:
             directory.mkdir()
             suite = ET.Element("testsuite", {
-                "tests": "1", "failures": "0", "errors": "0", "skipped": "0", "time": "0.01",
+                "tests": "2", "failures": "0", "errors": "0", "skipped": "0", "time": "0.01",
             })
             ET.SubElement(suite, "testcase", {
                 "classname": REQUIRED_CLASS, "name": REQUIRED_METHOD, "time": duration,
+            })
+            ET.SubElement(suite, "testcase", {
+                "classname": DOCK_CLASS, "name": DOCK_METHOD, "time": "0.01",
             })
             ET.ElementTree(suite).write(directory / "TEST-fastkeys.xml", encoding="utf-8", xml_declaration=True)
             if include_metadata:
@@ -257,9 +281,9 @@ def main() -> int:
         print(f"BLOCK: {exc}", file=sys.stderr)
         return 1
     if executed:
-        print(f"PASS: exactly one packaged fast-key Docker journey passed ({REQUIRED_CLASS}#{REQUIRED_METHOD})")
+        print(f"PASS: each packaged fast-key Docker journey passed exactly once ({', '.join(f'{c}#{m}' for c, m in REQUIRED)})")
     else:
-        print(f"PASS (QUARANTINED): {REQUIRED_KEY} reported exactly once as a D36-sanctioned skip")
+        print("PASS (QUARANTINED): every fast-key journey reported exactly once; a skip was D36-sanctioned")
     return 0
 
 

@@ -21,6 +21,7 @@ import androidx.test.espresso.intent.matcher.IntentMatchers;
 import androidx.test.ext.junit.runners.AndroidJUnit4;
 import androidx.test.platform.app.InstrumentationRegistry;
 
+import com.pocketshell.app.LegacyShellLaunch;
 import com.pocketshell.app.MainActivity;
 
 import org.json.JSONException;
@@ -55,7 +56,7 @@ public abstract class SshKeyVaultDockerJourneyTest {
 
     @Before public void launchPackagedShell() {
         Intents.init();
-        scenario = ActivityScenario.launch(MainActivity.class);
+        scenario = ActivityScenario.launch(LegacyShellLaunch.intent());
     }
 
     @After public void closePackagedShell() {

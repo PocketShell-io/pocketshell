@@ -70,3 +70,21 @@
 #app:has(.account-key-scrim) .status-dot.connecting {
   animation: none;
 }
+
+/* #3158: the fast-key dock (terminal.dock) is the bottom row of the terminal
+   area on a phone. Core's floating prompt layer (.composer-dock: its
+   open/close toggle and the card) is positioned over the whole workspace
+   body, so with a dock it would sit on the row's right-hand keys and take
+   their taps. Stop the layer at the dock's top edge instead; the toggle keeps
+   its corner, one dock-height higher. 48px is FAST_KEYS_DOCK_HEIGHT_PX.
+   Phone layout only (D44): the dock itself renders only in core's compact
+   layout class (<= 640px, LAYOUT_BREAKPOINTS.compact), and this rule keys on
+   the rendered dock inside the same query, so a wide window is untouched.
+   The generic home for this is core's .composer-dock rule (design S3); until
+   then the packaged journey hit-tests every dock key, so a core rename that
+   undoes this fails. */
+@media (max-width: 640px) {
+  .workspace-body:has(.terminal-area [data-testid='fast-keys-dock']) > .composer-dock {
+    bottom: calc(var(--composer-inset) + 48px);
+  }
+}

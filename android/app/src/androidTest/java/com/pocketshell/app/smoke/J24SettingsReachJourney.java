@@ -23,6 +23,7 @@ import androidx.test.core.app.ActivityScenario;
 import androidx.test.ext.junit.runners.AndroidJUnit4;
 import androidx.test.platform.app.InstrumentationRegistry;
 
+import com.pocketshell.app.LegacyShellLaunch;
 import com.pocketshell.app.MainActivity;
 
 import org.json.JSONArray;
@@ -67,7 +68,7 @@ public final class J24SettingsReachJourney {
                 | AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS;
         serviceInfo.notificationTimeout = 100;
         InstrumentationRegistry.getInstrumentation().getUiAutomation().setServiceInfo(serviceInfo);
-        scenario = ActivityScenario.launch(MainActivity.class);
+        scenario = ActivityScenario.launch(LegacyShellLaunch.intent());
     }
 
     @After
@@ -222,7 +223,7 @@ public final class J24SettingsReachJourney {
             scenario = null;
         }
         journeyEvidence.put("activityRelaunchMethod", "closed the prior ActivityScenario and launched a fresh MainActivity");
-        scenario = ActivityScenario.launch(MainActivity.class);
+        scenario = ActivityScenario.launch(LegacyShellLaunch.intent());
         awaitBuildVerified();
     }
 

@@ -66,10 +66,7 @@ import net.schmizz.sshj.userauth.keyprovider.KeyFormat;
 import net.schmizz.sshj.userauth.keyprovider.KeyProviderUtil;
 import net.schmizz.sshj.common.Factory;
 import net.schmizz.sshj.common.SecurityUtils;
-import net.schmizz.sshj.connection.Connection;
-import net.schmizz.sshj.connection.channel.direct.Signal;
 import net.schmizz.sshj.transport.TransportException;
-import java.nio.charset.Charset;
 import org.bouncycastle.jce.provider.BouncyCastleProvider;
 
 /**
@@ -129,6 +126,8 @@ public final class SshCapabilityPlugin extends Plugin {
     private final LinkedHashMap<String, Long> connectCancellationTombstones = new LinkedHashMap<>();
     private final Handler mainHandler;
     private final LongSupplier elapsedRealtimeClock;
+    /** Android's half of background grace (#3160); built on first use, after the constructor. */
+    private volatile BackgroundHoldBridge holdBridge;
     /** Gateway dials only: the native sign-in seam and the pairing store.
      * Built in load(); the JVM test constructor injects fakes. */
     private volatile GatewaySyncSession gatewaySyncSession;
@@ -264,14 +263,81 @@ public final class SshCapabilityPlugin extends Plugin {
             byte[] probe = privateKeySource.resolvePrivateKey(keyHandleId);
             if (probe != null) java.util.Arrays.fill(probe, (byte) 0);
         };
+        holdBridge().registerNetworkCallback();
     }
 
     @Override
     protected void handleOnDestroy() {
+        holdBridge().unregisterNetworkCallback();
         cancelPendingConnects();
         for (SshConnection connection : new ArrayList<>(connections.values())) {
             closeConnection(connection, "plugin-destroyed", false);
         }
+        holdBridge().onStart();
+    }
+
+    // --- background grace hold and network return (#3160) --------------------
+
+    BackgroundHoldBridge holdBridge() {
+        BackgroundHoldBridge bridge = holdBridge;
+        if (bridge != null) return bridge;
+        synchronized (this) {
+            if (holdBridge == null) {
+                holdBridge = new BackgroundHoldBridge(mainHandler, elapsedRealtimeClock, new BackgroundHoldBridge.Host() {
+                    @Override public int liveConnections() { return liveConnectionCount(); }
+                    @Override public android.content.Context context() { return getBridge() == null ? null : getContext(); }
+                    @Override public void disconnectHeld() { disconnectHeldConnections(); }
+                    @Override public void networkUsable(String reason) {
+                        notifyListeners("networkAvailable", new JSObject().put("reason", reason));
+                    }
+                });
+            }
+            return holdBridge;
+        }
+    }
+
+    @Override
+    protected void handleOnStop() {
+        holdBridge().onStop(getActivity());
+    }
+
+    @Override
+    protected void handleOnStart() {
+        holdBridge().onStart();
+    }
+
+    /** The user's grace window, pushed by the app ahead of time; 0 turns the hold off. */
+    @PluginMethod
+    public void setBackgroundGrace(PluginCall call) {
+        run(call, "setBackgroundGrace", options -> {
+            String requestId = requiredString(options, "requestId");
+            holdBridge().hold.setGraceMs(requiredLong(options, "graceMs"));
+            holdBridge().post();
+            return ack(requestId).put("graceMs", holdBridge().hold.graceMs());
+        });
+    }
+
+    /** Open, usable SSH connections: what the hold keeps alive. */
+    int liveConnectionCount() {
+        int live = 0;
+        for (SshConnection connection : connections.values()) {
+            if ("connected".equals(connection.state) && connection.client.isConnected()) live++;
+        }
+        return live;
+    }
+
+    /** End the hold now, as its expiry would: core re-attaches on return. Forward hosts stay. */
+    void disconnectHeldConnections() {
+        CLEANUP_EXECUTOR.execute(() -> {
+            for (SshConnection connection : new ArrayList<>(connections.values())) {
+                boolean carriesForward = false;
+                for (SshForward forward : forwards.values()) {
+                    if (forward.connection == connection) carriesForward = true;
+                }
+                if (!carriesForward) closeConnection(connection, "grace-expired", true);
+            }
+            holdBridge().post();
+        });
     }
 
     /**
@@ -421,6 +487,7 @@ public final class SshCapabilityPlugin extends Plugin {
                 event.put("state", "lost");
                 event.put("reason", message == null || message.isBlank() ? String.valueOf(reason) : message);
                 mainHandler.post(() -> notifyListeners("connectionState", event));
+                holdBridge().post();
             });
             java.util.function.Consumer<ConnectAttempt> beforeRegistration = beforeConnectRegistrationForTesting;
             if (beforeRegistration != null) beforeRegistration.accept(attempt);
@@ -437,6 +504,7 @@ public final class SshCapabilityPlugin extends Plugin {
                 connections.put(connection.connectionId, connection);
                 pendingConnects.remove(requestId, attempt);
             }
+            holdBridge().post();
             JSObject hostKey = presented.asJson();
             JSObject result = new JSObject()
                 .put("requestId", requestId)
@@ -585,7 +653,9 @@ public final class SshCapabilityPlugin extends Plugin {
                     connection.graceDeadlineElapsedRealtimeMs = null;
                     throw new PluginFailure("SCHEDULE_FAILED", "Could not schedule SSH grace closure.");
                 }
+                holdBridge().hold.onGraceScheduled(connection.connectionId, connection.graceDeadlineElapsedRealtimeMs);
             }
+            holdBridge().post();
             return ack(requestId);
         });
     }
@@ -608,6 +678,8 @@ public final class SshCapabilityPlugin extends Plugin {
                         connection.graceDeadlineElapsedRealtimeMs = null;
                     }
                 }
+                holdBridge().hold.onGraceCleared(connection.connectionId);
+                holdBridge().post();
             }
             return ack(requestId).put("cancelled", cancelled);
         });
@@ -2005,10 +2077,12 @@ public final class SshCapabilityPlugin extends Plugin {
             connection.graceDeadlineElapsedRealtimeMs = null;
         }
         connection.state = "closed";
+        holdBridge().hold.onGraceCleared(connection.connectionId);
         closeChildren(connection);
         ClientCloseResult closeResult = closeThenRemove(
             connections, connection.connectionId, connection, () -> closeClient(connection.client)
         );
+        holdBridge().post();
         long transportCloseCompletedAtEpochMs = System.currentTimeMillis();
         long transportCloseCompletedAtElapsedRealtimeMs = elapsedRealtimeClock.getAsLong();
         if (notify) {
@@ -2507,82 +2581,6 @@ public final class SshCapabilityPlugin extends Plugin {
         PtySessionChannel channel = new PtySessionChannel(client.getConnection(), client.getRemoteCharset());
         channel.open();
         return channel;
-    }
-
-    /**
-     * A PTY session channel whose post-open channel requests (window-change,
-     * signal) can never reach the host after this side's CLOSE (#3039).
-     *
-     * When the far end's process exits, sshd sends CLOSE and sshj's reader
-     * thread answers with ours at once; from then on the host has freed the
-     * channel number, and OpenSSH answers ANY channel request for a freed
-     * number by dropping the whole connection
-     * ({@code server_input_channel_req: unknown channel N}) — every other
-     * channel and the session list with it. sshj itself writes channel
-     * requests without looking at the channel's state, so a resize that races
-     * a session's exit (a pane pushing its geometry as a session ends) turned
-     * a clean session end into a transport loss and a full reconnect.
-     *
-     * A request checks a {@code closeSent} flag and writes under one lock;
-     * our CLOSE first sets that flag under the same lock and only then, with
-     * the lock RELEASED, goes out. So every request either finished its write
-     * before the flag was set (and therefore before our CLOSE was written) or
-     * sees the flag and is dropped: the channel is dead, so there is nothing
-     * for it to do. A request sent after the host's CLOSE but before ours is
-     * still delivered — the host keeps the channel until it has both, and
-     * ignores it (verified against OpenSSH 9.7, core's
-     * SessionEndVerdict integration suite).
-     *
-     * The guard is never held across sshj's own close machinery. sshj's
-     * {@code close()} holds its channel {@code openCloseLock} when it calls
-     * {@code sendClose()}, while the reader thread answering the host's CLOSE
-     * reaches {@code sendClose()} first and takes {@code openCloseLock}
-     * inside it; holding the guard around {@code super.sendClose()} took the
-     * two locks in opposite orders on those two paths and deadlocked the
-     * connection's reader and the plugin thread (#3039 review B1). A request
-     * holds the guard only around its own transport write, which never takes
-     * {@code openCloseLock}.
-     */
-    static class PtySessionChannel extends SessionChannel {
-        private final Object requestGuard = new Object();
-        private boolean closeSent;
-
-        PtySessionChannel(Connection connection, Charset remoteCharset) {
-            super(connection, remoteCharset);
-        }
-
-        @Override
-        protected void sendClose() throws TransportException {
-            // Waits out a request write already in flight, then lets go
-            // before sshj's own sendClose takes openCloseLock.
-            synchronized (requestGuard) {
-                closeSent = true;
-            }
-            super.sendClose();
-        }
-
-        @Override
-        public void changeWindowDimensions(int cols, int rows, int width, int height) throws TransportException {
-            synchronized (requestGuard) {
-                if (closeSent) return;
-                super.changeWindowDimensions(cols, rows, width, height);
-            }
-        }
-
-        @Override
-        public void signal(Signal signal) throws TransportException {
-            synchronized (requestGuard) {
-                if (closeSent) return;
-                super.signal(signal);
-            }
-        }
-
-        /** True once this side's CLOSE went out: no request will follow it. */
-        boolean closeSent() {
-            synchronized (requestGuard) {
-                return closeSent;
-            }
-        }
     }
 
     static final class SshPty {

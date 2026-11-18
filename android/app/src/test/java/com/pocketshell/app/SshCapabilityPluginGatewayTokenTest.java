@@ -119,7 +119,8 @@ public final class SshCapabilityPluginGatewayTokenTest {
         assertEquals(Set.of("transportCapabilities", "connect", "cancelOperation", "getConnectionState",
                 "closeConnection", "scheduleClose", "cancelScheduledClose", "exec", "openPty", "readPty",
                 "writePty", "resizePty", "closePty", "sftpList", "sftpStat", "sftpRealPath", "sftpRead", "sftpWrite", "sftpWriteChunk", "sftpWriteIfUnchanged",
-                "sftpMkdir", "sftpRename", "sftpDelete", "openPortForward", "closePortForward", "resourceSnapshot"),
+                "sftpMkdir", "sftpRename", "sftpDelete", "openPortForward", "closePortForward", "resourceSnapshot",
+                "setBackgroundGrace"),
                 pluginMethods(SshCapabilityPlugin.class));
         // ... and the capability report is a flag, nothing more.
         JSObject capabilities = SshCapabilityPlugin.transportCapabilitiesReply("r-1");

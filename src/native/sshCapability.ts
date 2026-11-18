@@ -183,7 +183,8 @@ export async function loadNativeTransportCapabilities(
 }
 
 /** sshj performs physical I/O; portable policy remains in pocketshell-core. */
-const nativeSshCapability = registerPlugin<NativeSshCapabilityPlugin>('SshCapability');
+/** The one registration of the native plugin; other wrappers reuse it (Capacitor registers a name once). */
+export const nativeSshCapability = registerPlugin<NativeSshCapabilityPlugin>('SshCapability');
 /** What the installed native plugin reported (see {@link loadNativeTransportCapabilities}). */
 export const sshTransportCapabilities: NativeTransportCapabilities = { gatewayTransport: false };
 export const sshCapability = adaptSshCapabilityPlugin(nativeSshCapability, sshTransportCapabilities);

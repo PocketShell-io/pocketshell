@@ -101,6 +101,10 @@ LANES = (
         child_runner="scripts/connected-js-hotkeys-docker.sh",
         result_checker="scripts/check-js-hotkeys-journey-results.py",
         methods=frozenset({"fastKeysStayReachableAndWriteExactBytesAcrossImeBackAndReconnect"}),
+        # #3158: the shared shell's dock -- the one a phone boots. J23 alone
+        # proved only the legacy shell's dock, which users no longer reach.
+        additional_classes=(("com.pocketshell.app.smoke.J30FastKeyDockJourney",
+                             frozenset({"dockAnswersApprovalPromptWithExactBytesImeClosedAndOpen"})),),
     ),
     LaneContract(
         name="settings",
@@ -261,6 +265,12 @@ LANES = (
         ),
     ),
 )
+
+# #3158: a plain launch lets MainActivity pick the shell, and under
+# instrumentation it picks the LEGACY shell while a phone boots the shared one.
+# That is how J23 stayed green on a fast-key dock users no longer had. Every
+# androidTest launch must name its shell (SharedShellLaunch / LegacyShellLaunch).
+IMPLICIT_SHELL_LAUNCH = re.compile(r"\bActivityScenario\s*\.\s*launch\s*\(\s*MainActivity\s*\.\s*class\s*\)")
 
 JOURNEY_SUFFIX = re.compile(r"(?:E2eTest|DockerTest|JourneyTest|SmokeTest|Journey)$")
 ISSUE_JUSTIFICATION = re.compile(
@@ -597,6 +607,15 @@ def check_js(repo_root: Path) -> list[Finding]:
     for path in files:
         source = _read(path, f"androidTest source {path.relative_to(repo_root)}", findings)
         code, _comments = _strip_java_non_code(source)
+        if IMPLICIT_SHELL_LAUNCH.search(code):
+            findings.append(
+                Finding(
+                    "ERROR",
+                    f"{path.relative_to(repo_root)} launches MainActivity without naming a shell; under instrumentation that"
+                    " silently boots the legacy shell a phone no longer boots (#3158). Use SharedShellLaunch.intent()"
+                    " or LegacyShellLaunch.intent()",
+                )
+            )
         package = re.search(r"(?m)^\s*package\s+([A-Za-z_][\w.]*)\s*;?", code)
         package_name = package.group(1) if package else ""
         if re.search(r"\babstract\s+class\b", code) and not _source_test_methods(source):
@@ -980,6 +999,25 @@ def self_test() -> int:
         _write_fixture(root, smoke, omit_checker_method=True)
         probe("missing method in the exact result guard fails", check(root, "js") != 0, True)
         _write_fixture(root, smoke)
+
+        implicit = root / "android/app/src/androidTest/java/com/example/support/LaunchSupport.java"
+        implicit.parent.mkdir(parents=True, exist_ok=True)
+        implicit.write_text("package com.example.support;\nclass LaunchSupport {\n  void go() {\n"
+                            "    scenario = ActivityScenario.launch(MainActivity.class);\n  }\n}\n", encoding="utf-8")
+        probe("a plain MainActivity launch (implicit shell) fails (#3158)", check(root, "js") != 0, True)
+        implicit.write_text("package com.example.support;\nclass LaunchSupport {\n  void go() {\n"
+                            "    scenario = ActivityScenario.launch(LegacyShellLaunch.intent());\n"
+                            "    // ActivityScenario.launch(MainActivity.class) in a comment is not a launch\n  }\n}\n",
+                            encoding="utf-8")
+        probe("an explicit shell launch passes", check(root, "js") == 0, True)
+        implicit.unlink()
+        hotkeys = next(lane for lane in LANES if lane.name == "hotkeys-docker")
+        hotkeys_runner = root / hotkeys.child_runner
+        complete_hotkeys = hotkeys_runner.read_text(encoding="utf-8")
+        hotkeys_runner.write_text(complete_hotkeys.replace("," + hotkeys.additional_classes[0][0], ""), encoding="utf-8")
+        probe("hotkeys lane running the legacy J23 alone, without the shared-shell J30 dock, fails (#3158)",
+              check(root, "js") != 0, True)
+        hotkeys_runner.write_text(complete_hotkeys, encoding="utf-8")
 
         smoke_source.unlink()
         probe("missing required lane class fails instead of scanning zero", check(root, "js") != 0, True)

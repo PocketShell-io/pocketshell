@@ -1189,6 +1189,43 @@
         "shows each uploading file with acknowledged progress and its own Cancel",
         "renders nothing when no upload is in flight or refused"
       ]
+    },
+    "tests/unit/backgroundHold.test.ts": {
+      "suite": "background grace hold and reconnect budget (#3160)",
+      "tests": [
+        "retries a given-up connection by itself when the network returns, with a fresh budget",
+        "a foreground return resets the budget of a connection whose ladder gave up",
+        "does not retry on network return while backgrounded, or while dials still fail",
+        "re-attaches silently on a return past grace: no reconnecting state for the first attempt",
+        "still announces the loss when the first re-attach attempt after a return fails",
+        "connects the host first when a restored tab attaches after the link was lost, instead of failing the join",
+        "a return that arrives while the app is still entering the background leaves the terminal live, not stranded in background",
+        "leaves a connection the user chose not to reconnect, or one awaiting a host-key decision, alone",
+        "honours Reconnect when I return: off leaves a grace-spent connection waiting",
+        "pushes the user grace window to the native hold at start and on every return, and arms core with it",
+        "declares background grace so shared Settings shows the grace and reconnect controls",
+        "reads the grace window and reconnect-on-return from the shared settings store",
+        "answers core defaults before the app has installed Pinia",
+        "sends a whole, non-negative window and rejects a stale reply"
+      ]
+    },
+    "tests/unit/fastKeysDock.test.ts": {
+      "suite": "shared-shell fast-key dock",
+      "tests": [
+        "lays out six fixed cells, page key last: Esc Tab Up Down Enter More, then Shift+Tab Left Right Ctrl 123 Keys, with exact bytes",
+        "fits every page in the six cells a 360dp phone has beside the side rail, the page key always last",
+        "reaches every page by taps from the terminal keys, and every page leads back to them",
+        "reaches digits 1-9 and 0 through More, 123",
+        "spreads the whole core Ctrl catalog over Ctrl pages of five, Ctrl+C and Ctrl+D first",
+        "sends the exact approval-prompt bytes (2, Esc, Shift+Tab) through the dock context and keeps focus",
+        "resolves Ctrl+C as one byte on a tap and the atomic double on a hold, like the legacy shell",
+        "sends one Ctrl+D for a touch tap whose click arrives with detail 0, as Android WebView delivers it",
+        "lets a key take focus while the soft keyboard is down, so a tap cannot bring it up",
+        "reads the soft keyboard as up only when the viewport is more than 150px shorter than the screen",
+        "is contributed to the shared shell terminal.dock slot",
+        "keeps every key a 48px cell with a 44px keycap in a row that cannot scroll, and lifts the prompt layer off the dock only at phone width",
+        "renders nothing outside the compact layout class and follows a resize across the breakpoint (D44)"
+      ]
     }
   }
 }

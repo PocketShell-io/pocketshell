@@ -24,6 +24,7 @@ import androidx.test.core.app.ActivityScenario;
 import androidx.test.ext.junit.runners.AndroidJUnit4;
 import androidx.test.platform.app.InstrumentationRegistry;
 
+import com.pocketshell.app.LegacyShellLaunch;
 import com.pocketshell.app.MainActivity;
 import com.pocketshell.app.NativeCrashRecorder;
 
@@ -72,7 +73,7 @@ public final class J16SettingsSupportJourney {
         runId = InstrumentationRegistry.getArguments().getString("screenshotRunId", "js2861-" + System.currentTimeMillis());
         assertTrue("screenshot run id must be path safe", runId.matches("[A-Za-z0-9][A-Za-z0-9_-]{2,48}"));
         clearNativeCrashReports();
-        scenario = ActivityScenario.launch(MainActivity.class);
+        scenario = ActivityScenario.launch(LegacyShellLaunch.intent());
     }
 
     @After

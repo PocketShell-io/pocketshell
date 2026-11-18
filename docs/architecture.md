@@ -24,7 +24,25 @@ tests/docker/               disposable SSH and aplexer fixtures
 The native SSH plugin implements core's `SshCapability`. Core's
 `ConnectionController` owns host-key verdicts, host CLI calls, session
 switching, reconnect and grace. The plugin moves bytes and reports transport
-state. See [js-first-rewrite-foundation.md](js-first-rewrite-foundation.md),
+state.
+
+Background grace is split the same way (#3160). Core owns the policy: when the
+app backgrounds it schedules one native close per live connection at the end of
+the user's window, and on return it reuses the connection or re-attaches.
+Android owns the hold. `SshCapabilityPlugin` starts the `ForwardService`
+foreground service on activity stop while any SSH connection is live, and stops
+it on return or when the scheduled closes have run. The service also keeps the
+port forwards, so there is one notification. Without the hold, Android freezes
+a backgrounded app and blocks its network (`FIREWALL_CHAIN_BACKGROUND`) within
+seconds, and every return becomes a redial. The plugin also reports
+`networkAvailable` when Android says the network is usable again. The hub then
+gives a reconnect that already gave up a fresh ladder, and so does every
+foreground return. Instrumented journeys cannot show any of this: ActivityManager
+keeps an instrumented process at foreground-service priority. The
+`background-hold` lane therefore launches the app without instrumentation and
+drives it over CDP.
+
+See [js-first-rewrite-foundation.md](js-first-rewrite-foundation.md),
 [js-first-rewrite-inventory.md](js-first-rewrite-inventory.md) and
 [design-system.md](design-system.md).
 
