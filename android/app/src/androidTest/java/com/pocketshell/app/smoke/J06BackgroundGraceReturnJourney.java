@@ -2495,9 +2495,7 @@ public final class J06BackgroundGraceReturnJourney {
     }
 
     private void click(String selector) throws Exception {
-        evalString("(() => {const node = document.querySelector(" + JSONObject.quote(selector) + ");"
-                + "if (!node) throw new Error('missing ' + " + JSONObject.quote(selector) + ");"
-                + "node.click(); return 'clicked';})()");
+        JsVisibility.tap(selector, this::evalRaw);
     }
 
     private void awaitJsTrue(String expression) throws Exception {
@@ -2508,12 +2506,12 @@ public final class J06BackgroundGraceReturnJourney {
         long deadline = SystemClock.uptimeMillis() + timeoutMillis;
         String last = "<not evaluated>";
         while (SystemClock.uptimeMillis() < deadline) {
-            last = evalRaw(expression);
+            last = JsVisibility.pollRaw(this::evalRaw, expression);
             if ("true".equals(last)) return;
             Thread.sleep(100);
         }
         throw new AssertionError("WebView condition did not become true: " + expression + " (last result: " + last
-                + "; page=" + evalString("document.body.innerText") + ")");
+                + "; page=" + JsVisibility.pageText(this::evalRaw) + ")");
     }
 
     private String evalString(String expression) throws Exception {

@@ -3967,8 +3967,7 @@ public final class J23InlineDictationJourney {
     }
 
     private void click(String selector) throws Exception {
-        evalString("(() => {const node=document.querySelector(" + JSONObject.quote(selector) + ");"
-                + "if(!node)throw new Error('missing '+ " + JSONObject.quote(selector) + ");node.click();return 'clicked';})()");
+        JsVisibility.tap(selector, this::evalRaw);
     }
 
     private <T> T runOnUiThread(String label, Callable<T> action) throws Exception {

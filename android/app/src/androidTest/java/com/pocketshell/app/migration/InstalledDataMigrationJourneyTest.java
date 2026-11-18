@@ -18,6 +18,7 @@ import androidx.test.platform.app.InstrumentationRegistry;
 import com.pocketshell.app.DurableKeyValueStore;
 import com.pocketshell.app.DurableStoragePlugin;
 import com.pocketshell.app.MainActivity;
+import com.pocketshell.app.smoke.JsVisibility;
 
 import org.json.JSONObject;
 import org.json.JSONTokener;
@@ -190,11 +191,11 @@ public final class InstalledDataMigrationJourneyTest {
         if ("true".equals(InstrumentationRegistry.getArguments().getString(CONNECT_OPT_IN))) {
             String handle = evalString("document.querySelector('[data-testid=ssh-key-selection]')?.value ?? ''");
             assertTrue("the migrated host must select an opaque native vault handle", handle.matches("[0-9a-fA-F-]{36}"));
-            evalRaw("document.querySelector('[data-testid=ssh-connect]')?.click(); 'connect-clicked'");
+            JsVisibility.expectClicked(evalString(JsVisibility.click("document.querySelector('[data-testid=ssh-connect]')")));
             awaitJsTrue("['connected','listing'].includes(document.querySelector('.app-shell')?.dataset.sshPhase)"
                 + " && document.querySelector('.app-shell')?.dataset.homeSurface === 'sessions'");
             awaitJsTrue("document.querySelector('[data-testid=session-list], [data-testid=empty-sessions]') !== null");
-            evalRaw("document.querySelector('[data-testid=ssh-disconnect]')?.click(); 'disconnect-clicked'");
+            JsVisibility.expectClicked(evalString(JsVisibility.clickIfPresent("document.querySelector('[data-testid=ssh-disconnect]')")));
             awaitJsTrue("!['connected','listing','live'].includes(document.querySelector('.app-shell')?.dataset.sshPhase)");
             awaitJsTrue("document.querySelector('[data-testid=ssh-resources]')?.dataset.snapshotState === 'verified'");
             assertEquals("the native resolver connection must close cleanly", "0",
@@ -243,7 +244,7 @@ public final class InstalledDataMigrationJourneyTest {
             + "select.value='41';select.dispatchEvent(new Event('change',{bubbles:true}));return 'selected';})()");
         awaitJsTrue("document.querySelector('[data-testid=ssh-key-selection]')?.value === ''");
         awaitJsTrue("document.querySelector('[data-testid=ssh-message]')?.textContent.includes('not available') === true");
-        evalRaw("document.querySelector('[data-testid=ssh-connect]')?.click(); 'connect-clicked'");
+        JsVisibility.expectClicked(evalString(JsVisibility.click("document.querySelector('[data-testid=ssh-connect]')")));
         awaitJsTrue("document.querySelector('[data-testid=ssh-message]')?.textContent.includes('select an SSH key') === true");
         assertEquals("a malformed migrated key must not leave a connectable dangling handle", "idle",
             evalString("document.querySelector('.app-shell')?.dataset.sshPhase"));
@@ -344,7 +345,7 @@ public final class InstalledDataMigrationJourneyTest {
         long deadline = SystemClock.uptimeMillis() + MIGRATION_TIMEOUT_MILLIS;
         String latest = "<not evaluated>";
         while (SystemClock.uptimeMillis() < deadline) {
-            latest = evalRaw(expression);
+            latest = JsVisibility.pollRaw(this::evalRaw, expression);
             if ("true".equals(latest)) return;
             Thread.sleep(100);
         }

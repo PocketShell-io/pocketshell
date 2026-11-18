@@ -409,8 +409,31 @@ public final class SharedVaultDockerJourneyTest {
                 + "return r.width > 0 && r.height > 0 && r.top >= 0 && r.bottom <= innerHeight;})()");
     }
 
+    /**
+     * The unlock dialog is centred in the visual viewport, so the IME that its autofocused passphrase field
+     * raises moves it after the first measurement; tapping a stale rect lands beside the control (S4a layout
+     * made this visible). Wait until the target's rect is identical across consecutive samples.
+     */
+    private void awaitRectSettled(String selector) throws Exception {
+        String sample = "(() => {const n = document.querySelector(" + JSONObject.quote(selector) + ");"
+                + "if (!n) return ''; const r = n.getBoundingClientRect();"
+                + "return [r.left, r.top, r.width, r.height, innerHeight, visualViewport ? visualViewport.height : 0].map(Math.round).join(',');})()";
+        String previous = null;
+        int stable = 0;
+        long deadline = System.currentTimeMillis() + WAIT_TIMEOUT_MILLIS;
+        while (System.currentTimeMillis() < deadline) {
+            String current = evalString(sample);
+            stable = !current.isEmpty() && current.equals(previous) ? stable + 1 : 0;
+            if (stable >= 3) return;
+            previous = current;
+            Thread.sleep(200);
+        }
+        throw new AssertionError("target never stopped moving before the tap: " + selector + " last=" + previous);
+    }
+
     private void tapDomCenter(String selector) throws Exception {
         scrollIntoView(selector);
+        awaitRectSettled(selector);
         JSONObject point = new JSONObject(evalString("(() => {const element = document.querySelector("
                 + JSONObject.quote(selector) + "); if (!element) return JSON.stringify({missing: true});"
                 + "const rect = element.getBoundingClientRect();"
@@ -525,7 +548,7 @@ public final class SharedVaultDockerJourneyTest {
         long deadline = SystemClock.uptimeMillis() + timeoutMillis;
         String last = "<not evaluated>";
         while (SystemClock.uptimeMillis() < deadline) {
-            last = evalRaw(expression);
+            last = JsVisibility.pollRaw(this::evalRaw, expression);
             if ("true".equals(last)) return;
             Thread.sleep(100);
         }

@@ -370,9 +370,7 @@ public final class J16SettingsSupportJourney {
     }
 
     private void clickJs(String selector) throws Exception {
-        evalString("(() => {const node=document.querySelector(" + JSONObject.quote(selector) + ");"
-                + "if(!node)throw new Error('missing ' + " + JSONObject.quote(selector) + ");"
-                + "node.click();return 'clicked';})()");
+        JsVisibility.tap(selector, this::evalRaw);
     }
 
     /**
@@ -589,7 +587,7 @@ public final class J16SettingsSupportJourney {
         long deadline = SystemClock.uptimeMillis() + timeoutMillis;
         String last = "<not evaluated>";
         while (SystemClock.uptimeMillis() < deadline) {
-            last = evalRaw(expression);
+            last = JsVisibility.pollRaw(this::evalRaw, expression);
             if ("true".equals(last)) return;
             Thread.sleep(100);
         }

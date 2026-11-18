@@ -281,16 +281,14 @@ public final class DurableStorageRestartJourneyTest {
     }
 
     private void click(String selector) throws Exception {
-        evalString("(() => {const node = document.querySelector(" + JSONObject.quote(selector) + ");"
-                + "if (!node) throw new Error('missing ' + " + JSONObject.quote(selector) + ");"
-                + "node.click(); return 'clicked';})()");
+        JsVisibility.tap(selector, this::evalRaw);
     }
 
     private void awaitJsTrue(String expression) throws Exception {
         long deadline = SystemClock.uptimeMillis() + WAIT_TIMEOUT_MILLIS;
         String last = "<not evaluated>";
         while (SystemClock.uptimeMillis() < deadline) {
-            last = evalRaw(expression);
+            last = JsVisibility.pollRaw(this::evalRaw, expression);
             if ("true".equals(last)) return;
             Thread.sleep(100);
         }

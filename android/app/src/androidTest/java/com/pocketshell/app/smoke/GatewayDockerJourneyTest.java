@@ -264,7 +264,7 @@ public final class GatewayDockerJourneyTest {
         String folder = hello.getString("sessionFolder");
         awaitJsTrue("[...document.querySelectorAll('.dir-header')].some((n)=>n.textContent.includes(" + JSONObject.quote(folder) + "))");
         evalString("(() => {const row=[...document.querySelectorAll('.dir-header')].find((n)=>n.textContent.includes("
-                + JSONObject.quote(folder) + ")); if(!row) throw new Error('no folder row'); row.click(); return 'ok';})()");
+                + JSONObject.quote(folder) + ")); if(!row) throw new Error('no folder row'); "+ JsVisibility.clickNode("row", "folder row") + "return 'ok';})()");
         awaitJsTrue(VISIBLE_TERMINAL + ".includes('$')");
 
         // Terminal I/O: the shell runs what was typed; the host keeps its own copy.
@@ -482,7 +482,7 @@ public final class GatewayDockerJourneyTest {
         evalRaw("Object.keys(localStorage).filter(k=>k.startsWith('pocketshell.ssh.host-key.')).forEach(k=>localStorage.removeItem(k));'untrusted'");
         screenshot("account-direct-picker");
         evalRaw("(() => {const row=[...document.querySelectorAll('.host-row')].find(n=>n.textContent.includes('account-direct'));"
-                + "if(!row)throw Error('account-only direct row missing');row.click();return 'clicked';})()");
+                + "if(!row)throw Error('account-only direct row missing');" + JsVisibility.clickNode("row", "account-direct row") + "return 'clicked';})()");
         awaitJsTrue("!!document.querySelector('[data-testid=host-key-decision]')", 120_000);
         assertFalse("verified account binding never asks for a phone key", exists("[data-testid=account-host-key-gate]"));
         assertEquals("first-contact prompt is the distinct direct host's real key", hello.getString("directFingerprint"),
@@ -493,7 +493,7 @@ public final class GatewayDockerJourneyTest {
         if (exists("button[title=\"Show session panel\"]")) click("button[title=\"Show session panel\"]");
         String folder = hello.getString("sessionFolder");
         awaitJsTrue("[...document.querySelectorAll('.dir-header')].some(n=>n.textContent.includes(" + JSONObject.quote(folder) + "))");
-        evalRaw("[...document.querySelectorAll('.dir-header')].find(n=>n.textContent.includes(" + JSONObject.quote(folder) + ")).click();'opened'");
+        JsVisibility.expectClicked(evalString(JsVisibility.click("[...document.querySelectorAll('.dir-header')].find(n=>n.textContent.includes(" + JSONObject.quote(folder) + "))")));
         awaitJsTrue(VISIBLE_TERMINAL + ".includes('$')", 120_000);
         String file = "gwlane-account-direct-" + run + ".txt";
         typeCommand("echo ACDIRECT$((6*7))_" + run + " | tee ~/" + file);
@@ -526,7 +526,7 @@ public final class GatewayDockerJourneyTest {
         assertEquals("the first direct native transport is live", "connected", nativeConnectionState(firstDirectConnection, "direct-before-resume"));
         click("button[title=\"Back to hosts\"]");
         awaitJsTrue("[...document.querySelectorAll('.host-row')].some(n=>n.textContent.includes('account-direct'))");
-        evalRaw("[...document.querySelectorAll('.host-row')].find(n=>n.textContent.includes('account-direct')).click();'resumed'");
+        JsVisibility.expectClicked(evalString(JsVisibility.click("[...document.querySelectorAll('.host-row')].find(n=>n.textContent.includes('account-direct'))")));
         awaitJsTrue("!!document.querySelector('button[title=\"Back to hosts\"]')", 120_000);
         awaitJsTrue(VISIBLE_TERMINAL + ".replace(/\\s+/g,'').includes(" + JSONObject.quote("ACDIRECT42_" + run) + ")", 120_000);
         assertEquals("returning to the connected account row resumes without another native dial", directDials.length(), nativeDials().length());
@@ -548,7 +548,7 @@ public final class GatewayDockerJourneyTest {
         assertEquals("the Gateway native transport is live", "connected", nativeConnectionState(gatewayConnection, "gateway-before-direct-switch"));
         click("button[title=\"Back to hosts\"]");
         awaitJsTrue("[...document.querySelectorAll('.host-row')].some(n=>n.textContent.includes('account-direct'))");
-        evalRaw("[...document.querySelectorAll('.host-row')].find(n=>n.textContent.includes('account-direct')).click();'switched'");
+        JsVisibility.expectClicked(evalString(JsVisibility.click("[...document.querySelectorAll('.host-row')].find(n=>n.textContent.includes('account-direct'))")));
         awaitJsTrue("!!document.querySelector('button[title=\"Back to hosts\"]')", 120_000);
         awaitJsTrue(VISIBLE_TERMINAL + ".replace(/\\s+/g,'').includes(" + JSONObject.quote("ACDIRECT42_" + run) + ")", 120_000);
         JSONArray reverseDials = nativeDials();
@@ -1003,7 +1003,7 @@ public final class GatewayDockerJourneyTest {
 
     private void refreshServers() throws Exception {
         evalString("(() => {const b=[...document.querySelectorAll('.trusted-servers button')].find(n=>n.textContent.trim()==='Refresh servers');"
-                +"if(!b)throw new Error('no Refresh servers action');b.click();return 'clicked';})()");
+                +"if(!b)throw new Error('no Refresh servers action');"+JsVisibility.clickNode("b","Refresh servers")+"return 'clicked';})()");
     }
 
     /** Metadata-only PTY witness; forwards original native arguments/results unchanged. */
@@ -1154,10 +1154,29 @@ public final class GatewayDockerJourneyTest {
         return error;
     }
 
+    /**
+     * Taps the host's Connect button. The visibility guard returns 'FAILED: ...' without clicking when the
+     * button is missing, hidden or covered (a list still refreshing, a sheet still sliding), and that string
+     * used to be dropped, so the journey went on to wait for a dial that never started. Retry until the
+     * click lands, then fail with the page-side reason.
+     */
     void tapHost(String name) throws Exception {
-        evalRaw("(() => {const button=[...document.querySelectorAll('[data-testid=trusted-server-connect]')].find((n)=>"
+        String script = "(() => {const button=[...document.querySelectorAll('[data-testid=trusted-server-connect]')].find((n)=>"
                 + "n.textContent.includes(" + JSONObject.quote(name) + "));"
-                + "if(!button) throw new Error('no trusted server'); button.click(); return 'ok';})()");
+                + "if(!button) return 'FAILED: no trusted server ' + " + JSONObject.quote(name) + ";"
+                + JsVisibility.clickNode("button", "trusted server " + name) + "return 'ok';})()";
+        long deadline = SystemClock.uptimeMillis() + 15_000;
+        String raw;
+        do {
+            try {
+                raw = evalRaw(script);
+            } catch (AssertionError guardFailure) {
+                raw = String.valueOf(guardFailure.getMessage()); // evalRaw rethrows a guard 'FAILED: ...'; retry
+            }
+            if ("\"ok\"".equals(raw)) return;
+            Thread.sleep(250);
+        } while (SystemClock.uptimeMillis() < deadline);
+        throw new AssertionError("tapHost never clicked " + name + ": " + raw);
     }
 
     void typeCommand(String command) throws Exception {
@@ -1618,9 +1637,7 @@ public final class GatewayDockerJourneyTest {
     }
 
     private void click(String selector) throws Exception {
-        evalString("(() => {const node = document.querySelector(" + JSONObject.quote(selector) + ");"
-                + "if (!node) throw new Error('missing ' + " + JSONObject.quote(selector) + ");"
-                + "node.click(); return 'clicked';})()");
+        JsVisibility.tap(selector, this::evalRaw);
     }
 
     void awaitJsTrue(String expression) throws Exception {
@@ -1631,7 +1648,7 @@ public final class GatewayDockerJourneyTest {
         long deadline = SystemClock.uptimeMillis() + timeoutMillis;
         String last = "<not evaluated>";
         while (SystemClock.uptimeMillis() < deadline) {
-            last = evalRaw(expression);
+            last = JsVisibility.pollRaw(this::evalRaw, expression);
             if ("true".equals(last)) return;
             Thread.sleep(150);
         }
@@ -1657,7 +1674,7 @@ public final class GatewayDockerJourneyTest {
             });
         });
         assertTrue("timed out evaluating WebView JavaScript", latch.await(JS_TIMEOUT_SECONDS, TimeUnit.SECONDS));
-        return result.get();
+        return JsVisibility.failOnGuard(result.get());
     }
 
     /** Evidence only: the runner pulls /data/local/tmp/gwlane-*.png into the run's artifacts. */
