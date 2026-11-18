@@ -1127,6 +1127,17 @@
         "clones a repository and reports the printed path, progress and a classified failure",
         "acknowledges warnings: one target, all, and the benign already-acked race"
       ]
+    },
+    "tests/unit/bundleFreeIdentifiers.test.ts": {
+      "suite": "production bundle free-identifier guard (#3161)",
+      "tests": [
+        "reports a write to an undeclared name, the shape esbuild produced in xterm requestMode",
+        "reports an unguarded read of an undeclared name and allows declared names and browser globals",
+        "allows a read the chunk feature-detects with typeof, but never a write to it",
+        "names the chunk and position when a bundle has an undeclared reference",
+        "the old es2020 target minifies the real xterm module into an undeclared write (the shipped bug)",
+        "the Android build target minifies the real xterm module with no undeclared identifier"
+      ]
     }
   }
 }

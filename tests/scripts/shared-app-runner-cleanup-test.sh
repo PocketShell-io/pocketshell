@@ -23,13 +23,14 @@ fail() {
 
 SANDBOX="$TMP/repo"
 BIN="$TMP/bin"
-mkdir -p "$SANDBOX/scripts/lib" "$SANDBOX/android" "$SANDBOX/tests/docker/lib" "$BIN"
+mkdir -p "$SANDBOX/scripts/lib" "$SANDBOX/android" "$SANDBOX/tests/docker/lib" "$SANDBOX/tests/docker/tui" "$BIN"
 cp "$ROOT_DIR/scripts/connected-js-shared-app.sh" \
   "$ROOT_DIR/scripts/check-js-shared-app-results.py" \
   "$ROOT_DIR/scripts/shared-app-host-key-fixture.py" "$SANDBOX/scripts/"
 cp "$ROOT_DIR"/scripts/lib/*.sh "$SANDBOX/scripts/lib/"
 cp "$ROOT_DIR/tests/docker/lib/wait-for-healthy.sh" "$SANDBOX/tests/docker/lib/"
 cp "$ROOT_DIR/tests/docker/test_key" "$ROOT_DIR/tests/docker/docker-compose.yml" "$SANDBOX/tests/docker/"
+cp "$ROOT_DIR/tests/docker/tui/ps3161-trust-prompt-tui.py" "$SANDBOX/tests/docker/tui/"
 printf '#!/bin/sh\necho "stub gradlew: instrumentation failed" >&2\nexit 99\n' > "$SANDBOX/android/gradlew"
 chmod +x "$SANDBOX/android/gradlew" "$SANDBOX"/scripts/*.sh "$SANDBOX"/scripts/*.py
 

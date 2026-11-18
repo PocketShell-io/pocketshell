@@ -195,11 +195,18 @@ with open(out, "w") as record:
     record.write(received.hex() + "\n")
 print("PS2952_HEX:" + received.hex() + ":END")
 CAPTURE
+# #3161 (J29): the Antigravity-like trust-prompt TUI (DECRQM queries and
+# fast synchronized repaints) and the folder its host-side DECRPM record lands in.
+TUI_3161_DIR="$SESSION_RUN-ps3161"
+fixture "mkdir -p ~/$TUI_3161_DIR && cat > ~/$TUI_3161_DIR/ps3161-trust-prompt-tui.py" \
+  < "$ROOT_DIR/tests/docker/tui/ps3161-trust-prompt-tui.py" \
+  || fail "could not stage the #3161 trust-prompt TUI on lane $PORT"
 cleanup_fixture_sessions() {
   for side in "${SIDES[@]}"; do
     # `sessions create --cwd ~/X -- X` names the session `X:X` (folder:tag).
     fixture "pocketshell sessions kill -- $SESSION_RUN-$side:$SESSION_RUN-$side >/dev/null 2>&1; rm -rf ~/$SESSION_RUN-$side" || true
   done
+  fixture "rm -rf ~/$TUI_3161_DIR" || true
   # J27's session is named by the app (folder:tag), so find it by its workspace.
   fixture "for id in \$(pocketshell sessions list --json | python3 -c 'import json,sys; [print(r[\"id\"]) for r in json.load(sys.stdin)[\"sessions\"] if r[\"workspace\"].endswith(\"/$SESSION_RUN-j27/proj-one\")]'); do pocketshell sessions kill -- \$id >/dev/null 2>&1; done; rm -rf ~/$SESSION_RUN-j27" || true
 }
@@ -317,6 +324,13 @@ run,notes,terminal,sessions,path=sys.argv[1:]
 Path(path).write_text(json.dumps({"run":run,"notes":notes,"terminal":terminal,"sessions":json.loads(sessions)["sessions"]})+'\n',encoding='utf-8')
 PY
 }
+# #3161: the DECRPM answers the TUI read back from the phone's terminal, over
+# the runner's own SSH connection (the independent host oracle for J29).
+fetch_3161_host_proof() {
+  mkdir -p "$RESULTS_DIR"
+  fixture "cat ~/$TUI_3161_DIR/ps3161-host-decrpm.hex" > "$RESULTS_DIR/ps3161-host-decrpm.hex" 2>/dev/null \
+    || rm -f "$RESULTS_DIR/ps3161-host-decrpm.hex"
+}
 fixture "test ! -e ~/ps-guest-$SESSION_RUN.txt" || fail 'guest terminal proof file already exists before this run'
 
 # #3039: the session-end and client-drop journeys copy their phase traces here
@@ -340,14 +354,14 @@ pull_phase_traces() {
 DEVICE_KEY_PATH="/data/local/tmp/pocketshell-$SUFFIX-shared-key.pem"
 "$ADB" -s "$ANDROID_SERIAL" push "$ROOT_DIR/tests/docker/test_key" "$DEVICE_KEY_PATH" >/dev/null
 "$ADB" -s "$ANDROID_SERIAL" shell rm -f /data/local/tmp/ps2952-j21-guest-failure-current.png >/dev/null 2>&1 || true
-for shot in j27-new-session-folders j27-new-session-terminal j27-files-listing j27-files-saved; do
+for shot in j27-new-session-folders j27-new-session-terminal j27-files-listing j27-files-saved j29-trust-prompt j29-after-tui j29-diag-toast j29-diag-toast-copied j29-diag-sink-failure; do
   "$ADB" -s "$ANDROID_SERIAL" shell rm -f "/data/local/tmp/ps2952-$shot.png" >/dev/null 2>&1 || true
 done
 
 printf 'Running shared-app journeys on %s (API %s), suffix %s\n' "$ANDROID_SERIAL" "$device_api" "$SUFFIX"
 if "$ROOT_DIR/android/gradlew" -p "$ROOT_DIR/android" :app:connectedDebugAndroidTest \
     "-PpocketshellAppIdSuffix=$SUFFIX" \
-    -Pandroid.testInstrumentationRunnerArguments.class=com.pocketshell.app.smoke.J01ConnectAndTrustJourney,com.pocketshell.app.smoke.J02SessionTreeListJourney,com.pocketshell.app.smoke.J03AttachAndTypeJourney,com.pocketshell.app.smoke.J05ReconnectAfterDropJourney,com.pocketshell.app.smoke.J14StopSessionJourney,com.pocketshell.app.smoke.J15TerminalScrollJourney,com.pocketshell.app.smoke.J19HostFormImeJourney,com.pocketshell.app.smoke.J21HostAddConnectJourney,com.pocketshell.app.smoke.J25AndroidBackJourney,com.pocketshell.app.smoke.J11ShareUploadJourney,com.pocketshell.app.smoke.J20ComposerUploadProgressJourney,com.pocketshell.app.smoke.J28CdKeepsTerminalJourney,com.pocketshell.app.smoke.J27NewSessionAndFilesJourney,com.pocketshell.app.ime.ScriptedImeSelectionTest \
+    -Pandroid.testInstrumentationRunnerArguments.class=com.pocketshell.app.smoke.J01ConnectAndTrustJourney,com.pocketshell.app.smoke.J02SessionTreeListJourney,com.pocketshell.app.smoke.J03AttachAndTypeJourney,com.pocketshell.app.smoke.J05ReconnectAfterDropJourney,com.pocketshell.app.smoke.J14StopSessionJourney,com.pocketshell.app.smoke.J15TerminalScrollJourney,com.pocketshell.app.smoke.J19HostFormImeJourney,com.pocketshell.app.smoke.J21HostAddConnectJourney,com.pocketshell.app.smoke.J25AndroidBackJourney,com.pocketshell.app.smoke.J11ShareUploadJourney,com.pocketshell.app.smoke.J20ComposerUploadProgressJourney,com.pocketshell.app.smoke.J28CdKeepsTerminalJourney,com.pocketshell.app.smoke.J27NewSessionAndFilesJourney,com.pocketshell.app.smoke.J29TuiRedrawNoDiagJourney,com.pocketshell.app.ime.ScriptedImeSelectionTest \
     "-Pandroid.testInstrumentationRunnerArguments.sshPort=$PORT" \
     "-Pandroid.testInstrumentationRunnerArguments.sessionRun=$SESSION_RUN" \
     "-Pandroid.testInstrumentationRunnerArguments.sshPrivateKeyPath=$DEVICE_KEY_PATH" \
@@ -366,6 +380,11 @@ else
   fetch_host_bytes
   fetch_guest_host_proof || true
   fetch_j27_host_proof || true
+  fetch_3161_host_proof || true
+  for shot in j29-trust-prompt j29-after-tui j29-diag-toast j29-diag-toast-copied j29-diag-sink-failure; do
+    "$ADB" -s "$ANDROID_SERIAL" pull "/data/local/tmp/ps2952-$shot.png" "$RESULTS_DIR/$shot.png" >/dev/null 2>&1 || true
+    "$ADB" -s "$ANDROID_SERIAL" shell rm -f "/data/local/tmp/ps2952-$shot.png" >/dev/null 2>&1 || true
+  done
   "$ADB" -s "$ANDROID_SERIAL" pull "/data/local/tmp/ps2952-j21-guest-failure-current.png" "$RESULTS_DIR/j21-guest-failure-current.png" >/dev/null 2>&1 || true
   "$ADB" -s "$ANDROID_SERIAL" shell rm -f "/data/local/tmp/ps2952-j21-guest-failure-current.png" >/dev/null 2>&1 || true
   [[ -f "$HOST_BYTES_FILE" ]] && cp "$HOST_BYTES_FILE" "$RESULTS_DIR/host-ime-bytes.hex"
@@ -388,9 +407,10 @@ fi
 fetch_host_bytes
 fetch_guest_host_proof || fail 'could not read guest terminal proof over the independent host connection'
 fetch_j27_host_proof || fail 'could not read the J27 host proof over the independent host connection'
+fetch_3161_host_proof
 pull_phase_traces "$RESULTS_DIR" 7>&-
 # Screenshots the journeys took of the typed terminal (evidence, not a gate).
-for shot in typed-after-reattach ime-bytes j14-session-stopped j15-scrolled-terminal j19-host-form-ime j19-tunnel-form-ime j19-tunnel-form-ime-before-assertion j21-host-added-and-connected j21-guest-local-entry j21-guest-real-terminal j11-shared-file-staged j20-three-file-upload-finished j28-before-cd j28-after-cd-and-polls j27-new-session-folders j27-new-session-terminal j27-files-listing j27-files-saved; do
+for shot in typed-after-reattach ime-bytes j14-session-stopped j15-scrolled-terminal j19-host-form-ime j19-tunnel-form-ime j19-tunnel-form-ime-before-assertion j21-host-added-and-connected j21-guest-local-entry j21-guest-real-terminal j11-shared-file-staged j20-three-file-upload-finished j28-before-cd j28-after-cd-and-polls j27-new-session-folders j27-new-session-terminal j27-files-listing j27-files-saved j29-trust-prompt j29-after-tui j29-diag-toast j29-diag-toast-copied j29-diag-sink-failure; do
   "$ADB" -s "$ANDROID_SERIAL" pull "/data/local/tmp/ps2952-$shot.png" "$SHARED_APP_RESULTS_DIR/$shot.png" >/dev/null 2>&1 || true
   "$ADB" -s "$ANDROID_SERIAL" shell rm -f "/data/local/tmp/ps2952-$shot.png" >/dev/null 2>&1 || true
 done

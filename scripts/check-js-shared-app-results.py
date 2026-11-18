@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Require the exact packaged shared-app journeys (#2936, #2952, #2953, #2954, #2955, #3039) to execute and pass once each.
+"""Require the exact packaged shared-app journeys (#2936, #2952, #2953, #2954, #2955, #3039, #3161) to execute and pass once each.
 
 Also the host half of #2952's byte oracle: the raw-mode reader on the Docker
 fixture writes the bytes it received as hex, the runner copies that file next
@@ -11,12 +11,19 @@ connection journal after the event) are kept for passing runs too, so a red
 run always has a green one to compare against. Each must be present, a
 non-empty JSON array on one logical connection, and free of `reconnecting` and
 `lost` — the same verdict the journeys assert, re-read from the kept file.
+
+#3161: J29's trust-prompt TUI on the Docker host records, as hex, the DECRPM
+answers the phone's terminal sent back to its DECRQM queries; the runner reads
+that file over its own SSH connection (PS3161_HOST_NAME). It must hold one
+well-formed answer per query, so the DECRQM handler that threw in the shipped
+bundle provably ran — independently of what the journey read on screen.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import re
 import shutil
 import sys
 import tempfile
@@ -45,7 +52,9 @@ METHOD_CLASSES = {'aThreeFileUploadShowsTheBarMidFlightAndLeavesNoResidueAfterCo
  'sharedTerminalDeliversImeEditsAsExactBytes': 'com.pocketshell.app.smoke.J03AttachAndTypeJourney',
  'stopSessionFromTabKillsItOnTheHost': 'com.pocketshell.app.smoke.J14StopSessionJourney',
  'tunnelFormSubmitRemainsReachableWithTheIme': 'com.pocketshell.app.smoke.J19HostFormImeJourney',
- 'newSessionFolderPickerAndFilesEditWorkOnTheRealHost': 'com.pocketshell.app.smoke.J27NewSessionAndFilesJourney'}
+ 'newSessionFolderPickerAndFilesEditWorkOnTheRealHost': 'com.pocketshell.app.smoke.J27NewSessionAndFilesJourney',
+ 'antigravityTrustPromptRedrawsWithoutErrorOrStall': 'com.pocketshell.app.smoke.J29TuiRedrawNoDiagJourney',
+ 'diagToastClearsTheStatusBarWithPlainWordsAndCopyDetails': 'com.pocketshell.app.smoke.J29TuiRedrawNoDiagJourney'}
 REQUIRED_METHODS = frozenset(METHOD_CLASSES)
 # #3017: selection regressions supplement, never replace, the seven real journeys.
 REGRESSION_CLASS = "com.pocketshell.app.ime.ScriptedImeSelectionTest"
@@ -76,6 +85,9 @@ EXPECTED_IME_BYTES = (
     "PASTE1"
 )
 EXPECTED_IME_BYTES_HEX = EXPECTED_IME_BYTES.encode("utf-8").hex()
+# #3161: tests/docker/tui/ps3161-trust-prompt-tui.py asks these modes, in this order.
+PS3161_HOST_NAME = "ps3161-host-decrpm.hex"
+PS3161_QUERIED_MODES = ("?2026", "?2004", "?1049", "4")
 DEFAULT_RESULTS = Path("android/app/build/outputs/androidTest-results/connected/debug")
 
 
@@ -165,6 +177,22 @@ def validate_host_bytes(path: Path) -> None:
             decoded = "<not hex>"
         raise GateFailure(
             f"the host received {decoded} ({recorded}); expected {EXPECTED_IME_BYTES!r} ({EXPECTED_IME_BYTES_HEX})"
+        )
+
+
+def validate_3161_host(path: Path) -> None:
+    """#3161: the host received one DECRPM answer per DECRQM query, for the queried modes, in order."""
+    if not path.is_file():
+        raise GateFailure(f"the #3161 host DECRPM record is missing: {path}")
+    try:
+        answers = bytes.fromhex(path.read_text(encoding="utf-8").strip()).decode("ascii")
+    except (OSError, ValueError) as error:
+        raise GateFailure(f"the #3161 host DECRPM record is unreadable: {error}") from error
+    found = re.findall(r"\x1b\[(\??\d+);([0-4])\$y", answers)
+    modes = tuple(mode for mode, _value in found)
+    if modes != PS3161_QUERIED_MODES:
+        raise GateFailure(
+            f"the terminal answered DECRQM for {modes!r} ({answers!r}); expected one answer for each of {PS3161_QUERIED_MODES!r}"
         )
 
 
@@ -379,7 +407,29 @@ def self_test() -> int:
                 print(f"FAIL: {label}", file=sys.stderr)
             else:
                 print(f"ok: {label}")
-    total = len(cases) + len(trace_cases)+len(guest_cases)+len(j27_cases)
+        good_3161 = "\x1b[?2026;2$y\x1b[?2004;1$y\x1b[?1049;1$y\x1b[4;2$y"
+        cases_3161 = [
+            ("#3161 one answer per DECRQM query passes", good_3161.encode().hex(), True),
+            ("#3161 no answer (the handler threw) fails", "", False),
+            ("#3161 a missing answer fails", good_3161[: good_3161.rindex("\x1b")].encode().hex(), False),
+            ("#3161 answers for other modes fail", good_3161.replace("2026", "2027").encode().hex(), False),
+            ("#3161 record missing fails", None, False),
+        ]
+        for index, (label, record, expected_pass) in enumerate(cases_3161):
+            path = root / f"ps3161-{index}.hex"
+            if record is not None:
+                path.write_text(record + "\n", encoding="utf-8")
+            try:
+                validate_3161_host(path)
+                passed = True
+            except GateFailure:
+                passed = False
+            if passed != expected_pass:
+                failures += 1
+                print(f"FAIL: {label}", file=sys.stderr)
+            else:
+                print(f"ok: {label}")
+    total = len(cases) + len(trace_cases)+len(guest_cases)+len(j27_cases)+len(cases_3161)
     print(f"Shared-app result guard self-test: {total - failures}/{total} checks passed")
     return 1 if failures else 0
 
@@ -406,6 +456,8 @@ def main(argv: list[str] | None = None) -> int:
         validate_guest_host(args.guest_host_proof or args.results_dir / "guest-host-proof.json")
         j27_proof = args.j27_host_proof or args.results_dir / "j27-host-proof.json"
         validate_j27_host(j27_proof)
+        host_3161 = args.results_dir / PS3161_HOST_NAME
+        validate_3161_host(host_3161)
         validate_guest_viewport(args.evidence_dir or args.results_dir)
         traces = validate_phase_traces(args.results_dir)
         if args.evidence_dir:
@@ -420,6 +472,8 @@ def main(argv: list[str] | None = None) -> int:
                 shutil.copy2(guest_proof,args.evidence_dir / guest_proof.name)
             if j27_proof.resolve() != (args.evidence_dir / j27_proof.name).resolve():
                 shutil.copy2(j27_proof, args.evidence_dir / j27_proof.name)
+            if host_3161.resolve() != (args.evidence_dir / PS3161_HOST_NAME).resolve():
+                shutil.copy2(host_3161, args.evidence_dir / PS3161_HOST_NAME)
             if host_bytes.resolve() != (args.evidence_dir / HOST_BYTES_NAME).resolve():
                 shutil.copy2(host_bytes, args.evidence_dir / HOST_BYTES_NAME)
     except GateFailure as error:
@@ -429,6 +483,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"PASS: {REGRESSION_CLASS}#{{{', '.join(sorted(REGRESSION_METHODS))}}} each executed exactly once")
     print(f"PASS: the host received exactly the scripted IME bytes ({EXPECTED_IME_BYTES_HEX})")
     print(f"PASS: #3039 phase traces kept and free of reconnects: {', '.join(PHASE_TRACE_NAMES)}")
+    print(f"PASS: #3161 the host received a DECRPM answer for each of {', '.join(PS3161_QUERIED_MODES)}")
     return 0
 
 
