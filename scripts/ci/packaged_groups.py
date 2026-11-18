@@ -8,7 +8,7 @@ from pathlib import Path
 GROUPS = {
     "baseline": ("smoke", "lifecycle", "usage", "files", "durable", "settings", "voice_settings", "account_sync", "account_picker"),
     "composer": ("composer",),
-    "mobile": ("hotkeys", "shared_app", "forward_service"),
+    "mobile": ("hotkeys", "shared_app", "s1_layout", "forward_service"),
     "vaults": ("gateway", "account_vault", "key_vault", "signed_upgrade"),
 }
 

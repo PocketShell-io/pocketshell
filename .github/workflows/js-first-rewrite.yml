@@ -517,7 +517,7 @@ jobs:
             case "$lane" in
               smoke) key=smoke ;; lifecycle) key=lifecycle ;; Files) key=files ;;
               Usage/Ports) key=usage ;; Settings) key=settings ;; 'Account sync') key=account_sync ;;
-              'Account picker') key=account_picker ;; Gateway) key=gateway ;; 'Shared app') key=shared_app ;;
+              'Account picker') key=account_picker ;; Gateway) key=gateway ;; 'Shared app') key=shared_app ;; 'S1 layout') key=s1_layout ;;
               'Account key vault') key=account_vault ;; Key-vault) key=key_vault ;;
               'Durable storage') key=durable ;; Signed-upgrade) key=signed_upgrade ;;
               'Voice settings') key=voice_settings ;; 'Forward service') key=forward_service ;;

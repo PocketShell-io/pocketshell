@@ -24,6 +24,7 @@ account_sync_status=0
 account_picker_status=0
 gateway_status=0
 shared_app_status=0
+s1_layout_status=0
 account_vault_status=0
 forward_service_status=0
 key_vault_status=0
@@ -275,6 +276,9 @@ else
   shared_app_status=$?
 fi
 
+fi
+
+if lane_selected s1_layout; then
 # Mobile layout class proof (#3120, S1 of #3118): 48px hit targets under the
 # real coarse pointer and workspace bottom containment with non-zero bar insets,
 # measured from the live WebView at 412x915dp and 360x800dp (wm density, always
