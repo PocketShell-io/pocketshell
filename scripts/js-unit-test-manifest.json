@@ -14,6 +14,38 @@
         "keeps grace and reconnect-on-return in the one shared settings store (D42)"
       ]
     },
+    "tests/unit/voiceComposerSession.test.ts": {
+      "suite": "voice composer run (#3128)",
+      "tests": [
+        "one start streams partials into the draft after what was already there",
+        "the recognizer's own endpointing is a pause: listening goes on until the explicit stop",
+        "Send delivers with Enter, Insert without; a showing partial is delivered too",
+        "Discard restores the draft the run started from and stops the recognizer",
+        "background stops the recognizer, keeps every word in the draft and writes nothing",
+        "a session switch stops the run in its own draft; the next session is untouched",
+        "editing the draft mid-run hands it back to the user: the run stops and never writes over it",
+        "a second start while listening is refused",
+        "joins the spoken words onto the draft with one space"
+      ]
+    },
+    "tests/unit/voiceComposerComponents.test.ts": {
+      "suite": "voice composer launcher and dictation panel (#3128)",
+      "tests": [
+        "one tap starts the recognizer for this session and opens the composer",
+        "renders nothing on the medium layout (D44: desktop unchanged)",
+        "renders nothing on the expanded layout (D44: desktop unchanged)",
+        "contributes the launcher and the panel to the composer slots only",
+        "the panel renders nothing and claims nothing on the medium layout (D44)",
+        "the panel renders nothing and claims nothing on the expanded layout (D44)",
+        "owns the action row (one set of Discard/Send) only while listening or reviewing",
+        "idle: offers Dictate, which starts a run for the composer session",
+        "listening: Stop, Discard, Insert (no Enter) and Send map onto the run",
+        "another session's run is not shown here",
+        "switching the composer to another session stops the run (target change)",
+        "the composer closing while listening stops the run and delivers nothing",
+        "review: a finished run offers Discard, Insert and Send but no Stop"
+      ]
+    },
     "tests/unit/homeSurface.test.ts": {
       "suite": "phone workspace destinations",
       "tests": [

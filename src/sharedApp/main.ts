@@ -18,6 +18,7 @@ import { googleSync } from '@/native/googleSync';
 import { bindAndroidAuthLoss } from '@/platform/android/authLoss';
 import { androidPlatform, keyVaultPlatform, lockAndroidVaultAfterAuthLoss } from './platform';
 import { androidTerminalInputAdapter } from '@/platform/android/terminalImeInput';
+import { voiceComposerExtensions } from './extensions/voiceComposer';
 import { bundledOnlyFontProfile, provideFontProfile } from '@ui/app/fontProfile';
 import { ANDROID_MONO_FALLBACK, applyAndroidInsets, bindAndroidBottomInsets } from './androidShell';
 import { keyboardInsets } from '@/native/keyboardInsets';
@@ -44,6 +45,7 @@ export function mountSharedApp(target: string | Element): void {
     'settings.sections': [{ id: 'key-vault', title: 'Key vault', component: VaultSettingsSection }],
     // Per-file upload progress, Cancel and size refusals on the composer (#3191).
     'composer.accessory': [{ id: 'android-upload-chips', component: AndroidUploadChips }],
+    ...voiceComposerExtensions, // one-tap voice into the prompt composer (#3128)
   });
   // The 0.5.x import runs before the picker reads hosts; it is idempotent.
   void runInstalledDataMigration();

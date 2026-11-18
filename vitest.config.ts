@@ -30,6 +30,7 @@ export default defineConfig({
       '**/tests/unit/composerDictationKeepsText.test.ts',
       '**/tests/unit/composerNoSpeechWarning.test.ts',
       '**/tests/unit/inlineDictationNoSpeech.test.ts',
+      '**/tests/unit/voiceComposerComponents.test.ts',
     ] },
     include: ['tests/unit/**/*.test.ts'],
   },

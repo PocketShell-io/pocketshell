@@ -20,7 +20,7 @@ class PackagedGroupsTest(unittest.TestCase):
     def test_partition_executes_every_lane_once_and_keeps_upgrade_dependency(self):
         expected = {"smoke", "lifecycle", "usage", "files", "durable", "composer", "hotkeys",
                     "settings", "voice_settings", "account_sync", "account_picker", "gateway",
-                    "shared_app", "s1_layout", "account_vault", "forward_service", "key_vault", "signed_upgrade"}
+                    "shared_app", "s1_layout", "voice_composer", "account_vault", "forward_service", "key_vault", "signed_upgrade"}
         lanes = [lane for group in self.groups.GROUPS.values() for lane in group]
         self.assertEqual(expected, set(lanes))
         self.assertEqual(len(expected), len(lanes))
@@ -59,7 +59,7 @@ class PackagedGroupsTest(unittest.TestCase):
         runner_names = {
             "usage": "usage-ports", "durable": "durable-storage", "composer": "composer-docker",
             "hotkeys": "hotkeys-docker", "voice_settings": "voice-settings", "account_sync": "account-sync",
-            "account_picker": "account-picker", "gateway": "gateway-docker", "shared_app": "shared-app", "s1_layout": "s1-layout",
+            "account_picker": "account-picker", "gateway": "gateway-docker", "shared_app": "shared-app", "s1_layout": "s1-layout", "voice_composer": "voice-composer",
             "account_vault": "account-vault-docker", "forward_service": "forward-service",
             "key_vault": "key-vault-docker", "signed_upgrade": "key-vault-signed-upgrade", "files": "files-docker",
         }
@@ -126,7 +126,7 @@ esac
         checker_names = {
             "usage": "usage-ports", "durable": "durable-storage", "composer": "composer-journey",
             "voice_settings": "voice-settings", "account_sync": "account-sync", "account_picker": "account-picker",
-            "shared_app": "shared-app", "s1_layout": "s1-layout", "account_vault": "account-vault", "forward_service": "forward-service",
+            "shared_app": "shared-app", "s1_layout": "s1-layout", "voice_composer": "voice-composer", "account_vault": "account-vault", "forward_service": "forward-service",
             "key_vault": "key-vault", "signed_upgrade": "signed-upgrade",
         }
         for group, lanes in self.groups.GROUPS.items():
