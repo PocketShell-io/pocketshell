@@ -1100,6 +1100,18 @@
         "defaults the phone terminal to 13px (50 columns across full-width 412dp)",
         "emits both complete JetBrains Mono woff2 files into the built bundle"
       ]
+    },
+    "tests/unit/androidFiles.test.ts": {
+      "suite": "Android Files and folder-picker adapters (#3105)",
+      "tests": [
+        "lists a folder as core DirEntry rows without dot entries (the New session folder picker and the Files tree)",
+        "is no longer the unsupported stub for any file verb",
+        "stats, reads text as UTF-8 and binary with the size cap, and refuses folders and oversize files",
+        "edits and saves a file; a second save and a create/mkdir/rename/delete/rmdir round trip reach the host",
+        "never overwrites a file another client changed or deleted since it was opened",
+        "refuses a write over the native 512 KiB limit and a call on a closed connection",
+        "creates a folder, derives a session name and creates and renames a session through the host"
+      ]
     }
   }
 }

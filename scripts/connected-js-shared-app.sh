@@ -168,6 +168,9 @@ for side in "${SIDES[@]}"; do
   fixture "mkdir -p ~/$SESSION_RUN-$side && pocketshell sessions create --json --cwd ~/$SESSION_RUN-$side -- $SESSION_RUN-$side >/dev/null" \
     || fail "could not create fixture session $SESSION_RUN-$side on lane $PORT"
 done
+# #3105 (J27): the folders and the file the New session / Files journey uses.
+fixture "mkdir -p ~/$SESSION_RUN-j27/proj-one ~/$SESSION_RUN-j27/proj-two && printf 'before-edit\\n' > ~/$SESSION_RUN-j27/proj-one/notes.txt" \
+  || fail "could not seed the J27 folders on lane $PORT"
 fixture "cat > ~/$SESSION_RUN-c/ps2952-capture.py" <<'CAPTURE' \
   || fail "could not stage the host byte reader on lane $PORT"
 # #2952 host oracle: put this PTY in raw mode (no echo, no line editing, no
@@ -197,6 +200,8 @@ cleanup_fixture_sessions() {
     # `sessions create --cwd ~/X -- X` names the session `X:X` (folder:tag).
     fixture "pocketshell sessions kill -- $SESSION_RUN-$side:$SESSION_RUN-$side >/dev/null 2>&1; rm -rf ~/$SESSION_RUN-$side" || true
   done
+  # J27's session is named by the app (folder:tag), so find it by its workspace.
+  fixture "for id in \$(pocketshell sessions list --json | python3 -c 'import json,sys; [print(r[\"id\"]) for r in json.load(sys.stdin)[\"sessions\"] if r[\"workspace\"].endswith(\"/$SESSION_RUN-j27/proj-one\")]'); do pocketshell sessions kill -- \$id >/dev/null 2>&1; done; rm -rf ~/$SESSION_RUN-j27" || true
 }
 trap cleanup_fixture_sessions EXIT
 printf 'Fixture lane %s: created sessions %s-{a,b,c}\n' "$PORT" "$SESSION_RUN"
@@ -296,6 +301,22 @@ run,user,content,path=sys.argv[1:]
 Path(path).write_text(json.dumps({"run":run,"user":user,"content":content})+'\n',encoding='utf-8')
 PY
 }
+# #3105: the independent host oracle for J27, read over the runner's own SSH
+# connection: the file the phone edited, the file its new session's terminal
+# wrote, and the host's own session list.
+fetch_j27_host_proof() {
+  mkdir -p "$RESULTS_DIR"
+  local notes terminal sessions
+  notes="$(fixture "cat ~/$SESSION_RUN-j27/proj-one/notes.txt")" || return 1
+  terminal="$(fixture "cat ~/$SESSION_RUN-j27/proj-one/terminal-proof.txt")" || return 1
+  sessions="$(fixture 'pocketshell sessions list --json')" || return 1
+  python3 - "$SESSION_RUN" "$notes" "$terminal" "$sessions" "$RESULTS_DIR/j27-host-proof.json" <<'PY'
+import json,sys
+from pathlib import Path
+run,notes,terminal,sessions,path=sys.argv[1:]
+Path(path).write_text(json.dumps({"run":run,"notes":notes,"terminal":terminal,"sessions":json.loads(sessions)["sessions"]})+'\n',encoding='utf-8')
+PY
+}
 fixture "test ! -e ~/ps-guest-$SESSION_RUN.txt" || fail 'guest terminal proof file already exists before this run'
 
 # #3039: the session-end and client-drop journeys copy their phase traces here
@@ -323,7 +344,7 @@ DEVICE_KEY_PATH="/data/local/tmp/pocketshell-$SUFFIX-shared-key.pem"
 printf 'Running shared-app journeys on %s (API %s), suffix %s\n' "$ANDROID_SERIAL" "$device_api" "$SUFFIX"
 if "$ROOT_DIR/android/gradlew" -p "$ROOT_DIR/android" :app:connectedDebugAndroidTest \
     "-PpocketshellAppIdSuffix=$SUFFIX" \
-    -Pandroid.testInstrumentationRunnerArguments.class=com.pocketshell.app.smoke.J01ConnectAndTrustJourney,com.pocketshell.app.smoke.J02SessionTreeListJourney,com.pocketshell.app.smoke.J03AttachAndTypeJourney,com.pocketshell.app.smoke.J05ReconnectAfterDropJourney,com.pocketshell.app.smoke.J14StopSessionJourney,com.pocketshell.app.smoke.J15TerminalScrollJourney,com.pocketshell.app.smoke.J19HostFormImeJourney,com.pocketshell.app.smoke.J21HostAddConnectJourney,com.pocketshell.app.smoke.J25AndroidBackJourney,com.pocketshell.app.smoke.J11ShareUploadJourney,com.pocketshell.app.smoke.J20ComposerUploadProgressJourney,com.pocketshell.app.smoke.J28CdKeepsTerminalJourney,com.pocketshell.app.ime.ScriptedImeSelectionTest \
+    -Pandroid.testInstrumentationRunnerArguments.class=com.pocketshell.app.smoke.J01ConnectAndTrustJourney,com.pocketshell.app.smoke.J02SessionTreeListJourney,com.pocketshell.app.smoke.J03AttachAndTypeJourney,com.pocketshell.app.smoke.J05ReconnectAfterDropJourney,com.pocketshell.app.smoke.J14StopSessionJourney,com.pocketshell.app.smoke.J15TerminalScrollJourney,com.pocketshell.app.smoke.J19HostFormImeJourney,com.pocketshell.app.smoke.J21HostAddConnectJourney,com.pocketshell.app.smoke.J25AndroidBackJourney,com.pocketshell.app.smoke.J11ShareUploadJourney,com.pocketshell.app.smoke.J20ComposerUploadProgressJourney,com.pocketshell.app.smoke.J28CdKeepsTerminalJourney,com.pocketshell.app.smoke.J27NewSessionAndFilesJourney,com.pocketshell.app.ime.ScriptedImeSelectionTest \
     "-Pandroid.testInstrumentationRunnerArguments.sshPort=$PORT" \
     "-Pandroid.testInstrumentationRunnerArguments.sessionRun=$SESSION_RUN" \
     "-Pandroid.testInstrumentationRunnerArguments.sshPrivateKeyPath=$DEVICE_KEY_PATH" \
@@ -341,6 +362,7 @@ else
   pull_phase_traces "$RESULTS_DIR" 7>&-
   fetch_host_bytes
   fetch_guest_host_proof || true
+  fetch_j27_host_proof || true
   "$ADB" -s "$ANDROID_SERIAL" pull "/data/local/tmp/ps2952-j21-guest-failure-current.png" "$RESULTS_DIR/j21-guest-failure-current.png" >/dev/null 2>&1 || true
   "$ADB" -s "$ANDROID_SERIAL" shell rm -f "/data/local/tmp/ps2952-j21-guest-failure-current.png" >/dev/null 2>&1 || true
   [[ -f "$HOST_BYTES_FILE" ]] && cp "$HOST_BYTES_FILE" "$RESULTS_DIR/host-ime-bytes.hex"
@@ -362,6 +384,7 @@ else
 fi
 fetch_host_bytes
 fetch_guest_host_proof || fail 'could not read guest terminal proof over the independent host connection'
+fetch_j27_host_proof || fail 'could not read the J27 host proof over the independent host connection'
 pull_phase_traces "$RESULTS_DIR" 7>&-
 # Screenshots the journeys took of the typed terminal (evidence, not a gate).
 for shot in typed-after-reattach ime-bytes j14-session-stopped j15-scrolled-terminal j19-host-form-ime j19-tunnel-form-ime j19-tunnel-form-ime-before-assertion j21-host-added-and-connected j21-guest-local-entry j21-guest-real-terminal j11-shared-file-staged j20-three-file-upload-finished j28-before-cd j28-after-cd-and-polls; do

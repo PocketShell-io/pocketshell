@@ -44,7 +44,8 @@ METHOD_CLASSES = {'aThreeFileUploadShowsTheBarMidFlightAndLeavesNoResidueAfterCo
  'sharedAppSwitchesSessionTabsKeepingEachTerminal': 'com.pocketshell.app.smoke.J02SessionTreeListJourney',
  'sharedTerminalDeliversImeEditsAsExactBytes': 'com.pocketshell.app.smoke.J03AttachAndTypeJourney',
  'stopSessionFromTabKillsItOnTheHost': 'com.pocketshell.app.smoke.J14StopSessionJourney',
- 'tunnelFormSubmitRemainsReachableWithTheIme': 'com.pocketshell.app.smoke.J19HostFormImeJourney'}
+ 'tunnelFormSubmitRemainsReachableWithTheIme': 'com.pocketshell.app.smoke.J19HostFormImeJourney',
+ 'newSessionFolderPickerAndFilesEditWorkOnTheRealHost': 'com.pocketshell.app.smoke.J27NewSessionAndFilesJourney'}
 REQUIRED_METHODS = frozenset(METHOD_CLASSES)
 # #3017: selection regressions supplement, never replace, the seven real journeys.
 REGRESSION_CLASS = "com.pocketshell.app.ime.ScriptedImeSelectionTest"
@@ -176,6 +177,27 @@ def validate_guest_host(path: Path) -> None:
     run=proof.get("run")
     if not isinstance(run,str) or not run or proof.get("user")!="testuser" or proof.get("content","").strip()!="PSGUEST42_"+run:
         raise GateFailure("guest SSH file content/user does not match this runner's host proof")
+
+
+def validate_j27_host(path: Path) -> None:
+    """#3105: the runner's own SSH read of what the phone's New session and Files journey left on the host."""
+    if not path.is_file():
+        raise GateFailure(f"the independent J27 host proof is missing: {path}")
+    try:
+        proof = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as error:
+        raise GateFailure(f"the J27 host proof is unreadable: {error}") from error
+    run = proof.get("run") if isinstance(proof, dict) else None
+    if not isinstance(run, str) or not run:
+        raise GateFailure("the J27 host proof has no run id")
+    if proof.get("notes", "").strip() != f"edited-on-phone-{run}":
+        raise GateFailure("the file edited in the phone's Files tab does not hold the saved edit on the host")
+    if proof.get("terminal", "").strip() != f"PS3105_42_{run}":
+        raise GateFailure("the new session's terminal did not write its output proof on the host")
+    sessions = proof.get("sessions")
+    rows = [r for r in sessions if isinstance(r, dict) and str(r.get("workspace", "")).endswith(f"/{run}-j27/proj-one")] if isinstance(sessions, list) else []
+    if len(rows) != 1 or rows[0].get("phase") != "running" or rows[0].get("alive") is not True:
+        raise GateFailure("the host has no single running session in the folder picked in New session")
 
 
 def validate_guest_viewport(directory: Path) -> None:
@@ -333,7 +355,31 @@ def self_test() -> int:
             except GateFailure:passed=False
             if passed!=expected_pass:failures+=1;print(f"FAIL: {label}",file=sys.stderr)
             else:print(f"ok: {label}")
-    total = len(cases) + len(trace_cases)+len(guest_cases)
+        good_sessions = [{"workspace": "/home/testuser/r-j27/proj-one", "phase": "running", "alive": True}]
+        j27_good = {"run": "r", "notes": "edited-on-phone-r\n", "terminal": "PS3105_42_r\n", "sessions": good_sessions}
+        j27_cases = [
+            ("J27 host proof passes when every oracle matches", j27_good, True),
+            ("J27 unsaved file fails", {**j27_good, "notes": "before-edit\n"}, False),
+            ("J27 missing terminal output fails", {**j27_good, "terminal": ""}, False),
+            ("J27 session in another folder fails", {**j27_good, "sessions": [{**good_sessions[0], "workspace": "/home/testuser/r-j27/proj-two"}]}, False),
+            ("J27 dead session fails", {**j27_good, "sessions": [{**good_sessions[0], "alive": False}]}, False),
+            ("J27 proof missing fails", None, False),
+        ]
+        for index, (label, proof, expected_pass) in enumerate(j27_cases):
+            path = root / f"j27-{index}.json"
+            if proof is not None:
+                path.write_text(json.dumps(proof), encoding="utf-8")
+            try:
+                validate_j27_host(path)
+                passed = True
+            except GateFailure:
+                passed = False
+            if passed != expected_pass:
+                failures += 1
+                print(f"FAIL: {label}", file=sys.stderr)
+            else:
+                print(f"ok: {label}")
+    total = len(cases) + len(trace_cases)+len(guest_cases)+len(j27_cases)
     print(f"Shared-app result guard self-test: {total - failures}/{total} checks passed")
     return 1 if failures else 0
 
@@ -348,6 +394,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--evidence-dir", type=Path)
     parser.add_argument("--guest-host-proof", type=Path)
+    parser.add_argument("--j27-host-proof", type=Path)
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args(argv)
     if args.self_test:
@@ -357,6 +404,8 @@ def main(argv: list[str] | None = None) -> int:
         reports = validate_results(args.results_dir)
         validate_host_bytes(host_bytes)
         validate_guest_host(args.guest_host_proof or args.results_dir / "guest-host-proof.json")
+        j27_proof = args.j27_host_proof or args.results_dir / "j27-host-proof.json"
+        validate_j27_host(j27_proof)
         validate_guest_viewport(args.evidence_dir or args.results_dir)
         traces = validate_phase_traces(args.results_dir)
         if args.evidence_dir:
@@ -369,6 +418,8 @@ def main(argv: list[str] | None = None) -> int:
             guest_proof=args.guest_host_proof or args.results_dir / "guest-host-proof.json"
             if guest_proof.resolve() != (args.evidence_dir / guest_proof.name).resolve():
                 shutil.copy2(guest_proof,args.evidence_dir / guest_proof.name)
+            if j27_proof.resolve() != (args.evidence_dir / j27_proof.name).resolve():
+                shutil.copy2(j27_proof, args.evidence_dir / j27_proof.name)
             if host_bytes.resolve() != (args.evidence_dir / HOST_BYTES_NAME).resolve():
                 shutil.copy2(host_bytes, args.evidence_dir / HOST_BYTES_NAME)
     except GateFailure as error:

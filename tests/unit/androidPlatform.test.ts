@@ -485,7 +485,7 @@ describe('Android PocketShellApi platform', () => {
 
   it('refuses unimplemented work by name instead of pretending', async () => {
     const { created } = platform();
-    await expect(created.api.sftp.list('android-1', '/')).rejects.toBeInstanceOf(UnsupportedCapability);
+    await expect(created.api.sftp.upload({ connectionId: 'android-1', localPath: '/a', remotePath: '/b', transferId: 't' })).rejects.toBeInstanceOf(UnsupportedCapability);
     await expect(created.api.forwards.addManual('android-1', { kind: 'local', listenHost: '', listenPort: 1, destHost: '', destPort: 1 }))
       .rejects.toThrow('Only loopback local tunnels are supported.');
     expect(await created.api.forwards.list('android-1')).toEqual([]);

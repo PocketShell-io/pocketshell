@@ -861,6 +861,31 @@ public final class SshCapabilityPlugin extends Plugin {
         });
     }
 
+    /** Attributes of one path, following symlinks like the desktop's stat. */
+    @PluginMethod
+    public void sftpStat(PluginCall call) {
+        run(call, "sftpStat", options -> {
+            String requestId = requiredString(options, "requestId");
+            SshConnection connection = requireConnection(options);
+            String path = requiredString(options, "path");
+            SFTPClient client = requireSftp(connection);
+            synchronized (connection.sftpLock) {
+                try {
+                    FileAttributes attributes = client.stat(path);
+                    return new JSObject().put("requestId", requestId)
+                        .put("path", path)
+                        .put("type", sftpEntryType(attributes.getType()))
+                        .put("isDirectory", attributes.getType() == net.schmizz.sshj.sftp.FileMode.Type.DIRECTORY)
+                        .put("sizeBytes", attributes.getSize())
+                        .put("modifiedEpochMs", attributes.getMtime() * 1000L)
+                        .put("accessedEpochMs", attributes.getAtime() * 1000L);
+                } catch (Exception error) {
+                    throw failureFor(error);
+                }
+            }
+        });
+    }
+
     @PluginMethod
     public void sftpList(PluginCall call) {
         run(call, "sftpList", options -> {

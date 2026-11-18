@@ -33,10 +33,13 @@ import {
   hasGatewayMarker,
   resolveSessionName, freeSessionNameCommand, reposListCommand,
   parseReposJson, classifyReposFailure, mergeRepos, pathAwareCommand,
+  normaliseProjectFolderName, childPath, mkdirCommand, reposCloneCommand, firstNonEmptyLine,
+  aplexerRenameCommand, aplexerAckCommand, isAplexerNotFound, isAplexerAckNotFound, sanitisePart,
   readHostUsage,
   runHostBootstrap,
   unsupportedTransport,
   type ConnectionController,
+  type CloneProgress,
   type ConnectResult,
   type HomeResult,
   type HostEntry,
@@ -47,7 +50,8 @@ import { MissingHostCredential, type AndroidHostStore } from './hostStore';
 import { declinedAccountHostMessage, type AccountHostKeys } from './accountHosts';
 import { insecureGatewayMessage, resolveGatewayTarget, type GatewayConnectRequest, type GatewayPairings } from './gatewayTarget';
 import { AndroidForwards } from './forwards';
-import { sshCapability, nativeRemoteDirectory } from '@/native/sshCapability';
+import { sshCapability, nativeRemoteDirectory, nativeSftpStat, nativeSftpWriteIfUnchanged } from '@/native/sshCapability';
+import { createAndroidFiles, type AndroidFileNative } from './files';
 import type { AndroidVault, GatewayAuthPolicy } from '@/vault/androidVault';
 
 /** The generation the hub's controller-backed exec answers for (the controller owns the real one). */
@@ -133,6 +137,8 @@ export interface AndroidApiDeps {
   createController: () => ConnectionController;
   hosts: AndroidHostStore;
   remoteDirectory?: typeof nativeRemoteDirectory;
+  /** The native SFTP client behind the Files pane (a fake in unit tests). */
+  fileNative?: AndroidFileNative;
   lifecycle?: AndroidLifecycle;
   /** The user's background grace, read at the moment the app backgrounds. */
   backgroundGraceMs: () => number;
@@ -376,6 +382,26 @@ export function createAndroidPlatform(deps: AndroidApiDeps): AndroidPlatform {
     }
   }
 
+  const cloneHandlers = new Set<(progress: CloneProgress) => void>();
+  const nativeCurrent = (connectionId: string) => {
+    const snapshot = hub.controllerOf(connectionId)?.getSnapshot();
+    return snapshot?.connectionId && snapshot.generationId ? { connectionId: snapshot.connectionId, generationId: snapshot.generationId } : null;
+  };
+  const files = createAndroidFiles({
+    native: deps.fileNative ?? {
+      list: (options) => sshCapability.sftpList(options),
+      stat: nativeSftpStat,
+      read: (options) => sshCapability.sftpRead(options),
+      write: (options) => sshCapability.sftpWrite(options),
+      writeIfUnchanged: nativeSftpWriteIfUnchanged,
+      mkdir: (options) => sshCapability.sftpMkdir(options),
+      rename: (options) => sshCapability.sftpRename(options),
+      remove: (options) => sshCapability.sftpDelete(options),
+    },
+    current: nativeCurrent,
+    home: (ref) => (deps.remoteDirectory ?? nativeRemoteDirectory)(ref, '.'),
+  });
+
   const api: PocketShellApi = {
     ...(deps.gateway ? { gateway: deps.gateway } : {}),
     ssh: {
@@ -469,7 +495,13 @@ export function createAndroidPlatform(deps: AndroidApiDeps): AndroidPlatform {
       bootstrap: (connectionId) => runHostBootstrap((command) => exec(connectionId, command)),
       sessionsList: (connectionId) => hub.sessionsList(connectionId),
       sessionsProbe: (connectionId) => hub.sessionsProbe(connectionId),
-      sessionsCreate: unsupported('helper.sessionsCreate'),
+      async sessionsCreate(connectionId, name, cwd) {
+        const controller = hub.controllerOf(connectionId);
+        if (!controller) throw new Error('The connection is no longer available.');
+        const created = await controller.createSession(name, { cwd });
+        if (!created.ok) throw new Error(created.message);
+        return true;
+      },
       // Core's usage source (#2937). Its exec goes through the controller,
       // which owns the transport generation; the controller has already
       // checked the request/generation echo the source re-checks here.
@@ -485,7 +517,12 @@ export function createAndroidPlatform(deps: AndroidApiDeps): AndroidPlatform {
         ),
       // Crash/OOM warnings ride HostCliCore's warnings verbs (stage S3).
       warnings: async () => [],
-      ackWarnings: unsupported('helper.ackWarnings'),
+      async ackWarnings(connectionId, target) {
+        const result = await exec(connectionId, pathAwareCommand(aplexerAckCommand(target)));
+        if (result.exitCode === 0) return { ok: true, notFound: false, error: null };
+        if (isAplexerAckNotFound(result.exitCode, result.stderr)) return { ok: false, notFound: true, error: null };
+        return { ok: false, notFound: false, error: result.stderr.trim() || result.stdout.trim() || `a ack exited ${result.exitCode}` };
+      },
     },
 
     projects: {
@@ -493,8 +530,22 @@ export function createAndroidPlatform(deps: AndroidApiDeps): AndroidPlatform {
         try { return { ok: true, home: await api.sftp.realPath(connectionId, '.'), error: null }; }
         catch (error) { return { ok: false, home: null, error: error instanceof Error ? error.message : String(error) }; }
       },
-      deriveName: unsupported('projects.deriveName'),
-      createFolder: unsupported('projects.createFolder'),
+      async deriveName(connectionId, folder, customName) {
+        const canonical = await api.sftp.realPath(connectionId, folder);
+        const home = await api.projects.home(connectionId);
+        return resolveSessionName(customName, canonical, home.home);
+      },
+      async createFolder(connectionId, request) {
+        const name = normaliseProjectFolderName(request.name);
+        if (!name) return { ok: false, path: null, error: 'Enter a single folder name (no slashes).' };
+        try {
+          const parent = await api.sftp.realPath(connectionId, request.parent);
+          const target = childPath(parent, name);
+          const made = await exec(connectionId, mkdirCommand(target));
+          if (made.exitCode !== 0) return { ok: false, path: null, error: made.stderr.trim() || made.stdout.trim() || `mkdir exited ${made.exitCode}` };
+          return { ok: true, path: await api.sftp.realPath(connectionId, target), error: null };
+        } catch (error) { return { ok: false, path: null, error: error instanceof Error ? error.message : String(error) }; }
+      },
       async reposList(connectionId, request = {}) {
         const scope = async (kind: 'local' | 'remote') => {
           try {
@@ -508,7 +559,28 @@ export function createAndroidPlatform(deps: AndroidApiDeps): AndroidPlatform {
         return { ok: (!local || local.state === 'ok') && (!remote || remote.state === 'ok'),
           repos: mergeRepos(local?.repos ?? [], remote?.repos ?? []), local, remote };
       },
-      reposClone: unsupported('projects.reposClone'),
+      async reposClone(connectionId, request) {
+        const requestId = request.requestId ?? '';
+        const notify = (progress: Omit<CloneProgress, 'requestId'>) => { for (const handler of cloneHandlers) handler({ requestId, ...progress }); };
+        notify({ phase: 'started', repository: request.repository });
+        try {
+          const result = await exec(connectionId, pathAwareCommand(reposCloneCommand(request)));
+          const path = result.exitCode === 0 ? firstNonEmptyLine(result.stdout) : null;
+          if (path) {
+            notify({ phase: 'finished', repository: request.repository, path });
+            return { ok: true, path, alreadyExists: /already exists/i.test(`${result.stdout}\n${result.stderr}`), error: null };
+          }
+          const failure = result.exitCode === 0
+            ? { state: 'failed' as const, error: 'The host printed no clone path.' }
+            : classifyReposFailure(result.exitCode, result.stdout, result.stderr);
+          notify({ phase: 'finished', repository: request.repository, error: failure.error });
+          return { ok: false, path: null, alreadyExists: false, error: failure.error, state: failure.state };
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          notify({ phase: 'finished', repository: request.repository, error: message });
+          return { ok: false, path: null, alreadyExists: false, error: message, state: 'failed' as const };
+        }
+      },
       async startSession(connectionId, request) {
         try {
           const folder = await api.sftp.realPath(connectionId, request.folder);
@@ -529,7 +601,24 @@ export function createAndroidPlatform(deps: AndroidApiDeps): AndroidPlatform {
           return { ok: true, sessionName: created.value.name, folder, reused: !created.value.created, via: created.value.id ? 'aplexer' : 'helper', aplexerId: created.value.id, error: null, code: null };
         } catch (error) { return { ok: false, sessionName: null, folder: null, reused: false, via: null, aplexerId: null, error: String(error), code: 'create-failed' }; }
       },
-      renameSession: unsupported('projects.renameSession'),
+      async renameSession(connectionId, from, to, ref) {
+        const fail = (code: 'illegal-name' | 'name-taken' | 'rename-failed', error: string) => ({ ok: false, sessionName: null, error, code });
+        const tag = sanitisePart(to);
+        if (!tag || tag !== to) return fail('illegal-name', 'Use letters, digits, “-” and “_” only.');
+        try {
+          const rows = await hub.sessionsList(connectionId);
+          if (from !== to && rows.some((row) => row.name === to)) return fail('name-taken', `A session named “${to}” already exists.`);
+          const id = ref?.aplexerId || rows.find((row) => row.name === from)?.aplexerId;
+          if (!id) return fail('rename-failed', 'That session is not running any more.');
+          const result = await exec(connectionId, pathAwareCommand(aplexerRenameCommand(id, to)));
+          if (result.exitCode !== 0) {
+            return fail('rename-failed', isAplexerNotFound(result.exitCode, result.stderr) ? 'That session is not running any more.'
+              : result.stderr.trim() || result.stdout.trim() || `a rename exited ${result.exitCode}`);
+          }
+          await hub.controllerOf(connectionId)?.refreshSessions();
+          return { ok: true, sessionName: to, error: null, code: null };
+        } catch (error) { return fail('rename-failed', error instanceof Error ? error.message : String(error)); }
+      },
       async killSession(connectionId, name, ref) {
         const controller = hub.controllerOf(connectionId);
         if (!controller) return { ok: false, code: 'kill-failed', error: 'The connection is no longer available.' };
@@ -540,20 +629,11 @@ export function createAndroidPlatform(deps: AndroidApiDeps): AndroidPlatform {
           ? { ok: true, code: null, error: null }
           : { ok: false, code: 'kill-failed', error: result.message };
       },
-      onCloneProgress: () => () => undefined,
+      onCloneProgress: (handler) => { cloneHandlers.add(handler); return () => { cloneHandlers.delete(handler); }; },
     },
 
     sftp: {
-      list: unsupported('sftp.list'),
-      stat: unsupported('sftp.stat'),
-      readFile: unsupported('sftp.readFile'),
-      readBinary: unsupported('sftp.readBinary'),
-      writeFile: unsupported('sftp.writeFile'),
-      createFile: unsupported('sftp.createFile'),
-      mkdir: unsupported('sftp.mkdir'),
-      rename: unsupported('sftp.rename'),
-      deleteFile: unsupported('sftp.deleteFile'),
-      rmdir: unsupported('sftp.rmdir'),
+      ...files,
       async realPath(connectionId, path) {
         if (!path || /[\u0000\r\n]/.test(path)) throw new Error('Choose a valid remote folder.');
         const controller = hub.controllerOf(connectionId);

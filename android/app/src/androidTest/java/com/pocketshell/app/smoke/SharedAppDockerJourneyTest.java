@@ -1380,6 +1380,66 @@ public abstract class SharedAppDockerJourneyTest {
         assertEquals(step + " must not finish the app", androidx.lifecycle.Lifecycle.State.RESUMED, scenario.getState());
     }
 
+    /**
+     * #3105: on the normal phone UI, New session lists the host's real folders
+     * (not "Search 0 folders here"), a session started in a listed folder runs
+     * visible input/output, and the Files tab lists that folder, opens a file,
+     * edits it and saves it. The runner seeds {@code ~/<run>-j27/proj-one/notes.txt}
+     * and, after the run, reads the file, the terminal's proof file and the host
+     * session list over its own SSH connection (the independent oracle).
+     */
+    public void newSessionFolderPickerAndFilesEditWorkOnTheRealHost() throws Exception {
+        String run = sessionRun();
+        String root = run + "-j27";
+        String marker = "PS3105_$((6*7))_" + run;
+        openFixtureHost(run);
+        awaitJsTrue("document.querySelectorAll('.dir-header').length > 0");
+
+        click("button[title='New session in any folder']");
+        awaitJsTrue("!!document.querySelector('.new-session')");
+        Thread.sleep(2000);
+        click(".new-session .icon-btn[title='Home folder']");
+        Thread.sleep(1000);
+        awaitJsTrue("[...document.querySelectorAll('.folder-row .folder-name')].some((n)=>n.textContent.trim()==="
+                + JSONObject.quote(root) + ")");
+        assertFalse("the folder picker must list the host's folders, not 'Search 0 folders here'",
+                evalString("document.querySelector(\"input[aria-label='Search folders in this directory']\")?.placeholder ?? ''")
+                        .startsWith("Search 0 "));
+        screenshot("j27-new-session-folders");
+        for (String name : new String[] {root, "proj-one"}) {
+            evalString("(() => {const row=[...document.querySelectorAll('.folder-row')].find((n)=>n.querySelector('.folder-name')?.textContent.trim()==="
+                    + JSONObject.quote(name) + "); if(!row) throw new Error('no folder row ' + " + JSONObject.quote(name)
+                    + "); row.click(); return 'ok';})()");
+            if (name.equals(root)) {
+                awaitJsTrue("[...document.querySelectorAll('.folder-row .folder-name')].some((n)=>n.textContent.trim()==='proj-one')");
+            }
+        }
+        awaitJsTrue("(document.querySelector('.preview-path')?.textContent ?? '').includes(" + JSONObject.quote(root + "/proj-one") + ")");
+        click("button[title='Create the session and leave it at a plain shell']");
+        awaitJsTrue("!document.querySelector('.new-session') && " + VISIBLE_TERMINAL + ".includes('$')");
+        typeLine("echo " + marker + " | tee terminal-proof.txt");
+        awaitTerminalLine("PS3105_42_" + run);
+        screenshot("j27-new-session-terminal");
+
+        click("button.tab.add");
+        awaitJsTrue("[...document.querySelectorAll('.menu-item')].some((n)=>n.textContent.trim()==='New Files tab')");
+        evalString("(() => {const item=[...document.querySelectorAll('.menu-item')].find((n)=>n.textContent.trim()==='New Files tab');"
+                + "item.click(); return 'ok';})()");
+        awaitJsTrue("[...document.querySelectorAll('.file-tree .entry .nm')].some((n)=>n.getAttribute('title')==='notes.txt')");
+        screenshot("j27-files-listing");
+        evalString("(() => {const nm=[...document.querySelectorAll('.file-tree .entry .nm')].find((n)=>n.getAttribute('title')==='notes.txt');"
+                + "nm.closest('.entry').click(); return 'ok';})()");
+        awaitJsTrue("!!document.querySelector('.cm-content') && document.querySelector('.cm-content').textContent.includes('before-edit')");
+        String edited = "edited-on-phone-" + run;
+        evalString("(() => {const c=document.querySelector('.cm-content'); c.focus(); document.execCommand('selectAll');"
+                + "return String(document.execCommand('insertText', false, " + JSONObject.quote(edited + "\n") + "));})()");
+        awaitJsTrue("document.querySelector('.save-btn') && !document.querySelector('.save-btn').disabled");
+        click(".save-btn");
+        awaitJsTrue("!document.querySelector('.editor-bar .dirty') && !document.querySelector('.file-error')"
+                + " && document.querySelector('.save-btn')?.disabled === true");
+        screenshot("j27-files-saved");
+    }
+
     /** A real Android drag over a raw-mode terminal must not send arrow bytes. */
     public void scrollTerminalDoesNotSendInputBytes() throws Exception {
         String run = "j15-" + Long.toString(System.currentTimeMillis(), 36);

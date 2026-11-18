@@ -35,7 +35,7 @@ final class SshCallRouting {
         ROUTES.put("readPty", new Route("pty-read", "channelId"));
         for (String method : new String[] {"writePty", "resizePty", "closePty"}) ROUTES.put(method, new Route("pty-op", "channelId"));
         // One connection's SFTP work (it serializes on sftpLock anyway).
-        for (String method : new String[] {"sftpRealPath", "sftpList", "sftpRead", "sftpWrite", "sftpWriteIfUnchanged", "sftpMkdir", "sftpRename", "sftpDelete"}) {
+        for (String method : new String[] {"sftpRealPath", "sftpStat", "sftpList", "sftpRead", "sftpWrite", "sftpWriteIfUnchanged", "sftpMkdir", "sftpRename", "sftpDelete"}) {
             ROUTES.put(method, new Route("sftp", "connectionId"));
         }
         for (String method : new String[] {"openPortForward", "closePortForward"}) ROUTES.put(method, new Route("fwd", "connectionId"));

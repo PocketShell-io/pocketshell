@@ -67,6 +67,7 @@ export type NativeSshCapabilityPlugin = Plugin & {
   /** What this build's native `connect()` can dial beyond direct TCP (#3086). */
   transportCapabilities(options: { requestId: string }): Promise<unknown>;
   sftpRealPath(options: { requestId: string; connectionId: string; generationId: string; path: string }): Promise<unknown>;
+  sftpStat(options: { requestId: string; connectionId: string; generationId: string; path: string }): Promise<unknown>;
   sftpWriteIfUnchanged(
     options: NativeSftpWriteIfUnchangedOptions,
   ): Promise<NativeSftpWriteIfUnchangedResult>;
@@ -181,3 +182,30 @@ export async function nativeRemoteDirectory(ref: { connectionId: string; generat
     || row.isDirectory !== true || typeof row.path !== 'string' || !row.path || /[\u0000\r\n]/.test(row.path)) throw new Error('The remote folder could not be resolved.');
   return row.path;
 }
+
+export interface NativeSftpStat {
+  type: 'file' | 'directory' | 'symlink' | 'other';
+  isDirectory: boolean;
+  sizeBytes: number;
+  modifiedEpochMs: number;
+  accessedEpochMs: number;
+}
+
+let statSequence = 0;
+/** Attributes of one remote path (follows symlinks), over the native SFTP client. */
+export async function nativeSftpStat(ref: { connectionId: string; generationId: string }, path: string): Promise<NativeSftpStat> {
+  const requestId = `sftp-stat-${++statSequence}`;
+  const response = await nativeSshCapability.sftpStat({ ...ref, requestId, path });
+  if (typeof response !== 'object' || response === null) throw new Error('The remote file could not be read.');
+  const row = response as Record<string, unknown>;
+  const number = (value: unknown): number => (typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : Number.NaN);
+  const type = row.type;
+  if (row.requestId !== requestId || (type !== 'file' && type !== 'directory' && type !== 'symlink' && type !== 'other')
+    || Number.isNaN(number(row.sizeBytes)) || Number.isNaN(number(row.modifiedEpochMs))) throw new Error('The remote file could not be read.');
+  return { type, isDirectory: type === 'directory', sizeBytes: number(row.sizeBytes), modifiedEpochMs: number(row.modifiedEpochMs),
+    accessedEpochMs: Number.isNaN(number(row.accessedEpochMs)) ? 0 : number(row.accessedEpochMs) };
+}
+
+/** Rooted, metadata-conditional SFTP write (the core capability contract has no such method). */
+export const nativeSftpWriteIfUnchanged = (options: NativeSftpWriteIfUnchangedOptions) =>
+  nativeSshCapability.sftpWriteIfUnchanged(options);
