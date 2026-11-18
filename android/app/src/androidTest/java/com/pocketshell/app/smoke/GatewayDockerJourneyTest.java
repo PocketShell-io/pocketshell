@@ -534,7 +534,7 @@ public final class GatewayDockerJourneyTest {
         screenshot("account-direct-resumed-terminal");
         click("button[title=\"Back to hosts\"]");
         awaitJsTrue("!!document.querySelector('[data-testid=trusted-server-connect]:not([disabled])')");
-        assertTrue("account-only direct row remains available", Boolean.parseBoolean(evalString("String([...document.querySelectorAll('.host-row')].some(n=>n.textContent.includes('account-direct')))")));
+        awaitJsTrue("[...document.querySelectorAll('.host-row')].some(n=>n.textContent.includes('account-direct'))", 15_000);
         int gatewayMark = controller(new JSONObject().put("op", "mark")).getInt("mark");
         tapHost(DEVICE_HOST);
         awaitJsTrue(VISIBLE_TERMINAL + ".includes('$')", 120_000);
@@ -733,6 +733,9 @@ public final class GatewayDockerJourneyTest {
                 .getSharedPreferences("pocketshell_vault_device_v1", Context.MODE_PRIVATE)
                 .contains("remembered:" + hello.getString("email").toLowerCase(java.util.Locale.ROOT)));
 
+        // A verified identity is reused for 60 seconds (#3137), so a Refresh only
+        // crosses real native account verification (/me) once that reuse window has lapsed.
+        Thread.sleep(62_000L); // GoogleSyncSession.VERIFIED_IDENTITY_TTL_SECONDS (60s) + margin
         // A normal Refresh crosses real native account verification and triggers silent renewal.
         google.silentRenewFailure = true;
         backend.rejectNext("/me");
