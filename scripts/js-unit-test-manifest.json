@@ -1097,8 +1097,8 @@
       "suite": "bundled monospace font (#3138)",
       "tests": [
         "puts JetBrains Mono first in the Android stacks and --font-mono",
-        "defaults the phone terminal to 13px (50 columns across full-width 412dp)",
-        "emits both complete JetBrains Mono woff2 files into the built bundle"
+        "defaults the phone terminal to 12px: 56 columns across 411dp with 2px gutters (#3157)",
+        "emits both complete JetBrains Mono woff2 files and the symbol fallback into the built bundle"
       ]
     },
     "tests/unit/androidFiles.test.ts": {

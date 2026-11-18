@@ -36,7 +36,7 @@ export interface AppSettings {
 
 export const DEFAULT_APP_SETTINGS: Readonly<AppSettings> = {
   themeChoice: THEME_CHOICE_DEFAULT,
-  // The phone's compact default: >= 50 columns at 412dp (#3138). A stored size is kept.
+  // The phone's compact default, Termius' density: 56 columns at 411dp (#3138, #3157). A stored size is kept.
   terminalFontSize: TERMINAL_FONT_SIZE_COMPACT_DEFAULT,
   voiceLanguage: VOICE_LANGUAGE_AUTO,
   voiceSilenceSeconds: VOICE_SILENCE_DEFAULT_SECONDS,

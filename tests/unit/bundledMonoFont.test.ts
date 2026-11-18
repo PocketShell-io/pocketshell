@@ -4,7 +4,15 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { build } from 'vite';
 import { describe, expect, it } from 'vitest';
-import { BUNDLED_MONO_STACK, DEFAULT_MONO_STACK, resolveMonoStack, TERMINAL_FONT_SIZE_COMPACT_DEFAULT } from '@ui/fonts';
+import {
+  BUNDLED_MONO_STACK,
+  DEFAULT_MONO_STACK,
+  resolveMonoStack,
+  TERMINAL_FONT_SIZE_COMPACT_DEFAULT,
+  TERMINAL_SYMBOL_PROBE,
+  monoStackFor,
+} from '@ui/fonts';
+import { woff2CodePoints } from '../../vendor/pocketshell-core/packages/ui/tests/support/woff2Cmap';
 import { DEFAULT_APP_SETTINGS } from '../../src/stores/appSettings';
 import { ANDROID_MONO_FALLBACK } from '../../src/sharedApp/androidShell';
 import { mobileFontVariables } from '../../src/sharedUiDefaults';
@@ -13,20 +21,25 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../
 
 describe('bundled monospace font (#3138)', () => {
   it('puts JetBrains Mono first in the Android stacks and --font-mono', () => {
-    expect(ANDROID_MONO_FALLBACK).toBe(BUNDLED_MONO_STACK);
+    // #3157: every Android layout carries the symbol fallback (a sideways phone is not compact).
+    expect(ANDROID_MONO_FALLBACK).toBe("'JetBrains Mono', 'PocketShell Symbols', ui-monospace, monospace");
     expect(mobileFontVariables['--font-mono']).toBe(BUNDLED_MONO_STACK);
-    expect(resolveMonoStack(null, ANDROID_MONO_FALLBACK).startsWith("'JetBrains Mono'")).toBe(true);
+    expect(resolveMonoStack(null, ANDROID_MONO_FALLBACK).startsWith("'JetBrains Mono', 'PocketShell Symbols'")).toBe(true);
+    // Compact and wide Android layouts resolve the same stack (no duplicate face), and the desktop default has none (D44).
+    expect(monoStackFor(null, ANDROID_MONO_FALLBACK, true)).toBe(ANDROID_MONO_FALLBACK);
+    expect(monoStackFor(null, ANDROID_MONO_FALLBACK, false)).toBe(ANDROID_MONO_FALLBACK);
+    expect(DEFAULT_MONO_STACK).not.toContain('PocketShell Symbols');
     expect(DEFAULT_MONO_STACK.startsWith("'JetBrains Mono'")).toBe(true);
     expect(BUNDLED_MONO_STACK).not.toContain('Consolas');
   });
 
-  it('defaults the phone terminal to 13px (50 columns across full-width 412dp)', () => {
+  it('defaults the phone terminal to 12px: 56 columns across 411dp with 2px gutters (#3157)', () => {
     expect(DEFAULT_APP_SETTINGS.terminalFontSize).toBe(TERMINAL_FONT_SIZE_COMPACT_DEFAULT);
-    expect(DEFAULT_APP_SETTINGS.terminalFontSize).toBe(13);
-    expect(Math.floor((412 - 16) / (0.6 * DEFAULT_APP_SETTINGS.terminalFontSize))).toBeGreaterThanOrEqual(50);
+    expect(DEFAULT_APP_SETTINGS.terminalFontSize).toBe(12);
+    expect(Math.floor((411 - 4) / (0.6 * DEFAULT_APP_SETTINGS.terminalFontSize))).toBe(56);
   });
 
-  it('emits both complete JetBrains Mono woff2 files into the built bundle', async () => {
+  it('emits both complete JetBrains Mono woff2 files and the symbol fallback into the built bundle', async () => {
     const out = mkdtempSync(path.join(tmpdir(), 'ps-font-'));
     const entry = mkdtempSync(path.join(tmpdir(), 'ps-font-entry-'));
     try {
@@ -47,9 +60,20 @@ describe('bundled monospace font (#3138)', () => {
         expect(bytes.subarray(0, 4).toString('latin1')).toBe('wOF2');
         expect(bytes.length).toBeGreaterThan(80_000); // complete face: includes box-drawing
       }
+      // #3157: the symbol fallback ships, and together with JetBrains Mono it
+      // maps every symbol Claude Code draws to a real glyph (no .notdef/tofu).
+      const symbolFiles = assets.filter((f) => /^PocketShellSymbols-Regular-.*\.woff2$/.test(f));
+      expect(symbolFiles).toHaveLength(1);
+      const mono = woff2CodePoints(readFileSync(path.join(out, 'assets', fonts.find((f) => f.includes('Regular'))!)));
+      const symbols = woff2CodePoints(readFileSync(path.join(out, 'assets', symbolFiles[0]!)));
+      const tofu = [...TERMINAL_SYMBOL_PROBE].filter((c) => !mono.has(c.codePointAt(0)!) && !symbols.has(c.codePointAt(0)!));
+      expect(tofu).toEqual([]);
+      expect([...'⏵✻⎿'].every((c) => !mono.has(c.codePointAt(0)!))).toBe(true);
       const css = assets.filter((f) => f.endsWith('.css')).map((f) => readFileSync(path.join(out, 'assets', f), 'utf8')).join('\n');
       expect(css).toContain("font-family:JetBrains Mono");
-      expect(css).toMatch(/--font-mono:\s*["']JetBrains Mono["']/);
+      expect(css).toMatch(/font-family:\s*["']?PocketShell Symbols/);
+      // The default --font-mono is unchanged (D44); the symbol face joins it at runtime on compact only.
+      expect(css).toMatch(/--font-mono:\s*["']JetBrains Mono["'],\s*Consolas/);
     } finally {
       rmSync(out, { recursive: true, force: true });
       rmSync(entry, { recursive: true, force: true });

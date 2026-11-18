@@ -7,13 +7,18 @@ import android.os.SystemClock;
 import android.util.Base64;
 import android.util.Log;
 import android.view.WindowInsets;
+import android.view.inputmethod.InputMethodManager;
+import androidx.test.core.app.ActivityScenario;
 import androidx.test.platform.app.InstrumentationRegistry;
+import com.pocketshell.app.SharedShellLaunch;
 import com.pocketshell.app.ime.ScriptedIme;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import org.json.JSONArray;
 import org.json.JSONObject;
 import org.junit.Test;
@@ -35,11 +40,50 @@ import org.junit.Test;
  * Every violation is collected with its measured values and reported in one failure, after the
  * JSON evidence ({@code ps2952-s1-layout-<label>.json}) and the screenshots are saved.
  * Counts are asserted non-zero so an empty screen cannot pass.
+ *
+ * <p>Terminal density and glyphs (#3157), on the maintainer's exact state: the app starts with
+ * the settings blob a pre-#3157 build persisted ({@code terminalFontSize: 16}, written whole on
+ * any settings change). In the workspace the Docker host's own PTY reports its width
+ * ({@code stty size}), which must equal the grid the WebView laid out; the side gutters are
+ * at most 2 CSS px; at the 412 class the columns with the left rail removed are 55-60
+ * (Termius on the same phone: ~57; 12px JetBrains Mono gives 56), and both counts — with and without the rail — are
+ * recorded. A Claude Code screen is then {@code cat} from the host and every symbol it draws
+ * (⏵ ✻ ⎿ ❯ ● ○ ⧉, box drawing) is rendered in the terminal's own font stack on a canvas and
+ * compared with the .notdef of an unassigned code point: none may be tofu.
  */
 public class J26S1LayoutJourney extends SharedAppDockerJourneyTest {
     private static final double MIN_HIT = 48.0;
     /** Sub-pixel slack for rounding of fractional layout, nothing more. */
     private static final double EPS = 0.5;
+
+    /** #3157: the side gutter budget, and the column target at 411dp with the rail gone. */
+    private static final double MAX_GUTTER = 2.0;
+    private static final int MIN_COLUMNS = 55;
+    private static final int MAX_COLUMNS = 60;
+    private static final String SHARED_SETTINGS_KEY = "pocketshell.settings.v1";
+    /** What a pre-#3157 build left behind: the settings store persisted its whole object, desktop 16px included. */
+    private static final String PRE_3157_SETTINGS = "{\"terminalFontSize\":16,\"theme\":\"dark\"}";
+    /** Claude Code's symbols the maintainer saw as tofu, plus the box drawing around them (core TERMINAL_SYMBOL_PROBE). */
+    private static final String SYMBOL_PROBE = "\u23f5\u23f8\u23fa\u273b\u2733\u2736\u2722\u00b7\u23bf\u276f\u25cf"
+            + "\u25cb\u25ef\u25c9\u2193\u2191\u2190\u2192\u2713\u2714\u2717\u2718\u29c9\u2026\u2502\u2500\u256d"
+            + "\u256e\u256f\u2570\u251c\u2524\u2590\u259b\u259c\u258c";
+    private static final Pattern HOST_SIZE = Pattern.compile("PSCOLS=(\\d+)x(\\d+)");
+
+    private static final String VISIBLE_XTERM = "[...document.querySelectorAll('.xterm-screen')].find((n)=>n.offsetParent!==null)";
+
+    /** The laid-out grid: cell width from xterm's own measure element, gutters, rail, scrollbar reservation. */
+    private static final String TERMINAL_GEOMETRY_JS = "JSON.stringify((() => {"
+            + "const scr=" + VISIBLE_XTERM + ";if(!scr)return null;"
+            + "const xt=scr.closest('.xterm');const pane=scr.closest('.terminal');"
+            + "const meas=xt.querySelector('.xterm-char-measure-element');"
+            + "const rows=xt.querySelector('.xterm-rows');const rcs=getComputedStyle(rows);const xcs=getComputedStyle(xt);"
+            + "const sb=xt.querySelector('.xterm-scrollable-element > .scrollbar.vertical');"
+            + "const s=scr.getBoundingClientRect();const p=pane.getBoundingClientRect();"
+            + "const cell=meas&&meas.textContent.length?meas.getBoundingClientRect().width/meas.textContent.length:0;"
+            + "return {innerWidth:innerWidth,dpr:devicePixelRatio,fontSize:parseFloat(rcs.fontSize),fontFamily:rcs.fontFamily,cell:cell,"
+            + "paneLeft:p.left,paneRight:p.right,paneWidth:p.width,screenLeft:s.left,screenRight:s.right,screenWidth:s.width,"
+            + "padLeft:parseFloat(xcs.paddingLeft),padRight:parseFloat(xcs.paddingRight),"
+            + "scrollbar:sb?sb.getBoundingClientRect().width:null,domCols:cell>0?Math.round(s.width/cell):0};})())";
 
     private String label;
     private final List<String> violations = new ArrayList<>();
@@ -334,6 +378,190 @@ public class J26S1LayoutJourney extends SharedAppDockerJourneyTest {
         screenshot("s1-" + label + "-" + screen);
     }
 
+    /**
+     * The maintainer's state (#3157): settings stored by a pre-#3157 build. Written through the
+     * durable localStorage (synchronous native write), then the activity is relaunched so the
+     * shared settings store boots from it, exactly like an upgraded install.
+     */
+    private void seedPre3157SettingsAndRelaunch() throws Exception {
+        awaitJsTrue("!!document.querySelector('.host-list, .empty')");
+        evalString("(() => {localStorage.setItem('" + SHARED_SETTINGS_KEY + "', " + JSONObject.quote(PRE_3157_SETTINGS)
+                + "); sessionStorage.clear(); return 'seeded';})()");
+        scenario.close();
+        scenario = ActivityScenario.launch(SharedShellLaunch.intent());
+        awaitJsTrue("!!document.querySelector('.host-list, .empty')");
+        evidence.put("seededSettings", evalString("localStorage.getItem('" + SHARED_SETTINGS_KEY + "') ?? 'absent'"));
+        if (!evidence.getString("seededSettings").contains("\"terminalFontSize\":16")) {
+            fail("the pre-#3157 settings blob did not survive the relaunch: " + evidence.getString("seededSettings"));
+        }
+    }
+
+    private static String readAsset(String name) throws Exception {
+        try (java.io.InputStream input = InstrumentationRegistry.getInstrumentation().getContext().getAssets().open(name)) {
+            return new String(readAll(input), StandardCharsets.UTF_8);
+        }
+    }
+
+    private void hideKeyboard() throws Exception {
+        CountDownLatch done = new CountDownLatch(1);
+        scenario.onActivity(activity -> {
+            InputMethodManager imm = (InputMethodManager) activity.getSystemService(android.content.Context.INPUT_METHOD_SERVICE);
+            imm.hideSoftInputFromWindow(activity.getBridge().getWebView().getWindowToken(), 0);
+            done.countDown();
+        });
+        assertTrue(done.await(10, TimeUnit.SECONDS));
+        SystemClock.sleep(1_500);
+    }
+
+    /**
+     * #3157: columns (host PTY oracle vs the laid-out grid), gutters, the no-rail projection,
+     * then a Claude Code screen from the host and a no-tofu check of its symbols.
+     */
+    private void measureTerminal(String folder, JSONObject transport) throws Exception {
+        String screen = "3b-terminal";
+        // The host's own PTY width, printed so that the echoed command never matches the pattern.
+        typeLine("stty size | awk '{print \"PS\" \"COLS=\" $2 \"x\" $1}'");
+        awaitJsTrue("/PSCOLS=\\d+x\\d+/.test(" + VISIBLE_TERMINAL + ")");
+        Matcher size = HOST_SIZE.matcher(evalString(VISIBLE_TERMINAL));
+        assertTrue("no PSCOLS line", size.find());
+        int hostCols = Integer.parseInt(size.group(1));
+        hideKeyboard();
+        JSONObject geo = new JSONObject(evalString(TERMINAL_GEOMETRY_JS));
+        double cell = geo.getDouble("cell");
+        double padLeft = geo.getDouble("padLeft");
+        double padRight = geo.getDouble("padRight");
+        double scrollbar = geo.isNull("scrollbar") ? -1 : geo.getDouble("scrollbar");
+        double inner = geo.getDouble("innerWidth");
+        double rail = geo.getDouble("paneLeft") + (inner - geo.getDouble("paneRight"));
+        int withRail = cell > 0 ? (int) Math.floor((geo.getDouble("paneWidth") - padLeft - padRight - scrollbar) / cell) : 0;
+        int withoutRail = cell > 0 ? (int) Math.floor((inner - padLeft - padRight - scrollbar) / cell) : 0;
+        JSONObject entry = new JSONObject().put("geometry", geo).put("hostCols", hostCols).put("hostRows", Integer.parseInt(size.group(2)))
+                .put("railWidth", rail).put("columnsWithRail", withRail).put("columnsWithoutRail", withoutRail)
+                .put("leftGutter", padLeft).put("rightGutter", padRight + scrollbar);
+        evidence.put(screen + ".columns", entry);
+        Log.i(TAG, "S1_COLUMNS " + label + " " + entry);
+        if (cell <= 0) fail(screen + ": could not measure the terminal cell");
+        if (scrollbar < 0) fail(screen + ": no xterm vertical scrollbar element measured");
+        if (hostCols != geo.getInt("domCols")) fail(screen + ": host PTY has " + hostCols + " columns but the WebView laid out " + geo.getInt("domCols"));
+        if (hostCols != withRail) fail(screen + ": host PTY has " + hostCols + " columns but the pane fits " + withRail + " (rail " + rail + "px)");
+        if (padLeft > MAX_GUTTER + EPS) fail(screen + ": left gutter " + padLeft + "px > " + MAX_GUTTER + "px");
+        if (padRight + scrollbar > MAX_GUTTER + EPS) fail(screen + ": right gutter " + (padRight + scrollbar) + "px (padding " + padRight
+                + " + scrollbar reservation " + scrollbar + ") > " + MAX_GUTTER + "px");
+        if (geo.getDouble("fontSize") < 11.0) fail(screen + ": terminal text " + geo.getDouble("fontSize") + "px is below the 11px readability floor");
+        if (label.startsWith("412")) {
+            if (withoutRail < MIN_COLUMNS || withoutRail > MAX_COLUMNS) fail(screen + ": " + withoutRail + " columns without the rail at "
+                    + inner + "px (cell " + cell + "px, font " + geo.getDouble("fontSize") + "px), want " + MIN_COLUMNS + "-" + MAX_COLUMNS
+                    + "; with the rail: " + withRail);
+            if (rail < 1 && (hostCols < MIN_COLUMNS || hostCols > MAX_COLUMNS)) fail(screen + ": " + hostCols + " host columns, want " + MIN_COLUMNS + "-" + MAX_COLUMNS);
+        }
+
+        // A Claude Code screen, written on the host and drawn by the real terminal.
+        String screenFile = "$HOME/" + folder + "/claude-code-screen.ansi";
+        String encoded = Base64.encodeToString(readAsset("claude-code-screen.ansi").getBytes(StandardCharsets.UTF_8), Base64.NO_WRAP);
+        JSONObject written = awaitNativeExec("claude-" + label, transport.getString("transportId"), transport.getString("generationId"),
+                "set -eu\nprintf %s " + shellQuote(encoded) + " | base64 -d > \"" + screenFile + "\"");
+        assertEquals(0, written.getInt("exitCode"));
+        typeLine("clear; cat ~/" + folder + "/claude-code-screen.ansi");
+        awaitJsTrue(VISIBLE_TERMINAL + ".includes('bypass permissions on')");
+        hideKeyboard();
+        shot("3b-claude");
+
+        // No tofu: each symbol, in the terminal's own computed font stack, against the .notdef of an
+        // unassigned code point (U+0378). Faces are loaded first; a canvas does not trigger loading.
+        evalRaw("(() => {window.__ps3157Fonts=null;const rows=" + VISIBLE_XTERM + ".querySelector('.xterm-rows');"
+                + "const f=getComputedStyle(rows).fontFamily;"
+                + "document.fonts.load('48px '+f," + JSONObject.quote(SYMBOL_PROBE) + ").then(()=>document.fonts.ready)"
+                + ".then(()=>{window.__ps3157Fonts='ok';},(e)=>{window.__ps3157Fonts='error: '+e;});return true;})()");
+        awaitJsTrue("window.__ps3157Fonts !== null");
+        JSONObject glyphs = new JSONObject(evalString("JSON.stringify((() => {"
+                + "const rows=" + VISIBLE_XTERM + ".querySelector('.xterm-rows');const f=getComputedStyle(rows).fontFamily;"
+                + "const draw=(ch)=>{const c=document.createElement('canvas');c.width=96;c.height=96;const x=c.getContext('2d');"
+                + "x.font='48px '+f;x.fillStyle='#000';x.fillText(ch,16,64);const d=x.getImageData(0,0,96,96).data;"
+                + "let ink=0,h=0;for(let i=3;i<d.length;i+=4){if(d[i]){ink++;h=(Math.imul(h,31)+i*7+d[i])|0;}}return {ink:ink,h:h};};"
+                + "const notdef=draw('\\u0378');const tofu=[];let probed=0;"
+                + "for(const ch of " + JSONObject.quote(SYMBOL_PROBE) + "){probed++;const r=draw(ch);"
+                + "if(r.ink===0||(r.ink===notdef.ink&&r.h===notdef.h))tofu.push(ch+' U+'+ch.codePointAt(0).toString(16).toUpperCase());}"
+                + "return {fontFamily:f,fontsLoad:window.__ps3157Fonts,notdefInk:notdef.ink,probed:probed,tofu:tofu,"
+                + "screenText:" + VISIBLE_TERMINAL + ".slice(0,3000)};})())"));
+        evidence.put(screen + ".glyphs", glyphs);
+        Log.i(TAG, "S1_GLYPHS " + label + " " + glyphs.getJSONArray("tofu"));
+        if (glyphs.getInt("probed") != SYMBOL_PROBE.codePointCount(0, SYMBOL_PROBE.length())) fail(screen + ": glyph probe ran on "
+                + glyphs.getInt("probed") + " characters");
+        if (glyphs.getJSONArray("tofu").length() > 0) fail(screen + ": symbols drawn as .notdef (tofu): " + glyphs.getJSONArray("tofu"));
+        if (!glyphs.getString("screenText").contains("bypass permissions on")) fail(screen + ": the Claude Code screen is not on the terminal");
+    }
+
+    private static final String VISIBLE_SETTINGS_BUTTON =
+            "[...document.querySelectorAll('button[title=Settings]')].find((b)=>b.offsetParent!==null)";
+    private static final String SIZE_INPUT = SETTINGS_DIALOG + " input#terminal-size";
+
+    /** Opens Settings (whichever visible gear), selects Appearance, and waits for the terminal size control. */
+    private void openAppearanceSettings() throws Exception {
+        awaitJsTrue("!!" + VISIBLE_SETTINGS_BUTTON);
+        JsVisibility.expectClicked(evalString(JsVisibility.click(VISIBLE_SETTINGS_BUTTON)));
+        String appearance = SETTINGS_DIALOG + " #settings-tab-appearance";
+        awaitJsTrue("!!document.querySelector('" + appearance + "')");
+        JsVisibility.expectClicked(evalString(JsVisibility.click("document.querySelector('" + appearance + "')")));
+        awaitJsTrue("(() => {const i=document.querySelector('" + SIZE_INPUT + "');return !!i && i.offsetParent!==null;})()");
+    }
+
+    /** OverlayPanel renders Close on wide screens and a Back arrow on compact ones (core S4a), as in measureSettings. */
+    private void closeSettings() throws Exception {
+        String close = SETTINGS_DIALOG + " button[title=Close], " + SETTINGS_DIALOG + " button[title=Back]";
+        awaitJsTrue("document.querySelector('" + close + "') !== null");
+        JsVisibility.expectClicked(evalString(JsVisibility.click("document.querySelector('" + close + "')")));
+        awaitJsTrue("document.querySelector('" + SETTINGS_DIALOG + "') === null");
+    }
+
+    private JSONObject storedSettings() throws Exception {
+        return new JSONObject(evalString("localStorage.getItem('" + SHARED_SETTINGS_KEY + "') ?? '{}'"));
+    }
+
+    /**
+     * #3157 AC "the size setting still works and persists", on the packaged app: the phone's
+     * Settings shows the 12px phone size (not the seeded desktop 16) in half-pixel steps; setting
+     * 11.5 re-sizes the live terminal and is written to storage; after an activity restart the
+     * stored blob and the Settings control still say 11.5, and the desktop size is untouched.
+     */
+    private void persistPhoneSize() throws Exception {
+        String screen = "6-phone-size";
+        JSONObject entry = new JSONObject();
+        evidence.put(screen + ".persist", entry);
+        hideKeyboard();
+        openAppearanceSettings();
+        entry.put("shownBefore", evalString("document.querySelector('" + SIZE_INPUT + "').value"));
+        entry.put("step", evalString("document.querySelector('" + SIZE_INPUT + "').getAttribute('step') ?? ''"));
+        if (!"12".equals(entry.getString("shownBefore"))) fail(screen + ": phone Settings shows " + entry.getString("shownBefore") + "px, want the 12px phone default");
+        if (!"0.5".equals(entry.getString("step"))) fail(screen + ": phone size step is " + entry.getString("step") + ", want 0.5");
+        evalString("(() => {const i=document.querySelector('" + SIZE_INPUT + "');i.value='11.5';"
+                + "i.dispatchEvent(new Event('change',{bubbles:true}));return 'set';})()");
+        awaitJsTrue("JSON.parse(localStorage.getItem('" + SHARED_SETTINGS_KEY + "') ?? '{}').compactTerminalFontSize === 11.5");
+        JSONObject afterChange = storedSettings();
+        entry.put("storedAfterChange", afterChange.optDouble("compactTerminalFontSize", -1));
+        entry.put("desktopSizeAfterChange", afterChange.optDouble("terminalFontSize", -1));
+        closeSettings();
+        awaitJsTrue("getComputedStyle(" + VISIBLE_XTERM + ".querySelector('.xterm-rows')).fontSize === '11.5px'");
+        entry.put("liveFontAfterChange", evalString("getComputedStyle(" + VISIBLE_XTERM + ".querySelector('.xterm-rows')).fontSize"));
+        shot("6-phone-size-11_5");
+
+        // Restart: a new activity and WebView, booting from durable storage alone.
+        scenario.close();
+        scenario = ActivityScenario.launch(SharedShellLaunch.intent());
+        awaitJsTrue("!!document.querySelector('.host-list, .empty')");
+        JSONObject afterRestart = storedSettings();
+        entry.put("storedAfterRestart", afterRestart.optDouble("compactTerminalFontSize", -1));
+        entry.put("desktopSizeAfterRestart", afterRestart.optDouble("terminalFontSize", -1));
+        openAppearanceSettings();
+        entry.put("shownAfterRestart", evalString("document.querySelector('" + SIZE_INPUT + "').value"));
+        closeSettings();
+        Log.i(TAG, "S1_PHONE_SIZE " + label + " " + entry);
+        if (entry.getDouble("storedAfterChange") != 11.5) fail(screen + ": Settings did not store compactTerminalFontSize 11.5: " + afterChange);
+        if (!"11.5px".equals(entry.getString("liveFontAfterChange"))) fail(screen + ": live terminal font " + entry.getString("liveFontAfterChange"));
+        if (entry.getDouble("storedAfterRestart") != 11.5) fail(screen + ": after restart the stored phone size is " + afterRestart);
+        if (!"11.5".equals(entry.getString("shownAfterRestart"))) fail(screen + ": after restart Settings shows " + entry.getString("shownAfterRestart"));
+        if (entry.getDouble("desktopSizeAfterRestart") != 16) fail(screen + ": the desktop size changed: " + afterRestart);
+    }
+
     private void saveEvidence() throws Exception {
         String json = evidence.toString();
         // UiAutomation.executeShellCommand does not interpret quotes or pipes (it tokenizes on spaces),
@@ -375,6 +603,8 @@ public class J26S1LayoutJourney extends SharedAppDockerJourneyTest {
     private void runJourney(int expectedWidth) throws Exception {
         step("start");
         String run = sessionRun();
+        step("seed-pre-3157-settings");
+        seedPre3157SettingsAndRelaunch();
         ensureFixtureHost(run);
 
         JSONObject nat0 = nativeInsets();
@@ -398,15 +628,24 @@ public class J26S1LayoutJourney extends SharedAppDockerJourneyTest {
         step("workspace-connected");
         String tag = "s1-" + Long.toString(System.currentTimeMillis(), 36);
         String folder = "ps-s1-" + tag;
+        // Not a superstring of `folder`: openFolder/awaitFolder match rows by substring.
+        String pairFolder = "ps-s1-pair-" + Long.toString(System.nanoTime(), 36);
         awaitJsTrue("[...(window.__pocketshellConnectionJournal ?? [])].some((e)=>e.transportId && e.generationId)");
         JSONObject transport = new JSONObject(evalString("JSON.stringify([...(window.__pocketshellConnectionJournal ?? [])]"
                 + ".reverse().find((e)=>e.transportId && e.generationId) ?? null)"));
         JSONObject created = awaitNativeExec("create-" + tag, transport.getString("transportId"),
                 transport.getString("generationId"), "set -eu\nmkdir -p \"$HOME/" + folder + "\"\n"
                 + "PATH=\"$HOME/.local/bin:$PATH\" pocketshell sessions create --json --cwd \"$HOME/" + folder + "\" -- "
-                + shellQuote("shell-" + tag) + " >/dev/null");
+                + shellQuote("shell-" + tag) + " >/dev/null\n"
+                // A two-session folder too: the compact tree collapses a single-session folder into one row
+                // (core #3145), so session leaves exist only where a folder holds more than one session. Without
+                // it the leaf count depended on what earlier lanes left on the fixture.
+                + "mkdir -p \"$HOME/" + pairFolder + "\"\n"
+                + "for s in pair-a pair-b; do PATH=\"$HOME/.local/bin:$PATH\" pocketshell sessions create --json --cwd \"$HOME/"
+                + pairFolder + "\" -- \"$s-" + tag + "\" >/dev/null; done");
         assertEquals(0, created.getInt("exitCode"));
         awaitFolder(folder);
+        awaitFolder(pairFolder);
         SystemClock.sleep(500);
         step("session-tree");
         measureHits("2-session-tree", "dir-header", "session-leaf");
@@ -424,12 +663,18 @@ public class J26S1LayoutJourney extends SharedAppDockerJourneyTest {
         measureWorkspace("3-workspace", false);
         shot("3-workspace");
 
+        step("terminal-columns-and-glyphs");
+        measureTerminal(folder, transport);
+
         // Keyboard-up variant: the terminal takes focus and the IME shows.
         step("ime-up");
         focusTerminalForIme();
         SystemClock.sleep(1_500);
         measureWorkspace("4-workspace-ime-up", true);
         shot("4-workspace-ime-up");
+
+        step("phone-size-persists");
+        persistPhoneSize();
         step("done");
     }
 }

@@ -1,0 +1,24 @@
+[32m●[0m Agent "Review the parser fix in lexer.ts" is waiting on
+its own background work [90m· 1h 40m 55s[0m
+
+[32m●[0m [1mBash[0m(gh run view 12345678901 --attempt 1 --json jobs
+    --jq '.jobs[] | [.name,.conclusion] | @tsv'; gh run
+    view 12345678901 --json jobs --jq '.jobs[] |
+    [.name,.status,…)
+  ⎿  JS source and Android debug build       success
+     Docker agents fixture contract  success
+     Packaged APK (baseline) success
+     [90m… +11 lines (ctrl+o to expand)[0m
+
+[38;5;209m✻ Slithering… [0m[90m(2m 48s)[0m
+  ⎿  [90mTip: Use /btw to ask a quick side question[0m
+
+[90m────────────────────────────────────────────────────────[0m
+❯ hello
+[90m────────────────────────────────────────────────────────[0m
+  [38;5;212m⏵⏵ bypass permissions on[0m [90m(shift+tab to cycle) ·[0m [36m7[0m
+
+[32m●[0m [1mmain[0m
+○ implementer  Running S… 10h 26m 3s · ↓ 322.2k tokens
+○ reviewer     Waiting o…    32m 14s · ↓ 98.5k tokens
+○ implementer  Committin…    38m 44s · ↓ 318.9k tokens

@@ -72,7 +72,7 @@ describe('Android shared app shell', () => {
   });
 
   it('hands the shared root a phone mono stack, not the desktop Consolas default', () => {
-    expect(ANDROID_MONO_FALLBACK).toBe("'JetBrains Mono', ui-monospace, monospace");
+    expect(ANDROID_MONO_FALLBACK).toBe("'JetBrains Mono', 'PocketShell Symbols', ui-monospace, monospace");
     expect(ANDROID_MONO_FALLBACK).not.toContain('Consolas');
   });
 });
