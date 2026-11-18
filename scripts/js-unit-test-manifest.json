@@ -1110,7 +1110,22 @@
         "edits and saves a file; a second save and a create/mkdir/rename/delete/rmdir round trip reach the host",
         "never overwrites a file another client changed or deleted since it was opened",
         "refuses a write over the native 512 KiB limit and a call on a closed connection",
-        "creates a folder, derives a session name and creates and renames a session through the host"
+        "creates a folder, derives a session name and creates and renames a session through the host",
+        "reports a folder past the native entry cap as truncated instead of showing it as complete",
+        "never returns a read cut short by the native cap (a buffer that could be saved back over the real file)",
+        "a file never read this session is written only if unchanged since a stat; a new path is simply created",
+        "createFolder, deriveName, rename and clone quote the hostile name \"my folder\" with core's quoting only",
+        "createFolder, deriveName, rename and clone quote the hostile name \"it's\" with core's quoting only",
+        "createFolder, deriveName, rename and clone quote the hostile name \"a$b\" with core's quoting only",
+        "createFolder, deriveName, rename and clone quote the hostile name \"x;y\" with core's quoting only",
+        "createFolder, deriveName, rename and clone quote the hostile name \"back`tick`\" with core's quoting only",
+        "createFolder, deriveName, rename and clone quote the hostile name \"multi\\nline\" with core's quoting only",
+        "createFolder, deriveName, rename and clone quote the hostile name \"\u00fcn\u00ef-\u6587\u4ef6\" with core's quoting only",
+        "createFolder, deriveName, rename and clone quote the hostile name \"$(touch pwn)\" with core's quoting only",
+        "createFolder, deriveName, rename and clone quote the hostile name \"-rf\" with core's quoting only",
+        "rejects folder names that could escape the parent and keeps Windows-style parents joined with a slash",
+        "clones a repository and reports the printed path, progress and a classified failure",
+        "acknowledges warnings: one target, all, and the benign already-acked race"
       ]
     }
   }

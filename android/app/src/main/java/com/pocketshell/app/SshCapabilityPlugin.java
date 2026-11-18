@@ -906,6 +906,8 @@ public final class SshCapabilityPlugin extends Plugin {
                     }
                     List<RemoteResourceInfo> listing = client.ls(listingPath);
                     int count = Math.min(MAX_SFTP_ENTRIES, listing.size());
+                    // A folder past the cap is reported as truncated, never as complete.
+                    result.put("truncated", listing.size() > MAX_SFTP_ENTRIES).put("maxEntries", MAX_SFTP_ENTRIES).put("totalEntries", listing.size());
                     for (int index = 0; index < count; index++) {
                         RemoteResourceInfo info = listing.get(index);
                         FileAttributes attributes = info.getAttributes();

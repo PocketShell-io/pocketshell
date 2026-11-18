@@ -30,7 +30,7 @@ type Request = Ref & { requestId: string; path: string };
 
 /** The native SFTP surface this adapter needs (the real plugin, or a fake in tests). */
 export interface AndroidFileNative {
-  list(options: Request): Promise<{ requestId: string; entries: Array<SshSftpEntry & { type?: string }> }>;
+  list(options: Request): Promise<{ requestId: string; entries: Array<SshSftpEntry & { type?: string }>; truncated?: boolean; maxEntries?: number; totalEntries?: number }>;
   stat(ref: Ref, path: string): Promise<NativeSftpStat>;
   read(options: Request & { maxBytes: number }): Promise<{ requestId: string; dataBase64: string }>;
   write(options: Request & { dataBase64: string; createOnly?: boolean }): Promise<{ requestId: string; bytesWritten: number }>;
@@ -50,6 +50,12 @@ export interface AndroidFilesDeps {
   current(connectionId: string): Ref | null;
   /** The login directory (`~`) on this native connection. */
   home(ref: Ref): Promise<string>;
+  /**
+   * A visible diagnostic notice. Core's `DirEntry[]` list contract has no
+   * "truncated" field, so a folder past the native entry cap is reported here
+   * (the Diagnostics banner) instead of being shown as if it were complete.
+   */
+  notice?(entry: { kind: string; message: string; detail?: Record<string, unknown> }): void;
 }
 
 export const ANDROID_FILE_CAPABILITIES: NonNullable<PocketShellApi['sftp']['capabilities']> = {
@@ -74,6 +80,7 @@ function fromBase64(value: string): Uint8Array {
   return bytes;
 }
 
+/** The native listing carries no mode/owner/longname; the shared Files pane does not render them, so they are placeholders. */
 const rwx = { user: '---', group: '---', other: '---' };
 
 function entryType(type: unknown, isDirectory: boolean): DirEntry['type'] {
@@ -81,6 +88,11 @@ function entryType(type: unknown, isDirectory: boolean): DirEntry['type'] {
   if (type === 'file') return 'file';
   if (type === 'symlink') return 'symlink';
   return isDirectory ? 'dir' : 'other';
+}
+
+function tooLarge(size: number, limit: number): string {
+  const mb = (value: number) => (value / (1024 * 1024)).toFixed(value >= 1024 * 1024 ? 1 : 2);
+  return `File too large to open on the phone (${mb(size)} MB; the limit is ${mb(limit)} MB).`;
 }
 
 function toError(error: unknown): Error {
@@ -118,7 +130,7 @@ export function createAndroidFiles(deps: AndroidFilesDeps): Pick<PocketShellApi[
       const home = (await deps.home(ref)).replace(/\/+$/, '');
       return path === '~' ? home : `${home}/${path.slice(2)}`;
     }
-    if (!path.startsWith('/')) throw new Error('Remote paths must be absolute.');
+    if (!path.startsWith('/') && !/^[A-Za-z]:[\\/]/.test(path)) throw new Error('Remote paths must be absolute.');
     return path;
   }
 
@@ -133,12 +145,15 @@ export function createAndroidFiles(deps: AndroidFilesDeps): Pick<PocketShellApi[
       const abs = await absolute(ref, path);
       const before = await statOf(ref, abs);
       if (before.type !== 'file') throw new Error(before.isDirectory ? 'That path is a folder, not a file.' : 'That path is not a regular file.');
-      if (before.sizeBytes > limit) throw new Error(`The file is ${before.sizeBytes} bytes, over the ${limit} byte limit for opening it here.`);
+      if (before.sizeBytes > limit) throw new Error(tooLarge(before.sizeBytes, limit));
       const id = requestId();
       const response = await deps.native.read({ ...ref, requestId: id, path: abs, maxBytes: limit });
       checkEcho(response, id);
       const bytes = fromBase64(response.dataBase64);
-      if (bytes.length !== before.sizeBytes) throw new Error('The file changed while it was being read. Open it again.');
+      // A read cut short by the native cap (or a concurrent change) must never become a buffer that could be saved back.
+      if (bytes.length !== before.sizeBytes) {
+        throw new Error(bytes.length >= limit ? tooLarge(Math.max(before.sizeBytes, bytes.length), limit) : 'The file changed while it was being read. Open it again.');
+      }
       known.set(key(connectionId, abs), { sizeBytes: before.sizeBytes, modifiedEpochMs: before.modifiedEpochMs });
       return bytes;
     });
@@ -150,7 +165,16 @@ export function createAndroidFiles(deps: AndroidFilesDeps): Pick<PocketShellApi[
       const abs = await absolute(ref, path);
       const id = requestId();
       const dataBase64 = toBase64(bytes);
-      const expected = known.get(key(connectionId, abs));
+      let expected = known.get(key(connectionId, abs));
+      if (!createOnly && !expected) {
+        // Never read in this session (e.g. a save after the cache was dropped): an existing file is
+        // still written only if it is unchanged since this stat; a missing one is simply created.
+        // The guarantee is therefore weaker than for a file opened here (the stat is taken at save
+        // time, not at open time).
+        const existing = await statOf(ref, abs).catch(() => null);
+        if (existing?.isDirectory) throw new Error('That path is a folder, not a file.');
+        if (existing) expected = { sizeBytes: existing.sizeBytes, modifiedEpochMs: existing.modifiedEpochMs };
+      }
       if (!createOnly && expected) {
         const response = await deps.native.writeIfUnchanged({
           ...ref, requestId: id, rootPath: '/', path: abs, dataBase64,
@@ -186,6 +210,13 @@ export function createAndroidFiles(deps: AndroidFilesDeps): Pick<PocketShellApi[
       const response = await deps.native.list({ ...ref, requestId: id, path: abs });
       checkEcho(response, id);
       if (!Array.isArray(response.entries)) throw new Error('The host sent an unreadable folder listing.');
+      if (response.truncated === true) {
+        deps.notice?.({
+          kind: 'files-list-truncated',
+          message: `Only the first ${response.maxEntries ?? response.entries.length} of ${response.totalEntries ?? 'more'} entries of ${abs} are shown; this phone cannot list the rest yet.`,
+          detail: { path: abs, shown: response.entries.length, total: response.totalEntries ?? null },
+        });
+      }
       return response.entries
         .filter((entry) => typeof entry.name === 'string' && entry.name !== '.' && entry.name !== '..')
         .map((entry): DirEntry => ({

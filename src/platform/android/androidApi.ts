@@ -399,6 +399,7 @@ export function createAndroidPlatform(deps: AndroidApiDeps): AndroidPlatform {
       remove: (options) => sshCapability.sftpDelete(options),
     },
     current: nativeCurrent,
+    notice: (entry) => deps.log?.(entry),
     home: (ref) => (deps.remoteDirectory ?? nativeRemoteDirectory)(ref, '.'),
   });
 
@@ -538,6 +539,7 @@ export function createAndroidPlatform(deps: AndroidApiDeps): AndroidPlatform {
       async createFolder(connectionId, request) {
         const name = normaliseProjectFolderName(request.name);
         if (!name) return { ok: false, path: null, error: 'Enter a single folder name (no slashes).' };
+        if (/[\u0000-\u001f]/.test(name)) return { ok: false, path: null, error: 'A folder name cannot contain control characters or line breaks.' };
         try {
           const parent = await api.sftp.realPath(connectionId, request.parent);
           const target = childPath(parent, name);
