@@ -40,7 +40,7 @@ async function chooseTarget(index: number) {
   const host = connection.activeHost;
   if (!session || !content || !connectionId || !host || busy.value) return;
   busy.value = true;
-  const identity = sessionIdentityKey(session.name, { backend: session.backend, workspace: session.workspace ?? undefined });
+  const identity = sessionIdentityKey(session.name, { backend: session.backend, workspace: session.workspace ?? undefined, aplexerId: session.aplexerId ?? undefined });
   const key = composer.targetKey(connectionId, session.name, identity);
   try {
     // Resolve through the shared tree algebra: identical tags in different
@@ -48,7 +48,7 @@ async function chooseTarget(index: number) {
     const folder = groupSessionsIntoRoots(sessions.sessions, projects.home, workspaceRoots.rootsFor(host.name, projects.home))
       .flatMap((root) => root.directories)
       .find((directory) => directory.rows.some(({ session: candidate }) => sessionIdentityKey(candidate.name, {
-        backend: candidate.backend, workspace: candidate.workspace ?? undefined,
+        backend: candidate.backend, workspace: candidate.workspace ?? undefined, aplexerId: candidate.aplexerId ?? undefined,
       }) === identity));
     if (!folder) throw new Error('That session is no longer available. Choose another session.');
     await router.push({ name: 'folder', params: { name: host.name, folder: folder.key }, query: { tab: session.name } });
