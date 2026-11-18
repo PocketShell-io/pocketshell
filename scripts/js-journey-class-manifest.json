@@ -26,6 +26,7 @@
     "J23InlineDictationJourney",
     "J24SettingsReachJourney",
     "J28CdKeepsTerminalJourney",
+    "J29TuiRedrawNoDiagJourney",
     "J25AndroidBackJourney"
   ]
 }

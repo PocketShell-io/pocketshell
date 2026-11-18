@@ -2021,6 +2021,13 @@ public abstract class SharedAppDockerJourneyTest {
      */
     protected void focusTerminalForIme() throws Exception {
         armInputTrace();
+        // A phone user summons the soft keyboard from touch mode. Touch mode is
+        // device-global: a key event from an EARLIER journey or lane (an Enter
+        // key, IME-typed digits) leaves the device out of it, and then
+        // requestFocus() on a not-yet-focused WebView makes Chromium move DOM
+        // focus to the page's first focusable element (an icon button) — which
+        // hides the keyboard we are about to ask for (#3161: J26 after J29).
+        enterTouchMode();
         CountDownLatch shown = new CountDownLatch(1);
         scenario.onActivity(activity -> {
             WebView webView = activity.getBridge().getWebView();
@@ -2060,6 +2067,17 @@ public abstract class SharedAppDockerJourneyTest {
         logInputTrace("focus failed");
         throw new AssertionError("the scripted IME never bound to the focused terminal textarea: " + last
                 + "\n" + ScriptedIme.inputMethodState());
+    }
+
+    /** Put the device back in touch mode, as a finger on the screen would; fails if the system refuses. */
+    protected static void enterTouchMode() {
+        InstrumentationRegistry.getInstrumentation().setInTouchMode(true);
+        InstrumentationRegistry.getInstrumentation().waitForIdleSync();
+        String state = ScriptedIme.shell("dumpsys window");
+        assertTrue("the device must be in touch mode before summoning the keyboard: "
+                + (state.contains("mInTouchMode=") ? state.substring(state.indexOf("mInTouchMode="),
+                        Math.min(state.length(), state.indexOf("mInTouchMode=") + 20)) : "<unreported>"),
+                !state.contains("mInTouchMode=false"));
     }
 
     protected Bundle runIme(ScriptedIme.Script script) throws Exception {

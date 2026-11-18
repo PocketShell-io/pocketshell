@@ -8,6 +8,7 @@ import type { Duplex } from 'node:stream';
 import { defineConfig, type Connect, type Plugin } from 'vite';
 import { readPinnedCore } from './scripts/js-source-integrity.mjs';
 import { isLoopbackHost, refusal } from './scripts/dev-ssh-bridge/loopback.mjs';
+import { refuseFreeIdentifiers } from './scripts/bundle-free-identifiers.mjs';
 
 const repoRoot = path.dirname(fileURLToPath(import.meta.url));
 
@@ -78,6 +79,19 @@ export const SHARED_APP_DEDUPE = [
   '@codemirror/lang-sql', '@codemirror/lang-vue', '@codemirror/lang-xml', '@codemirror/lang-yaml',
   '@lezer/highlight', '@lezer/common', '@lezer/lr', 'marked',
 ];
+
+/**
+ * The production bundle's syntax target (#3161). Vite's default (es2020) makes
+ * esbuild lower `||=`, and esbuild 0.25's minifier mis-lowers xterm's
+ * `let r; ...(r ||= {})` in `requestMode` into `void 0 || (i = {})` with `i`
+ * declared nowhere: the shipped APK threw `i is not defined` on the first
+ * DECRQM query and xterm's write loop died with it. ES2022 is what the shared
+ * sources are already compiled for (`esbuild.tsconfigRaw` below); it needs an
+ * Android System WebView of Chrome 94 or newer, which Play keeps current on
+ * every supported Android release. `refuseFreeIdentifiers` fails any build
+ * whose chunks still reference an undeclared name, whatever produced it.
+ */
+export const ANDROID_WEB_BUILD_TARGET = 'es2022';
 
 /** Vite modes that run the Android app in a plain browser (#3022). Dev server only. */
 export const DEV_BROWSER_MODES = ['mock', 'live'] as const;
@@ -208,6 +222,7 @@ export default defineConfig(({ command, mode }) => {
       vue(),
       bundledAssetManifest(core.revision),
       refuseDevBrowserModules(),
+      refuseFreeIdentifiers(),
       ...(devBrowser ? [devBrowserShell(devBrowser, process.env)] : []),
     ],
     ...(devBrowser === 'live'
@@ -223,6 +238,9 @@ export default defineConfig(({ command, mode }) => {
           },
         }
       : {}),
+    build: {
+      target: ANDROID_WEB_BUILD_TARGET,
+    },
     esbuild: {
       // Do not inherit the shared UI package's authoring tsconfig, which extends
       // @vue/tsconfig for its own workspace. This shell supplies its own
