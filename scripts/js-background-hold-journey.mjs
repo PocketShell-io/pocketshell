@@ -688,8 +688,16 @@ async function rapidReturn(name) {
 }
 
 async function selectGrace(ms) {
-  await page.eval(`(() => { const b = [...document.querySelectorAll('button[title="Settings"]')].find((n) => n.offsetParent !== null);
-    if (!b) throw new Error('no visible Settings button'); b.click(); return 'ok'; })()`);
+  // The host list has a Settings gear; inside a workspace on a phone the gear
+  // is gone (S2, #3121) and Settings is a row of the overflow (⋮) menu.
+  const opened = await page.eval(`(() => { const b = [...document.querySelectorAll('button[title="Settings"]')].find((n) => n.offsetParent !== null);
+    if (!b) return false; b.click(); return true; })()`);
+  if (!opened) {
+    await page.eval(`(() => { const more = [...document.querySelectorAll('button[aria-label=More]')].find((n) => n.offsetParent);
+      if (!more) throw new Error('no visible Settings gear or overflow menu'); more.click(); return 'ok'; })()`);
+    await page.waitFor("!!document.querySelector('[data-testid=host-overflow-settings]')", 'the overflow menu Settings row', 10_000);
+    await page.eval("document.querySelector('[data-testid=host-overflow-settings]').click(); 'ok'");
+  }
   // The Connections group lives on one of the Settings tabs.
   const select = "document.querySelector('[data-testid=setting-background-grace]')";
   const deadline = Date.now() + 15_000;
@@ -708,6 +716,12 @@ async function selectGrace(ms) {
   screenshot('settings-grace-30s');
   await page.eval(`(() => { const close = [...document.querySelectorAll('button[aria-label="Close"], button[title="Close"]')].find((n) => n.offsetParent !== null); close?.click(); return 'ok'; })()`);
   await sleep(500);
+  // Android Back closes the top layer in the shared shell if no Close control did.
+  for (let attempt = 0; attempt < 3 && await page.eval("!!document.querySelector('[data-testid=setting-background-grace]')?.offsetParent"); attempt += 1) {
+    shell('input keyevent KEYCODE_BACK');
+    await sleep(700);
+  }
+  await page.waitFor("!document.querySelector('[data-testid=setting-background-grace]')?.offsetParent", 'Settings to close', 10_000);
 }
 
 async function beyondGrace(name) {
