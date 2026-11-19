@@ -183,6 +183,14 @@ def self_test() -> int:
         ("skipped method without a quarantine row fails", [(REQUIRED_CLASS, REQUIRED_METHOD, "skipped"), dock], False, ""),
         ("skipped with an unexpired registered quarantine passes", [(REQUIRED_CLASS, REQUIRED_METHOD, "skipped"), dock], True,
          f"{REQUIRED_KEY}\t#3056\t2026-01-01\t2099-01-01\tsynthetic unexpired row"),
+        # #3201: J23 quarantined must never make J30 optional (G3: the lane
+        # still has to prove the shared-shell dock journey executed and passed).
+        ("quarantined J23 with a failed J30 fails", [(REQUIRED_CLASS, REQUIRED_METHOD, "skipped"), (DOCK_CLASS, DOCK_METHOD, "failed")], False,
+         f"{REQUIRED_KEY}\t#3201\t2026-01-01\t2099-01-01\tsynthetic unexpired row"),
+        ("quarantined J23 with a skipped, unregistered J30 fails", [(REQUIRED_CLASS, REQUIRED_METHOD, "skipped"), (DOCK_CLASS, DOCK_METHOD, "skipped")], False,
+         f"{REQUIRED_KEY}\t#3201\t2026-01-01\t2099-01-01\tsynthetic unexpired row"),
+        ("quarantined J23 with J30 missing fails", [(REQUIRED_CLASS, REQUIRED_METHOD, "skipped")], False,
+         f"{REQUIRED_KEY}\t#3201\t2026-01-01\t2099-01-01\tsynthetic unexpired row"),
         ("skipped with an expired registered quarantine fails", [(REQUIRED_CLASS, REQUIRED_METHOD, "skipped"), dock], False,
          f"{REQUIRED_KEY}\t#3056\t2026-01-01\t2026-01-15\tsynthetic expired row"),
         ("skipped with a malformed registry row fails closed", [(REQUIRED_CLASS, REQUIRED_METHOD, "skipped"), dock], False,
