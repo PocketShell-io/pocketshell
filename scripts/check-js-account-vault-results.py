@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Fail-closed result check for the packaged account key-vault journey (key-vault W4).
 
-Requires, from the same run: both SharedVaultDockerJourneyTest methods in the
+Requires, from the same run: all three SharedVaultDockerJourneyTest methods in the
 JUnit XML, passed (no skips, failures, errors or extra tests); every required
 screenshot present as a complete PNG with distinct content below the status bar (#3067);
 and no credential line in the app logcat.
@@ -22,16 +22,18 @@ from pathlib import Path
 REQUIRED_CLASS = "com.pocketshell.app.smoke.SharedVaultDockerJourneyTest"
 REQUIRED_METHODS = frozenset({
     "typeEveryTimeUnlockDialsTheWebSavedKeyWithNoKeyPicker",
+    "seedRememberedVaultForProcessRestart",
     "rememberOnThisDeviceUnlocksSilentlyNextLaunchAndSignOutForgets",
 })
+HOST_PHASES = ("type", "remember", "pending")
 SCREENSHOTS = {
     "vault-unlock-on-launch.png",
     "vault-unlock-wrong-passphrase.png",
     "vault-unlocked-account-host.png",
+    "vault-unlock-selected-host.png",
     "vault-connected-with-vault-key.png",
     "vault-unlock-remember-chosen.png",
-    # The sixth screenshot is the post-sign-out Account screen, not a second
-    # host-list capture: both vault methods legitimately render the same host
+    # The post-sign-out capture is the Account screen. Both paths render the same host
     # list, so a second host-list shot would be byte-identical to
     # vault-unlocked-account-host.png by design and rightly rejected (#3067).
     # The silent next launch stays proven by the no-unlock-prompt assertion
@@ -176,7 +178,7 @@ def check_host(host_dir: Path) -> None:
         raise CheckFailure("trusted descriptor pin does not match the enrolled host's own SSH key")
     if not re.fullmatch(r"wss://localhost:[0-9]+", hello.get("serverUrl", "")):
         raise CheckFailure("vault fixture is not reached through its TLS gateway")
-    for phase in ("type", "remember"):
+    for phase in HOST_PHASES:
         def replies(op, suffix):
             return [e["reply"] for e in entries if e["request"].get("op") == op
                     and e["request"].get("phase") == f"vault-{phase}-{suffix}" and e["reply"].get("ok")]
@@ -192,8 +194,8 @@ def check_host(host_dir: Path) -> None:
         if not any(valid_file(r) for r in replies("host-file", "io")):
             raise CheckFailure(f"no independent run-unique terminal output for {phase}")
     text = (host_dir / "gateway.log").read_text() if (host_dir / "gateway.log").is_file() else ""
-    if text.count(f"client session open device={hello['deviceId']} ") < 2:
-        raise CheckFailure("gateway did not observe both vault logins")
+    if text.count(f"client session open device={hello['deviceId']} ") < len(HOST_PHASES):
+        raise CheckFailure("gateway did not observe all vault logins")
 
 
 def host_self_test() -> None:
@@ -203,9 +205,9 @@ def host_self_test() -> None:
         (root / "hello.json").write_text(json.dumps(hello))
         (root / "host-key.pub").write_text(hello["hostKeyLine"])
         (root / "pinned-key.json").write_text(json.dumps(hello))
-        (root / "gateway.log").write_text("client session open device=vault-test account=x\n" * 2)
+        (root / "gateway.log").write_text("client session open device=vault-test account=x\n" * len(HOST_PHASES))
         entries = []
-        for phase in ("type", "remember"):
+        for phase in HOST_PHASES:
             for op, suffix, reply in [("authorize","authorize",{"fingerprint":"SHA256:fixture"}),
                     ("sshd-since","connect",{"accepted":[{"fingerprint":"SHA256:fixture"}]}),
                     ("host-file","io",{"name":f"gwlane-vault-{phase}-long-run-123.txt", "content":f"VAULT42_{phase}_long-run-123\n"})]:
