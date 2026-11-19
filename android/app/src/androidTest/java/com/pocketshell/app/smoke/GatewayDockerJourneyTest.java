@@ -41,6 +41,7 @@ import org.junit.runner.RunWith;
 
 import java.io.BufferedReader;
 import java.io.File;
+import java.io.IOException;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.net.InetSocketAddress;
@@ -110,16 +111,25 @@ public final class GatewayDockerJourneyTest {
 
     @Before
     public void installFakeEdges() throws Exception {
+        installFakeEdges(false);
+    }
+
+    void installFakeEdges(boolean preserveAccount) throws Exception {
         assertTrue("the gateway lane runs on API 35+", Build.VERSION.SDK_INT >= 35);
         run = requiredArgument("gatewayRunId");
         assertTrue("run id must be path safe", run.matches("[A-Za-z0-9][A-Za-z0-9_-]{2,48}"));
         hello = controller(new JSONObject().put("op", "hello"));
-        google = new FakeGoogle(hello.getString("sub"), hello.getString("email"));
+        String expiry = InstrumentationRegistry.getArguments().getString("gatewayFakeGoogleExpiry");
+        google = expiry == null
+                ? new FakeGoogle(hello.getString("sub"), hello.getString("email"))
+                : new FakeGoogle(hello.getString("sub"), hello.getString("email"), Long.parseLong(expiry));
         backend = new FakeSyncBackend();
         backend.seed(encrypt(accountHosts().toString()));
         GoogleSyncEnvironment.installForTesting(activity -> google, backend);
-        for (String prefs : new String[]{AUTH_PREFS, "pocketshell-gateway-pairings", "pocketshell-trusted-host-revisions", "pocketshell_vault_device_v1"})
-            clearFixturePreferences(prefs);
+        if (!preserveAccount) {
+            for (String prefs : new String[]{AUTH_PREFS, "pocketshell-gateway-pairings", "pocketshell-trusted-host-revisions", "pocketshell_vault_device_v1"})
+                clearFixturePreferences(prefs);
+        }
     }
 
     /**
@@ -148,6 +158,10 @@ public final class GatewayDockerJourneyTest {
 
     @After
     public void restore() throws Exception {
+        restore(false);
+    }
+
+    void restore(boolean preserveAccount) throws Exception {
         try {
             // A failed refusal step must not leave the next test's host offline.
             if (!controller(new JSONObject().put("op", "presence")).optBoolean("online")) {
@@ -163,7 +177,7 @@ public final class GatewayDockerJourneyTest {
                 scenario.close();
             }
             GoogleSyncEnvironment.resetForTesting();
-            clearFixturePreferences(AUTH_PREFS);
+            if (!preserveAccount) clearFixturePreferences(AUTH_PREFS);
         }
     }
 
@@ -1522,7 +1536,10 @@ public final class GatewayDockerJourneyTest {
         volatile int clearCalls;
 
         FakeGoogle(String sub, String email) {
-            long exp = System.currentTimeMillis() / 1000L + 3600L;
+            this(sub, email, System.currentTimeMillis() / 1000L + 3600L);
+        }
+
+        FakeGoogle(String sub, String email, long exp) {
             token = b64url("{\"alg\":\"RS256\",\"typ\":\"JWT\"}") + "."
                     + b64url("{\"sub\":\"" + sub + "\",\"email\":\"" + email + "\",\"exp\":" + exp + "}") + "." + SIGNATURE;
         }
@@ -1564,6 +1581,9 @@ public final class GatewayDockerJourneyTest {
         int writes;
         volatile int trustedReads;
         volatile boolean unavailableMe;
+        volatile boolean vaultHeaderOffline;
+        volatile CountDownLatch vaultHeaderGate;
+        final CountDownLatch vaultHeaderRequested = new CountDownLatch(1);
         volatile boolean atomicInitialization;
         volatile boolean unavailableInitialize;
         volatile int vaultEpoch=1;
@@ -1596,9 +1616,24 @@ public final class GatewayDockerJourneyTest {
         }
 
         @Override
-        public GoogleSyncSession.Response send(String method, String url, Map<String, String> headers, String body) {
+        public GoogleSyncSession.Response send(String method, String url, Map<String, String> headers, String body) throws IOException {
+            String path = url.replaceFirst("^https://[^/]+", "");
+            if ("GET".equals(method) && "/settings/vault".equals(path)) {
+                if (vaultHeaderOffline) throw new java.net.SocketTimeoutException("vault header fixture is offline");
+                CountDownLatch vaultGate = vaultHeaderGate;
+                if (vaultGate != null) {
+                    vaultHeaderRequested.countDown();
+                    try {
+                        if (!vaultGate.await(60, TimeUnit.SECONDS))
+                            throw new java.net.SocketTimeoutException("vault header fixture gate was not released");
+                    } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                        throw new IOException("vault header fixture was interrupted", interrupted);
+                    }
+                }
+            }
             java.util.concurrent.CountDownLatch gate = meGate;
-            if (gate != null && "GET".equals(method) && "/me".equals(url.replaceFirst("^https://[^/]+", ""))) {
+            if (gate != null && "GET".equals(method) && "/me".equals(path)) {
                 meHeld.incrementAndGet();
                 try { gate.await(10, java.util.concurrent.TimeUnit.MINUTES); }
                 catch (InterruptedException interrupted) { Thread.currentThread().interrupt(); }

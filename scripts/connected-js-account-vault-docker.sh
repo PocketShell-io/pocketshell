@@ -218,11 +218,17 @@ compose() { docker compose -f "$COMPOSE_FILE" -p "$PROJECT" "$@"; }
 controller_pid=""
 reverse_added=0
 fixture_stopped=0
+app_package="com.pocketshell.app.$SUFFIX"
+test_package="$app_package.test"
+app_installed=0
+test_installed=0
 collect_and_stop_fixture() {
   (( fixture_stopped == 0 )) || return 0
   fixture_stopped=1
   if [[ -n "$controller_pid" ]]; then kill "$controller_pid" 2>/dev/null || true; fi
   if (( reverse_added == 1 )); then "$ADB" -s "$ANDROID_SERIAL" reverse --remove "tcp:$TLS_PORT" >/dev/null 2>&1 || true; fi
+  if (( test_installed == 1 )); then "$ADB" -s "$ANDROID_SERIAL" uninstall "$test_package" >/dev/null 2>&1 || true; fi
+  if (( app_installed == 1 )); then "$ADB" -s "$ANDROID_SERIAL" uninstall "$app_package" >/dev/null 2>&1 || true; fi
   for service in gateway agent host tlsfront jwks; do
     compose logs --no-color --no-log-prefix "$service" > "$ARTIFACTS_DIR/host/$service.log" 2>&1 || true
   done
@@ -341,28 +347,64 @@ pocketshell_android_apply_lane_settings "$ADB" "$ANDROID_SERIAL" "$ARTIFACTS_DIR
   || fail "could not apply the lane input settings on $ANDROID_SERIAL"
 pocketshell_run_without_avd_lock_fd "$ADB" -s "$ANDROID_SERIAL" logcat -c >/dev/null 2>&1 || true
 
-RESULTS_DIR="$ROOT_DIR/android/app/build/outputs/androidTest-results/connected/debug"
-rm -rf -- "$RESULTS_DIR"
 printf 'Running packaged gateway journey on %s (API %s), suffix %s, run %s, gateway %s\n' \
   "$ANDROID_SERIAL" "$device_api" "$SUFFIX" "$RUN_ID" "$PINNED_GATEWAY"
 SCREENSHOT_DIR="/sdcard/Pictures/PocketShell/JsVaultJourney/$RUN_ID"
-test_status=0
-pocketshell_run_without_avd_lock_fd "$ROOT_DIR/android/gradlew" -p "$ROOT_DIR/android" :app:connectedDebugAndroidTest \
-  "-PpocketshellAppIdSuffix=$SUFFIX" "-PpocketshellGatewayTestCa=$TLS_DIR/ca.pem" \
-  "-PpocketshellGatewayTestPort=$TLS_PORT" \
-  "-Pandroid.testInstrumentationRunnerArguments.class=$test_class" \
-  "-Pandroid.testInstrumentationRunnerArguments.screenshotRunId=$RUN_ID" \
-  "-Pandroid.testInstrumentationRunnerArguments.gatewayRunId=$RUN_ID" \
-  "-Pandroid.testInstrumentationRunnerArguments.gatewayControllerPort=$controller_port" \
-  "-Pandroid.testInstrumentationRunnerArguments.gatewayBrokerKeyPkcs8Base64=$(cat "$STATE/broker/broker-key.pkcs8.b64")" \
-  "-Pandroid.testInstrumentationRunnerArguments.gatewayBrokerKid=$(cat "$STATE/broker/broker-kid")" \
-  "-Pandroid.testInstrumentationRunnerArguments.vaultFixture=$DEVICE_VAULT_FIXTURE" \
-  --stacktrace --console=plain || test_status=$?
 
-shopt -s nullglob
-junit_files=("$RESULTS_DIR"/TEST-*.xml)
-shopt -u nullglob
-(( ${#junit_files[@]} > 0 )) && cp -a -- "${junit_files[@]}" "$ARTIFACTS_DIR/instrumentation-results/"
+app_apk="$ROOT_DIR/android/app/build/outputs/apk/debug/app-debug.apk"
+test_apk="$ROOT_DIR/android/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk"
+aapt="$(find "$ANDROID_SDK/build-tools" -mindepth 2 -maxdepth 2 -name aapt -type f | sort -V | tail -n 1)"
+[[ -x "$aapt" ]] || fail "aapt is missing under $ANDROID_SDK/build-tools"
+apk_package() { "$aapt" dump badging "$1" | sed -n "s/^package: name='\([^']*\)'.*/\1/p"; }
+[[ "$(apk_package "$app_apk")" == "$app_package" && "$(apk_package "$test_apk")" == "$test_package" ]] \
+  || fail "prepared APKs do not match the isolated $app_package install"
+"$ADB" -s "$ANDROID_SERIAL" install -r "$app_apk" > "$ARTIFACTS_DIR/install-app.log" 2>&1 \
+  || fail "could not install $app_apk; see install-app.log"
+app_installed=1
+"$ADB" -s "$ANDROID_SERIAL" install -r "$test_apk" > "$ARTIFACTS_DIR/install-test.log" 2>&1 \
+  || fail "could not install $test_apk; see install-test.log"
+test_installed=1
+device_now="$("$ADB" -s "$ANDROID_SERIAL" shell date +%s | tr -d '\r')"
+[[ "$device_now" =~ ^[0-9]+$ ]] || fail "could not read the emulator's clock"
+# The fake chooser and backend must accept the same persisted credential in every process.
+fake_google_expiry="$((device_now + 3600))"
+
+run_vault_method() {
+  local method="$1"
+  local log="$ARTIFACTS_DIR/instrumentation-results/$method.log"
+  local phase_args=(
+    -e class "$test_class#$method"
+    -e screenshotRunId "$RUN_ID"
+    -e gatewayRunId "$RUN_ID"
+    -e gatewayControllerPort "$controller_port"
+    -e gatewayBrokerKeyPkcs8Base64 "$(cat "$STATE/broker/broker-key.pkcs8.b64")"
+    -e gatewayBrokerKid "$(cat "$STATE/broker/broker-kid")"
+    -e gatewayFakeGoogleExpiry "$fake_google_expiry"
+    -e vaultFixture "$DEVICE_VAULT_FIXTURE"
+  )
+  local status=0
+  pocketshell_run_without_avd_lock_fd timeout --kill-after=30 360 \
+    "$ADB" -s "$ANDROID_SERIAL" shell am instrument -w -r "${phase_args[@]}" \
+    "$test_package/androidx.test.runner.AndroidJUnitRunner" > "$log" 2>&1 || status=$?
+  cat "$log"
+  "$ROOT_DIR/scripts/instrumentation-log-to-junit-xml.sh" --log "$log" --require-class "$test_class" \
+    --out "$ARTIFACTS_DIR/instrumentation-results/TEST-$method.xml" || return 1
+  (( status == 0 )) && grep -q '^INSTRUMENTATION_CODE: -1' "$log" \
+    && ! grep -q '^INSTRUMENTATION_STATUS_CODE: -[1-4]' "$log"
+}
+
+test_status=0
+run_vault_method typeEveryTimeUnlockDialsTheWebSavedKeyWithNoKeyPicker || test_status=$?
+if (( test_status == 0 )); then
+  run_vault_method seedRememberedVaultForProcessRestart || test_status=$?
+fi
+if (( test_status == 0 )); then
+  "$ADB" -s "$ANDROID_SERIAL" shell am force-stop "$app_package"
+  app_pid="$("$ADB" -s "$ANDROID_SERIAL" shell pidof "$app_package" | tr -d '\r' || true)"
+  [[ -z "$app_pid" ]] || fail "$app_package was still running after force-stop: $app_pid"
+  run_vault_method rememberOnThisDeviceUnlocksSilentlyNextLaunchAndSignOutForgets || test_status=$?
+fi
+
 # Credential-bearing lines never reach the artifact (they would also fail the checker).
 pocketshell_run_without_avd_lock_fd "$ADB" -s "$ANDROID_SERIAL" logcat -d -v threadtime 2>&1 \
   | python3 -c '

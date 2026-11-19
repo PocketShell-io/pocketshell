@@ -245,6 +245,7 @@ LANES = (
         methods=frozenset(
             {
                 "typeEveryTimeUnlockDialsTheWebSavedKeyWithNoKeyPicker",
+                "seedRememberedVaultForProcessRestart",
                 "rememberOnThisDeviceUnlocksSilentlyNextLaunchAndSignOutForgets",
             }
         ),
@@ -328,6 +329,12 @@ def _class_selector_matches(source: str, contract: LaneContract) -> bool:
     selector = "-Pandroid.testInstrumentationRunnerArguments.class="
     group = next((lane for lane in LANES if lane.child_runner == contract.child_runner), contract)
     expected_classes = {name for name, _ in group.classes()}
+    if contract.name == "account-vault":
+        phases = re.findall(r"(?m)^\s*run_vault_method\s+([A-Za-z_]\w*)(?=\s|$)", active)
+        return (set(phases) == set(contract.methods) and len(phases) == len(contract.methods)
+                and bool(re.search(rf"(?m)^\s*test_class=['\"]{re.escape(contract.class_name)}['\"]\s*$", active))
+                and '-e class "$test_class#$method"' in active
+                and bool(re.search(r'\bshell\s+am\s+instrument[^\n;]*\$\{phase_args\[@\]\}', active)))
     if contract.name == "composer-docker" and group.additional_classes:
         phase_pairs = re.findall(r'test_class="([\w.]+)"\s+test_method="([\w]+)"', active)
         expected_pairs = {(name, method) for name, methods in group.classes() for method in methods}
@@ -829,6 +836,13 @@ def _write_fixture(
             selector += './gradlew "-Pandroid.testInstrumentationRunnerArguments.class=com.pocketshell.app.smoke.$journey_class#$method"\n'
         for name, class_methods in lane.classes():
             selector += "".join('run_cycle cycle ' + method + ' "$RUN_ID" none\n' for method in sorted(class_methods))
+    elif lane.name == "account-vault":
+        selected_class = "wrong.Class" if wrong_selector else lane.class_name
+        selector = f"test_class='{selected_class}'\n"
+        selector += 'phase_args=(-e class "$test_class#$method")\n'
+        selector += '"$ADB" shell am instrument -w -r "${phase_args[@]}" "$INSTRUMENTATION_COMPONENT"\n'
+        selected_methods = [method for method in methods if not omit_selector or method != "seedRememberedVaultForProcessRestart"]
+        selector += "\n".join(f"run_vault_method {method}" for method in selected_methods) + "\n"
     elif lane.name in {"composer-docker", "durable-storage"}:
         selected_class = "wrong.Class" if wrong_selector else lane.class_name
         selector = f"test_class='{selected_class}'\n"
@@ -1003,6 +1017,10 @@ def self_test() -> int:
         _write_fixture(root, composer, omit_selector=True)
         probe("missing Android instrumentation class selector fails", check(root, "js") != 0, True)
         _write_fixture(root, composer)
+        vault = next(lane for lane in LANES if lane.name == "account-vault")
+        _write_fixture(root, vault, omit_selector=True)
+        probe("missing account-vault cold restart phase fails", check(root, "js") != 0, True)
+        _write_fixture(root, vault)
         _write_fixture(root, smoke, omit_checker_method=True)
         probe("missing method in the exact result guard fails", check(root, "js") != 0, True)
         _write_fixture(root, smoke)

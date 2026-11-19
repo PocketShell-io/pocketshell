@@ -164,11 +164,11 @@ records for its normal server list. Google sign-in is followed by one vault
 unlock. Legacy settings host rows and local phone keys do not establish trust
 for this list. Explicit settings sync remains available separately.
 
-The native `GoogleSync.accountId` verifies `/me` through the backend authorizer
-and returns only `google:<sub>`. The Google bearer stays native. Native
-`GET /settings` returns bounded slot metadata to core's vault transport; the
-vault decrypts and validates the `th-*` descriptor, managed key binding, current
-vault ID/epoch and revision before a row can connect.
+Native `GoogleSync.accountId` returns the stored credential's `google:<sub>`.
+`GoogleSync.verifyAccount` checks `/me` in the background. The Google bearer
+stays native. Native `GET /settings` returns bounded slot metadata to core's
+vault transport. The vault decrypts and validates the `th-*` descriptor, managed
+key binding, current vault ID/epoch and revision before a row can connect.
 
 Android persists descriptor revision floors in Keystore-encrypted preferences,
 scoped by account, vault and target slot and excluded from backup/transfer.
@@ -177,6 +177,20 @@ of local phone key UUIDs. Each held native key is bound to its account, vault,
 epoch and key ID. Explicit dials revalidate the descriptor; native reconnects
 also refuse pairings older than an observed protected revision floor. Locked,
 missing, revoked, tampered or mismatched trust never falls back to a phone key.
+
+A saved server stays visible when its vault is locked. Tapping it opens the
+unlock prompt for that server. Unlocking continues the same connection attempt.
+
+Remember on this device seals the vault key to Android Keystore storage.
+Returning to the app keeps the in-memory vault open while the account is valid.
+After process death, PocketShell uses the sealed key to unlock silently once the
+sync service confirms the current vault. A cold launch without network access
+keeps the keys locked until PocketShell can check the vault. Signing out locks
+the vault and deletes the saved key. Account loss clears in-memory keys and
+requires sign-in before PocketShell can use the saved key again. A vault reset
+or a rejected saved passphrase proof requires unlocking with the current
+passphrase. Lock clears held keys. Forget on this device deletes the sealed
+record.
 
 After connection, core resumes an existing workspace or opens a home shell.
 Android resolves the directory through SFTP and creates the real session through
