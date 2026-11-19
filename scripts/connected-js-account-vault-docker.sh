@@ -130,6 +130,9 @@ pocketshell_acquire_gradle_output_lock "$ROOT_DIR/android" '' "connected-js-acco
 LANE_BUILD="$ROOT_DIR/android/app/build/account-vault-gateway-lane"
 BIN_DIR="$LANE_BUILD/bin"
 TLS_DIR="$LANE_BUILD/tls"
+APK_DIR="$LANE_BUILD/apks"
+app_apk="$APK_DIR/app-debug.apk"
+test_apk="$APK_DIR/app-debug-androidTest.apk"
 COMPOSE_FILE="$ROOT_DIR/tests/docker/gateway/docker-compose.yml"
 PINNED_GATEWAY="$(tr -d '[:space:]' < "$ROOT_DIR/tests/docker/gateway/gateway-source.pin")"
 [[ "$PINNED_GATEWAY" =~ ^[0-9a-f]{40}$ ]] || fail 'tests/docker/gateway/gateway-source.pin must hold one commit SHA'
@@ -146,7 +149,9 @@ if [[ "$TEST_ONLY" != 1 ]]; then
     [[ -z "$(git -C "$GATEWAY_SRC" status --porcelain --untracked-files=no)" ]] || fail "gateway source has local changes: $GATEWAY_SRC"
   fi
   command -v "$GO" >/dev/null 2>&1 || fail "the Go toolchain is required to build the gateway ($GO)"
-  mkdir -p "$BIN_DIR"
+  mkdir -p "$BIN_DIR" "$APK_DIR"
+  # A failed prepare must never leave the previous pair usable with a new CA.
+  : > "$BIN_DIR/tls-port"
   printf 'Building pocketshell-gateway %s (gateway, pocketshell-link) and the lane fixture tool\n' "$PINNED_GATEWAY"
   (cd "$GATEWAY_SRC" && GOOS=linux GOARCH=amd64 CGO_ENABLED=0 "$GO" build -trimpath -o "$BIN_DIR/gateway" .)
   (cd "$GATEWAY_SRC" && GOOS=linux GOARCH=amd64 CGO_ENABLED=0 "$GO" build -trimpath -o "$BIN_DIR/pocketshell-link" ./cmd/pocketshell-link)
@@ -165,6 +170,9 @@ if [[ "$TEST_ONLY" != 1 ]]; then
   build_config="$ROOT_DIR/android/app/build/generated/source/buildConfig/debug/com/pocketshell/app/BuildConfig.java"
   grep -Fq "GATEWAY_LANE_TEST_ORIGIN = \"wss://localhost:$TLS_PORT\";" "$build_config" \
     || fail "the gwlane build does not allow exactly wss://localhost:$TLS_PORT ($build_config)"
+  # Later Gradle invocations in the same job overwrite the shared APK paths.
+  cp "$ROOT_DIR/android/app/build/outputs/apk/debug/app-debug.apk" "$app_apk"
+  cp "$ROOT_DIR/android/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk" "$test_apk"
   printf '%s\n' "$TLS_PORT" > "$BIN_DIR/tls-port"
 fi
 
@@ -183,6 +191,17 @@ done
 for needed in ca.pem server.pem server.key; do
   [[ -s "$TLS_DIR/$needed" ]] || fail "prepared test-CA file missing: $TLS_DIR/$needed"
 done
+for needed in "$app_apk" "$test_apk"; do
+  [[ -s "$needed" ]] || fail "prepared account vault APK missing: $needed (run --prepare-only first)"
+done
+
+app_package="com.pocketshell.app.$SUFFIX"
+test_package="$app_package.test"
+aapt="$(find "$ANDROID_SDK/build-tools" -mindepth 2 -maxdepth 2 -name aapt -type f | sort -V | tail -n 1)"
+[[ -x "$aapt" ]] || fail "aapt is missing under $ANDROID_SDK/build-tools"
+apk_package() { "$aapt" dump badging "$1" | sed -n "s/^package: name='\([^']*\)'.*/\1/p"; }
+[[ "$(apk_package "$app_apk")" == "$app_package" && "$(apk_package "$test_apk")" == "$test_package" ]] \
+  || fail "prepared APKs do not match the isolated $app_package install"
 
 if [[ -z "${ANDROID_SERIAL:-}" ]]; then
   mapfile -t online_emulators < <("$ADB" devices | awk '$1 ~ /^emulator-/ && $2 == "device" { print $1 }')
@@ -218,8 +237,6 @@ compose() { docker compose -f "$COMPOSE_FILE" -p "$PROJECT" "$@"; }
 controller_pid=""
 reverse_added=0
 fixture_stopped=0
-app_package="com.pocketshell.app.$SUFFIX"
-test_package="$app_package.test"
 app_installed=0
 test_installed=0
 collect_and_stop_fixture() {
@@ -241,7 +258,7 @@ trap collect_and_stop_fixture EXIT INT TERM
 # The host: the agents fixture image (sshd, the pinned CLI and aplexer),
 # version-matched to the APK so the app reaches its sessions.
 pocketshell_test_hygiene_init
-export_agents_fixture_version "$ROOT_DIR/android/app/build/outputs/apk/debug/app-debug.apk"
+export_agents_fixture_version "$app_apk"
 docker image inspect pocketshell-test:agents >/dev/null 2>&1 \
   || docker compose -f "$ROOT_DIR/tests/docker/docker-compose.yml" build agents
 # All gateway fixture services (jwks, gateway, tlsfront, agent, host) run on
@@ -351,13 +368,6 @@ printf 'Running packaged gateway journey on %s (API %s), suffix %s, run %s, gate
   "$ANDROID_SERIAL" "$device_api" "$SUFFIX" "$RUN_ID" "$PINNED_GATEWAY"
 SCREENSHOT_DIR="/sdcard/Pictures/PocketShell/JsVaultJourney/$RUN_ID"
 
-app_apk="$ROOT_DIR/android/app/build/outputs/apk/debug/app-debug.apk"
-test_apk="$ROOT_DIR/android/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk"
-aapt="$(find "$ANDROID_SDK/build-tools" -mindepth 2 -maxdepth 2 -name aapt -type f | sort -V | tail -n 1)"
-[[ -x "$aapt" ]] || fail "aapt is missing under $ANDROID_SDK/build-tools"
-apk_package() { "$aapt" dump badging "$1" | sed -n "s/^package: name='\([^']*\)'.*/\1/p"; }
-[[ "$(apk_package "$app_apk")" == "$app_package" && "$(apk_package "$test_apk")" == "$test_package" ]] \
-  || fail "prepared APKs do not match the isolated $app_package install"
 "$ADB" -s "$ANDROID_SERIAL" install -r "$app_apk" > "$ARTIFACTS_DIR/install-app.log" 2>&1 \
   || fail "could not install $app_apk; see install-app.log"
 app_installed=1
