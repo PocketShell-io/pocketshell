@@ -693,9 +693,22 @@ async function selectGrace(ms) {
   const opened = await page.eval(`(() => { const b = [...document.querySelectorAll('button[title="Settings"]')].find((n) => n.offsetParent !== null);
     if (!b) return false; b.click(); return true; })()`);
   if (!opened) {
-    await page.eval(`(() => { const more = [...document.querySelectorAll('button[aria-label=More]')].find((n) => n.offsetParent);
-      if (!more) throw new Error('no visible Settings gear or overflow menu'); more.click(); return 'ok'; })()`);
-    await page.waitFor("!!document.querySelector('[data-testid=host-overflow-settings]')", 'the overflow menu Settings row', 10_000);
+    // Try each visible ⋮ in turn: the shell can render more than one "More"
+    // (compact app bar, session tree), and only the live one opens the sheet.
+    const count = await page.eval("[...document.querySelectorAll('button[aria-label=More]')].filter((n) => n.offsetParent).length");
+    const row = "!!document.querySelector('[data-testid=host-overflow-settings]')";
+    let found = false;
+    for (let i = 0; i < count && !found; i += 1) {
+      await page.eval(`(() => { const more = [...document.querySelectorAll('button[aria-label=More]')].filter((n) => n.offsetParent)[${i}];
+        more.scrollIntoView({ block: 'center' }); more.click(); return 'ok'; })()`);
+      const until = Date.now() + 4_000;
+      while (!(found = await page.eval(row)) && Date.now() < until) await sleep(250);
+    }
+    if (!found) {
+      const dom = await page.eval(`JSON.stringify({ mores: [...document.querySelectorAll('button[aria-label=More]')].map((n) => ({ visible: !!n.offsetParent, rect: n.getBoundingClientRect().toJSON(), parent: n.parentElement?.className })),
+        testids: [...document.querySelectorAll('[data-testid^=host-overflow], [role=dialog], .popup-menu, .sheet')].map((n) => n.getAttribute('data-testid') || n.className) })`);
+      throw new Error(`the overflow menu Settings row never appeared (${count} visible More buttons): ${dom}`);
+    }
     await page.eval("document.querySelector('[data-testid=host-overflow-settings]').click(); 'ok'");
   }
   // The Connections group lives on one of the Settings tabs.
