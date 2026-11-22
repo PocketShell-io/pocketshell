@@ -400,6 +400,10 @@ jobs:
             --results-dir "android/app/build/outputs/js-account-sync/js3020-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/instrumentation-results" \
             --screenshots-dir "android/app/build/outputs/js-account-sync/js3020-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/device-screenshots" \
             --logcat "android/app/build/outputs/js-account-sync/js3020-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/logcat.txt"
+          run_check "Account picker" scripts/check-js-account-picker-results.py \
+            --results-dir "android/app/build/outputs/js-account-picker/js3063-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/instrumentation-results" \
+            --screenshots-dir "android/app/build/outputs/js-account-picker/js3063-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/device-screenshots" \
+            --logcat "android/app/build/outputs/js-account-picker/js3063-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/logcat.txt"
           run_check Gateway scripts/check-js-gateway-results.py \
             --results-dir "android/app/build/outputs/js-gateway/gw3086-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/instrumentation-results" \
             --host-dir "android/app/build/outputs/js-gateway/gw3086-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/host"
@@ -423,9 +427,20 @@ jobs:
           composer_runs=("$composer_root/$composer_prefix"*)
           if (( ${#composer_runs[@]} == 1 )); then
             composer_run="${composer_runs[0]}"
+            # The resume phase only runs after a passing prepare phase. When prepare fails, its own
+            # check already names the journey failure; checking resume would only add a misleading
+            # "results directory is missing" BLOCK, so it is reported as not run instead.
             for phase in production no-speech prepare resume; do
+              if [[ "$phase" == resume && ! -d "$composer_run/phase-resume" && "${composer_prepare_failed:-0}" == 1 ]]; then
+                printf 'NOT RUN: Composer resume (the prepare phase failed; its BLOCK above is the cause)\n' >&2
+                continue
+              fi
+              failed_before_phase=$failed
+              failed=0
               run_check "Composer $phase" scripts/check-js-composer-journey-results.py \
                 --results-dir "$composer_run/phase-$phase" --phase "$phase"
+              if [[ "$phase" == prepare && "$failed" == 1 ]]; then composer_prepare_failed=1; fi
+              failed=$(( failed_before_phase | failed ))
             done
           else
             printf 'FAIL: expected exactly one Composer report directory for prefix %s; found %s\n' \
@@ -522,6 +537,7 @@ jobs:
             android/app/build/outputs/js-voice-settings/**
             android/app/build/outputs/js-forward-service/**
             android/app/build/outputs/js-account-sync/**
+            android/app/build/outputs/js-account-picker/**
             android/app/build/outputs/js-key-vault/**
             android/app/build/outputs/js-key-vault-upgrade/**
             android/app/build/outputs/js-durable-storage/**

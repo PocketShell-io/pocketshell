@@ -92,7 +92,7 @@ public final class JsVisibility {
     /**
      * #3154: before tapping app-bar / navigation, dismiss the transient modal the way a user does. The composer is a
      * modal bottom sheet whose scrim covers the whole app bar (and a sheet persisted open comes back after a restart),
-     * so a navigation tap under it hits the scrim. Taps the scrim (the guarded click requires it to be topmost), then
+     * so a navigation tap under it hits the scrim. Taps the scrim above the sheet (the point must hit the scrim), then
      * waits for the sheet to go. The draft persists, so reopening the composer restores it. No-op when no sheet is open.
      * Every journey's click helper calls this, so no nav call site needs its own dismissal.
      */
@@ -102,7 +102,14 @@ public final class JsVisibility {
         android.util.Log.i("PocketshellImeJourney", "NAV_AUTO_DISMISS composer sheet open before navigating to " + selector
                 + "; tapping its scrim (composer=" + eval.eval("(()=>{const c=document.querySelector('[data-testid=prompt-composer]');"
                 + "return c?JSON.stringify({target:c.dataset.targetKey||null,draftLength:(document.querySelector('#prompt-draft')||{value:''}).value.length}):'none';})()") + ")");
-        expectClicked(stripQuotes(eval.eval(click("document.querySelector('[data-testid=prompt-composer-scrim]')"))));
+        String dismiss = clickComposerScrimAboveSheet();
+        long tapDeadline = System.currentTimeMillis() + 8_000;
+        while (true) {
+            String last = stripQuotes(eval.eval(dismiss));
+            if (last != null && !last.startsWith("FAILED: ")) break;
+            if (System.currentTimeMillis() > tapDeadline) throw new AssertionError(last);
+            Thread.sleep(250);
+        }
         long deadline = System.currentTimeMillis() + 10_000;
         while (System.currentTimeMillis() < deadline) {
             if ("false".equals(eval.eval("!!document.querySelector('[data-testid=prompt-composer-scrim]')"))) return;
@@ -110,6 +117,28 @@ public final class JsVisibility {
         }
         throw new AssertionError("the composer sheet did not close after its scrim was tapped, so navigation to "
                 + selector + " is still covered");
+    }
+
+    /**
+     * JS expression (an IIFE) that clicks the composer scrim where a user taps it: in the strip ABOVE the sheet. The
+     * scrim is a full-viewport layer under the sheet, so its geometric centre is covered by the sheet whenever the sheet
+     * is taller than half the viewport (the keyboard shrinks the viewport, and the sheet may reach 86dvh); a centre
+     * guard then fails "covered, not tappable" on the sheet handle (run 45009416259). The sheet's max-height leaves at
+     * least 14dvh of scrim above it, so the midpoint of that strip is the scrim. Returns 'clicked', 'absent' (sheet
+     * already gone) or 'FAILED: <reason>' with geometry; clicks nothing on failure, so a retry cannot double-click.
+     */
+    static String clickComposerScrimAboveSheet() {
+        return "(()=>{try{const s=document.querySelector('[data-testid=prompt-composer-scrim]');if(!s)return 'absent';"
+                + "const p=document.querySelector('[data-testid=prompt-composer]');"
+                + "const r=s.getBoundingClientRect();"
+                + "if(getComputedStyle(s).display==='none'||r.width<=0||r.height<=0)return 'FAILED: composer scrim hidden (0x0 or display:none)';"
+                + "const top=Math.min(r.bottom,p?p.getBoundingClientRect().top:r.bottom);"
+                + "const x=r.left+r.width/2,y=Math.max(r.top,0)+(top-Math.max(r.top,0))/2;"
+                + "const h=document.elementFromPoint(x,y);"
+                + "if(top-Math.max(r.top,0)<2||!h||!s.contains(h))return 'FAILED: composer scrim not tappable above the sheet (top element: '"
+                + "+(h?h.tagName+'.'+h.className:'none')+'; point='+Math.round(x)+','+Math.round(y)+'; sheetTop='+Math.round(top)"
+                + "+'; scrim='+[r.left,r.top,r.width,r.height].map(Math.round)+'; viewport='+innerWidth+'x'+innerHeight+')';"
+                + "s.click();return 'clicked';}catch(e){return 'FAILED: '+e.message;}})()";
     }
 
     /**

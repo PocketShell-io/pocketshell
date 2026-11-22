@@ -581,9 +581,23 @@ public final class SharedAccountPickerJourneyTest {
         }, offlineBackend);
         launchSharedWithLocalHosts(new JSONArray().put(savedHost("phone-box", "192.168.1.9", 2200, "me")));
         awaitJsTrue("!!document.querySelector('[data-testid=server-google-login]:not([disabled])')");
+        // Record whether the physical tap reached the button and whether it was enabled then, so a sign-in that
+        // never completes names its cause (tap lost, tap on a busy button, or a chooser that never returned).
+        evalRaw("(() => {window.__signInTap3189 = [];document.addEventListener('click', (e) => {"
+                + "const b = e.target.closest?.('[data-testid=server-google-login]');"
+                + "window.__signInTap3189.push(b ? (b.disabled ? 'disabled-button' : 'button') : String(e.target?.tagName) + '.' + String(e.target?.className));"
+                + "}, true);return 'recording';})()");
         tapDomCenter("[data-testid=server-google-login]");
         // Signed in: the chip may already read "Not synced · retry" when the sync is failing.
-        awaitJsTrue("!!document.querySelector('.picker .header-actions .account-action.signed-in')");
+        try {
+            awaitJsTrue("!!document.querySelector('.picker .header-actions .account-action.signed-in')");
+        } catch (AssertionError notSignedIn) {
+            throw new AssertionError("sign-in did not complete: clicks=" + evalRaw("JSON.stringify(window.__signInTap3189 ?? null)")
+                    + " chooserLaunches=" + offlineGoogle.launches.get() + " syncRequests=" + offlineBackend.requests.get()
+                    + " button=" + evalRaw("JSON.stringify((() => {const b = document.querySelector('[data-testid=server-google-login]');"
+                    + "return b ? {disabled: b.disabled, rect: [b.getBoundingClientRect().top, b.getBoundingClientRect().height]} : null;})())")
+                    + "; " + notSignedIn.getMessage(), notSignedIn);
+        }
         assertEquals("one account chooser, from the tap", 1, offlineGoogle.launches.get());
         offlineGoogle.launches.set(0);
         JSONArray servers = new JSONArray();
