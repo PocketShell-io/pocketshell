@@ -143,24 +143,33 @@ if (( ${#composer_runs[@]} != 1 )); then
   composer_junit_copy_status=1
 else
   composer_run="${composer_runs[0]}"
-  for phase in production no-speech prepare resume; do
-    if [[ ! -s "$composer_run/phase-$phase/TEST-composer.xml" ]]; then
-      printf 'FAIL: packaged composer %s phase has no same-run JUnit report\n' "$phase" >&2
-      composer_junit_copy_status=1
-    fi
-  done
 fi
 shopt -u nullglob
 
+# Check each phase that left a JUnit report, so a failing journey is named by its
+# own BLOCK. The resume phase only runs after a passing prepare phase: when
+# prepare failed, a missing resume report is a consequence, reported as not run.
 composer_junit_status=0
-if (( composer_junit_copy_status != 0 )); then
-  composer_junit_status=1
-else
+composer_prepare_failed=0
+if [[ -n "${composer_run:-}" ]]; then
   for phase in production no-speech prepare resume; do
+    if [[ ! -s "$composer_run/phase-$phase/TEST-composer.xml" ]]; then
+      if [[ "$phase" == resume && "$composer_prepare_failed" == 1 ]]; then
+        printf 'NOT RUN: packaged composer resume phase (the prepare phase failed; its BLOCK above is the cause)\n' >&2
+        continue
+      fi
+      printf 'FAIL: packaged composer %s phase has no same-run JUnit report\n' "$phase" >&2
+      composer_junit_copy_status=1
+      if [[ "$phase" == prepare ]]; then composer_prepare_failed=1; fi
+      continue
+    fi
     if ! scripts/check-js-composer-journey-results.py --results-dir "$composer_run/phase-$phase" --phase "$phase"; then
       composer_junit_status=1
+      if [[ "$phase" == prepare ]]; then composer_prepare_failed=1; fi
     fi
   done
+else
+  composer_junit_status=1
 fi
 
 fi
