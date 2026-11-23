@@ -308,20 +308,20 @@ public class J30FastKeyDockJourney extends SharedAppDockerJourneyTest {
     private void awaitBackgroundAndImeHidden(String when) {
         long deadline = SystemClock.uptimeMillis() + 15_000;
         boolean[] focused = new boolean[1];
-        boolean insetsVisible = true;
         boolean inputShown = true;
         while (SystemClock.uptimeMillis() < deadline) {
             scenario.onActivity(activity -> focused[0] = activity.hasWindowFocus());
-            insetsVisible = imeInsetsVisible();
+            // Do not check imeInsetsVisible() while MainActivity is stopped in CREATED:
+            // DecorView's cached RootWindowInsets can stay stale until resume, whereas
+            // mInputShown=false in dumpsys input_method is the authoritative system-wide signal.
             inputShown = ScriptedIme.shell("dumpsys input_method").contains("mInputShown=true");
-            if (!focused[0] && !insetsVisible && !inputShown) {
+            if (!focused[0] && !inputShown) {
                 return;
             }
             SystemClock.sleep(100);
         }
         throw new AssertionError("the app window and IME did not settle in background after " + when
                 + " (hasWindowFocus=" + focused[0]
-                + ", imeInsetsVisible=" + insetsVisible
                 + ", mInputShown=" + inputShown + ")");
     }
 
