@@ -267,6 +267,7 @@ public class J30FastKeyDockJourney extends SharedAppDockerJourneyTest {
             }
             assertTerminalKeepsFocus("before background/resume cycle " + cycle);
             scenario.moveToState(Lifecycle.State.CREATED);
+            awaitBackgroundAndImeHidden("background cycle " + cycle);
             scenario.moveToState(Lifecycle.State.RESUMED);
             awaitWindowFocus("resume cycle " + cycle);
             long watchUntil = SystemClock.uptimeMillis() + RESUME_IME_WATCH_MS;
@@ -302,6 +303,26 @@ public class J30FastKeyDockJourney extends SharedAppDockerJourneyTest {
             visible[0] = insets != null && insets.isVisible(WindowInsets.Type.ime());
         });
         return visible[0];
+    }
+
+    private void awaitBackgroundAndImeHidden(String when) {
+        long deadline = SystemClock.uptimeMillis() + 15_000;
+        boolean[] focused = new boolean[1];
+        boolean insetsVisible = true;
+        boolean inputShown = true;
+        while (SystemClock.uptimeMillis() < deadline) {
+            scenario.onActivity(activity -> focused[0] = activity.hasWindowFocus());
+            insetsVisible = imeInsetsVisible();
+            inputShown = ScriptedIme.shell("dumpsys input_method").contains("mInputShown=true");
+            if (!focused[0] && !insetsVisible && !inputShown) {
+                return;
+            }
+            SystemClock.sleep(100);
+        }
+        throw new AssertionError("the app window and IME did not settle in background after " + when
+                + " (hasWindowFocus=" + focused[0]
+                + ", imeInsetsVisible=" + insetsVisible
+                + ", mInputShown=" + inputShown + ")");
     }
 
     private void awaitWindowFocus(String when) {
