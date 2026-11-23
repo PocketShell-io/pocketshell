@@ -299,10 +299,13 @@ public abstract class ComposerJourneySupport {
         setComposerDraft(unicodeCommand);
         showKeyboardAndCapture(artifactRunId);
         assertTrue("Send must be activated while the Android IME is visible", isImeVisible());
+        // Every fit from here on is kept, so the grids Send passes through are on record.
+        evalString("window.__ps2884CaptureResizeFitEvidence = true; window.__ps2884ResizeFitEvents = []; 'post-send fits recorded'");
         long sendTouchUpUptimeMs = tapComposerAction(".composer-shared-controls .send");
         long sendToVisibleOutputLatencyMs = waitForTerminalMarkerOrCaptureWindow(sentMarker, sendTouchUpUptimeMs);
         awaitDeliveredAndCleared();
-        savePostSendArtifacts(artifactRunId, sentMarker, unicodeCommand, sendToVisibleOutputLatencyMs);
+        JSONObject postSendSettle = PostSendTerminalSettle.await(this::evalRaw, this::isImeVisible);
+        savePostSendArtifacts(artifactRunId, sentMarker, unicodeCommand, sendToVisibleOutputLatencyMs, postSendSettle);
 
         // Exercise the inline composer's handoff only after the untouched
         // post-Send viewport and screenshot have passed their visibility oracle.
@@ -2566,7 +2569,7 @@ public abstract class ComposerJourneySupport {
     }
 
     private void savePostSendArtifacts(String runId, String expectedMarker, String submittedCommand,
-            long sendToVisibleOutputLatencyMs) throws Exception {
+            long sendToVisibleOutputLatencyMs, JSONObject settle) throws Exception {
         String report = evalString("(() => {const viewport=document.querySelector('.terminal-viewport');"
                 + "const rect=viewport?.getBoundingClientRect();"
                 + "const appBarRect=document.querySelector('.app-bar')?.getBoundingClientRect();"
@@ -2638,6 +2641,8 @@ public abstract class ComposerJourneySupport {
                 readTerminalGridFidelity(POST_SEND_GRID_PROBE_START, expectedMarker));
         measured.put("keyboardUpGridCols", keyboardUpGridFidelity == null ? JSONObject.NULL
                 : keyboardUpGridFidelity.opt("cols"));
+        // How long the terminal took to settle, with the state and the fits that show why.
+        measured.put("postSendSettle", settle);
         byte[] reportBytes = measured.toString().getBytes(StandardCharsets.UTF_8);
         awaitWebViewVisualState();
         AtomicReference<byte[]> screenshotArtifact = new AtomicReference<>();
