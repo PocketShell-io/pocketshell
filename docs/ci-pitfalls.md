@@ -756,3 +756,48 @@ Three things to carry forward:
 - **The same shape is a latent bug anywhere `set -o pipefail` is on**, which in this repo
   is nearly everywhere. Any early-exiting reader behind a pipe — `| head`, `| grep -m1`,
   `| sed -n 1p` — races identically once the writer outgrows one pipe buffer.
+
+## A fixture's tolerated refusals were the whole failure (gateway lane clock)
+
+Main run 45261502924 (2026-11-23) failed the `vaults` lane at
+`GatewayDockerJourneyTest#refusesPinMismatch…` with "a pin mismatch names the
+authenticated trust refusal: Your sign-in expired — sign in again and retry." The app's
+mapping was right: the gateway answered 4401. The gateway's own log says why — that dial's
+token was refused as `iat missing or in the future`, not for the wrong key, so the dial
+never reached sshd and there was no pin to mismatch.
+
+Three facts produce it:
+
+1. The gateway checks `iat`/`nbf` against its own clock with **no leeway** (pinned source,
+   `internal/routingauth`: the documented 30 s default is never applied — the wiring passes
+   no `Leeway` and the constructor only clamps a negative one).
+2. The real broker stamps `iat` from the server-side clock it shares with the gateway. The
+   lane's fake broker ran on the emulator and stamped from **its** clock.
+3. An emulator's offset from its host is nobody's decision: at least 0.12-0.16 s **ahead**
+   through the failing run, 0.05 s behind on 11-19. A token minted inside the lead of a
+   second boundary carries an `iat` one second in the gateway's future and is refused on
+   first use — by whichever dial happens to need a fresh token then.
+
+To carry forward:
+
+- **Read the dependency's log, not only the assertion.** The failing run's gateway log held
+  **three** `iat in the future` refusals; two had landed on the device-list path, where no
+  assertion looks. A tolerated refusal in a fixture's log is the leading indicator of the
+  failure that follows. `scripts/check-js-gateway-results.py` now fails on any token
+  refusal other than the journey's one deliberate wrong key.
+- **"The same test fails again" is not the same failure.** The first hit (run 43722666042)
+  was the hardware-Enter receipt in three other methods of the class; its fix could not
+  hold against a clock. Compare the two runs' evidence before calling something a
+  recurrence.
+- **Make the non-happy state certain, not incidental.** Both gateway lanes now run with the
+  phone's clock set 3 s ahead of the gateway's on purpose
+  (`scripts/lib/gateway-phone-clock.sh`), and the fake broker stamps every token from the
+  gateway host's clock (controller op `clock`). A phone-clock broker then has every fresh
+  token it mints refused, on every run, and the result checker fails the lane on it, instead
+  of one dial failing on some runs. The checker is the tripwire, not the journey's own
+  assertions: a dial that reuses a token minted more than 3 s earlier finds it no longer in
+  the future and passes. See
+  [gateway-android-transport.md](gateway-android-transport.md#emulator-lane-gateway-docker).
+- The same arithmetic exists in production, server-side: a broker clock that leads the
+  gateway's by more than a dial's latency refuses a freshly minted token inside a second
+  boundary. That belongs to the gateway repository, not to this lane.

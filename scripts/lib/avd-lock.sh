@@ -346,6 +346,11 @@ pocketshell_release_all() {
   if declare -F pocketshell_android_restore_settings >/dev/null 2>&1; then
     pocketshell_android_restore_settings
   fi
+  # Hub intake f93181cd: put back the clock a gateway lane set ahead of the
+  # host's, while this process still owns the emulator.
+  if declare -F pocketshell_gateway_phone_clock_restore >/dev/null 2>&1; then
+    pocketshell_gateway_phone_clock_restore
+  fi
   pocketshell_release_pool_serial
   if declare -F pocketshell_release_agents_port >/dev/null 2>&1; then
     pocketshell_release_agents_port

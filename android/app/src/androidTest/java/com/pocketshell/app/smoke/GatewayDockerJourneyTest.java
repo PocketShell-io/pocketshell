@@ -1567,7 +1567,10 @@ public final class GatewayDockerJourneyTest {
      * {@code POST /gateway/token}, which signs a broker-shaped routing token
      * (RS256, iss/aud/scope/sub/email, 4 minutes) with the run's broker key
      * — or, while {@link #signWithWrongKey}, with a key the gateway does not
-     * know (the 4401 step).
+     * know (the 4401 step). The token's time claims come from the GATEWAY
+     * HOST's clock ({@link #gatewayHostClockMs()}), never this device's:
+     * the gateway checks iat/nbf against its own clock with no leeway, the
+     * real broker shares that clock, and an emulator's is its own.
      */
     final class FakeSyncBackend implements GoogleSyncSession.Transport {
         final List<String> mints = Collections.synchronizedList(new ArrayList<>());
@@ -1702,13 +1705,17 @@ public final class GatewayDockerJourneyTest {
                 }
                 if ("POST".equals(method) && "/gateway/token".equals(path)) {
                     if (body != null && !body.isEmpty()) return new GoogleSyncSession.Response(400, "{\"error\":\"bad_request\"}");
-                    long now = System.currentTimeMillis() / 1000L;
+                    long hostTimeMs = gatewayHostClockMs();
+                    long now = hostTimeMs / 1000L;
                     long lifetime = routingLifetimeSeconds;
                     String token = sign(new JSONObject().put("iss", hello.getString("issuer")).put("aud", "pocketshell-gateway")
                             .put("scope", "pocketshell.gateway").put("sub", hello.getString("sub"))
                             .put("email", hello.getString("email")).put("email_verified", true)
                             .put("nbf", now - 1).put("iat", now).put("exp", now + lifetime));
                     mints.add(token);
+                    // Time claims only; a token never reaches a log line.
+                    Log.i(TAG, "GATEWAY_MINT " + new JSONObject().put("iat", now).put("nbf", now - 1).put("exp", now + lifetime)
+                            .put("hostTimeMs", hostTimeMs).put("lifetimeSeconds", lifetime));
                     return new GoogleSyncSession.Response(200, new JSONObject().put("token", token).put("token_type", "Bearer")
                             .put("expires_in", lifetime).put("expires_at", now + lifetime).toString());
                 }
@@ -1729,6 +1736,27 @@ public final class GatewayDockerJourneyTest {
                 return new GoogleSyncSession.Response(404, "{\"message\":\"no route\"}");
             } catch (Exception error) {
                 return new GoogleSyncSession.Response(500, "{\"message\":\"fixture error\"}");
+            }
+        }
+
+        /**
+         * The gateway host's clock, read from the lane controller at this
+         * mint (it runs beside the gateway container on one kernel clock, and
+         * stamps the answer before writing it, so it is never ahead of the
+         * gateway's "now"). The runner keeps this device's clock seconds ahead
+         * of that clock (scripts/lib/gateway-phone-clock.sh): a token stamped
+         * from the device's was refused with 4401 "iat missing or in the
+         * future" whenever an emulator led its host (main run 45261502924
+         * read as "Your sign-in expired" at the pin-mismatch dial). A
+         * controller that cannot answer fails the mint loudly; nothing falls
+         * back to the device's clock.
+         */
+        private long gatewayHostClockMs() throws IOException {
+            try {
+                return controller(new JSONObject().put("op", "clock")).getLong("hostTimeMs");
+            } catch (Exception | AssertionError error) {
+                Log.e(TAG, "GATEWAY_CLOCK_UNAVAILABLE: the lane controller did not answer the gateway clock", error);
+                throw new IOException("the gateway lane controller's clock is unavailable", error);
             }
         }
 

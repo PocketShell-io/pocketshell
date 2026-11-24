@@ -194,6 +194,9 @@ jobs:
       - name: Build Android debug APK
         run: pnpm build:android:debug
 
+      - name: Resolve Android test dependencies with retry (Maven Central 429 guard)
+        run: scripts/ci/prefetch-gradle-deps.sh
+
       - name: Validate packaged Android identity and derived version
         run: |
           scripts/check-js-apk-metadata.py --self-test

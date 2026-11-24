@@ -46,7 +46,12 @@ REQUIRED_METHODS = frozenset(
                 "usesAccountOnlyDirectSshAlongsideTrustedGatewayForRealTerminals",
     }
 )
-SELF_TEST_CASES = 43
+# Hub intake f93181cd: the runner keeps the phone's clock at least this far
+# ahead of the gateway's for the whole journey (scripts/lib/gateway-phone-clock.sh).
+PHONE_CLOCK_MIN_LEAD_MS = 2_000
+# The gateway's broker bound on a routing token's lifetime.
+MAX_TOKEN_LIFETIME_SECONDS = 300
+SELF_TEST_CASES = 49
 
 
 class GateFailure(ValueError):
@@ -243,8 +248,70 @@ def validate_host(host_dir: Path) -> dict:
     sshd_text = sshd_log.read_text(encoding="utf-8", errors="replace")
     if not re.search(r"Received disconnect from 127\.0\.0\.1 port \d+:\d+: Could not verify `ssh-ed25519` host key .*\[preauth\]", sshd_text):
         raise GateFailure("sshd never saw the phone refuse the host key (the pin mismatch) during KEX")
+    validate_clocks(host_dir, gateway_text)
     validate_account_direct(host_dir, entries, authorized)
     return {"authorized": sorted(authorized), "rows": [sizes["size1"], sizes["size2"]]}
+
+
+def validate_clocks(host_dir: Path, gateway_text: str) -> None:
+    """The phone's clock led the gateway's, the fake broker stamped every token from the gateway's,
+    and the gateway refused exactly the one token the journey meant it to refuse.
+
+    The gateway checks a routing token's iat/nbf against its own clock with no
+    leeway. The real broker shares that clock; the lane's fake broker runs on the
+    emulator, whose own clock leads or trails its host by an uncontrolled amount.
+    Main run 45261502924 read "Your sign-in expired" at the pin-mismatch dial
+    because a phone-clock token was refused as "iat missing or in the future" —
+    after another such refusal, on the device-list path, that no assertion saw.
+    So all three are required of the evidence, not only a passing journey.
+    """
+    path = host_dir / "phone-clock.jsonl"
+    if not path.is_file():
+        raise GateFailure("the phone clock evidence is missing: the lane never set the phone's clock ahead of the gateway's")
+    readings = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            row = json.loads(line)
+            readings[row["phase"]] = row
+        except (ValueError, KeyError, TypeError) as exc:
+            raise GateFailure(f"unreadable phone clock reading: {line.strip()[:200]} ({exc})") from exc
+    for phase in ("before", "after"):
+        lead = (readings.get(phase) or {}).get("leadMs")
+        if type(lead) is not int or lead < PHONE_CLOCK_MIN_LEAD_MS:
+            raise GateFailure(
+                f"the phone's clock was not at least {PHONE_CLOCK_MIN_LEAD_MS} ms ahead of the gateway's {phase} the journey: "
+                f"{readings.get(phase)}")
+    # The gateway's own words, for the tunnel and the device list alike. The
+    # journey deliberately offers one token signed by a key the gateway does
+    # not know (the 4401 step); any other refusal means a token the journey
+    # needed was refused, whichever assertion noticed.
+    reasons = re.findall(r"token rejected: (.+)", gateway_text)
+    if len(reasons) != 1 or "signature verify" not in reasons[0]:
+        raise GateFailure(
+            f"the gateway refused {len(reasons)} routing tokens where the journey offers exactly one it cannot verify "
+            f"({sorted(set(reasons))}); a time-claim refusal means the fake broker stamped a token from a clock "
+            "the gateway does not share")
+    # Every mint's time claims against the clock they were stamped from. No
+    # token material is in a receipt.
+    logcat = host_dir.parent / "logcat.txt"
+    text = logcat.read_text(encoding="utf-8", errors="replace") if logcat.is_file() else ""
+    mints = []
+    for line in text.splitlines():
+        if "GATEWAY_MINT " not in line:
+            continue
+        try:
+            mints.append(json.loads(line.split("GATEWAY_MINT ", 1)[1]))
+        except ValueError as exc:
+            raise GateFailure(f"unreadable mint receipt: {line[:200]}") from exc
+    if not mints:
+        raise GateFailure("the fake broker logged no mint receipt: its routing tokens' time claims are unproven")
+    for mint in mints:
+        iat, host_ms, exp = mint.get("iat"), mint.get("hostTimeMs"), mint.get("exp")
+        if (type(iat) is not int or type(host_ms) is not int or type(exp) is not int or host_ms // 1000 != iat
+                or mint.get("nbf") != iat - 1 or not 0 < exp - iat <= MAX_TOKEN_LIFETIME_SECONDS):
+            raise GateFailure(f"a routing token's time was not stamped from the gateway host's clock: {mint}")
 
 
 def validate_account_direct(host_dir: Path, entries: list[dict], authorized: set[str]) -> None:
@@ -377,8 +444,10 @@ def _write_host(directory: Path, **overrides) -> None:
     open_line = "INFO tunnel: client session open device=gwlane-x account=google:s\n"
     (directory / "gateway.log").write_text(
         open_line * overrides.get("sessions", 3)
+        + "broker: routingauth: token rejected: signature verify: crypto/rsa: verification error\n"
         + "INFO tunnel: client token rejected device=gwlane-x err=x\n"
-        + "INFO tunnel: client target device missing device=gwlane-x-missing account=google:s\n")
+        + "INFO tunnel: client target device missing device=gwlane-x-missing account=google:s\n"
+        + (f"broker: routingauth: token rejected: {overrides['token_refusal']}\n" if overrides.get("token_refusal") else ""))
     (directory / "host.log").write_text(
         "Received disconnect from 127.0.0.1 port 45784:9: Could not verify `ssh-ed25519` host key with fingerprint "
         "`13:f9` for `gw-dev.gateway` on port 22 [preauth]\n")
@@ -465,6 +534,18 @@ def _write_host(directory: Path, **overrides) -> None:
             log.write('ACCOUNT_DIRECT_VISIBLE_TERMINAL "ACDIRECT42_r\\n$"\n')
             log.write("ACCOUNT_DIRECT " + json.dumps({"directDials": 1, "gatewayDials": 1, "noLocalCopy": True,
                 "normalTofu": True, "vaultCredential": True, "hostFile": "gwlane-account-direct-r.txt"}) + "\n")
+    # The phone's clock led the gateway's by this much before and after the journey.
+    if not overrides.get("phone_clock_missing"):
+        (directory / "phone-clock.jsonl").write_text("".join(
+            json.dumps({"phase": phase, "leadMs": lead, "deviceMs": 4_000 + lead, "hostBeforeMs": 3_000, "hostAfterMs": 4_000}) + "\n"
+            for phase, lead in (("before", overrides.get("phone_lead_before", 2_950)), ("after", overrides.get("phone_lead_after", 2_990)))
+            if lead is not None))
+    # One mint receipt: iat is the gateway host clock's second. `mint_iat` is what a phone-clock
+    # broker would stamp under that lead.
+    if not overrides.get("mint_missing"):
+        with (directory.parent / "logcat.txt").open("a") as log:
+            iat = overrides.get("mint_iat", 5)
+            log.write("GATEWAY_MINT " + json.dumps({"iat": iat, "nbf": iat - 1, "exp": iat + 240, "hostTimeMs": 5_400, "lifetimeSeconds": 240}) + "\n")
     shots = directory.parent / "screenshots"
     shots.mkdir(exist_ok=True)
     (shots / "me-stalled-terminal.png").write_bytes(b"\x89PNG\r\n\x1a\n" + b"x" * 1024)
@@ -559,6 +640,13 @@ def self_test() -> int:
     expect_fail("an open that waited on /me is refused", host={"me_tap_to_dial": 15_400})
     expect_fail("a terminal only after /me answered is refused", host={"me_terminal_while_held": False})
     expect_fail("the identity-stalled method omitted", results={"methods": [m for m in sorted(REQUIRED_METHODS) if m != "opensATrustedServerToARealTerminalWhileTheIdentityCheckIsStalled"]})
+    expect_fail("phone clock evidence missing", host={"phone_clock_missing": True})
+    expect_fail("phone clock did not lead before the journey", host={"phone_lead_before": 1_999})
+    expect_fail("phone clock did not lead after the journey", host={"phone_lead_after": None})
+    # The refusal main run 45261502924's gateway logged three times.
+    expect_fail("gateway refused a token stamped in the future", host={"token_refusal": "iat missing or in the future"})
+    expect_fail("mint stamped from another clock", host={"mint_iat": 8})
+    expect_fail("mint receipt missing", host={"mint_missing": True})
     if cases != SELF_TEST_CASES:
         raise AssertionError(f"ran {cases} self-test cases, expected {SELF_TEST_CASES}")
     print(f"PASS: gateway result checker self-test ({cases} cases)")
