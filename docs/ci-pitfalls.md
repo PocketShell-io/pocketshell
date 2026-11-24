@@ -792,8 +792,11 @@ To carry forward:
 - **Make the non-happy state certain, not incidental.** Both gateway lanes now run with the
   phone's clock set 3 s ahead of the gateway's on purpose
   (`scripts/lib/gateway-phone-clock.sh`), and the fake broker stamps every token from the
-  gateway host's clock (controller op `clock`). A phone-clock broker then fails every dial
-  on every run, instead of one step on some runs; see
+  gateway host's clock (controller op `clock`). A phone-clock broker then has every fresh
+  token it mints refused, on every run, and the result checker fails the lane on it, instead
+  of one dial failing on some runs. The checker is the tripwire, not the journey's own
+  assertions: a dial that reuses a token minted more than 3 s earlier finds it no longer in
+  the future and passes. See
   [gateway-android-transport.md](gateway-android-transport.md#emulator-lane-gateway-docker).
 - The same arithmetic exists in production, server-side: a broker clock that leads the
   gateway's by more than a dial's latency refuses a freshly minted token inside a second

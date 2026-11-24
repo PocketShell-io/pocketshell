@@ -22,9 +22,14 @@
 #      clock is set GATEWAY_PHONE_CLOCK_LEAD_MS ahead of the host's;
 #   2. the lead is measured right after that and again after the journey into
 #      the lane's evidence, where the result checkers require it of both.
-# A broker that takes token time from the phone again fails every dial on every
-# run, instead of one step on some runs. pocketshell_release_all puts the clock
-# and the setting back while the lane still holds the emulator.
+# A broker that takes token time from the phone again has every fresh token it
+# mints refused, on every run, and the result checkers fail the lane on it,
+# instead of one dial failing on some runs. The checkers are the tripwire, not
+# the journey's own assertions: a dial that reuses a token minted more than the
+# lead ago finds it no longer in the future and passes (a local lane run on
+# 2026-11-24 passed the refusal journey with three `iat` refusals in the
+# gateway's log). pocketshell_release_all puts the clock and the setting back
+# while the lane still holds the emulator.
 #
 # While the lead lasts, the emulator's logcat timestamps run ahead of every
 # host-side log by that much; phone-clock.jsonl in the lane's evidence says by
