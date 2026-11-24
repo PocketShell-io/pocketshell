@@ -105,7 +105,7 @@ jobs:
             android/**/*.gradle*
             android/gradle.properties
             android/gradle/wrapper/gradle-wrapper.*
-            scripts/ci/resolve-all.init.gradle
+            scripts/ci/prefetch-gradle-deps.sh
             pnpm-lock.yaml
 
       - name: Set up Android SDK
@@ -433,7 +433,7 @@ jobs:
             android/**/*.gradle*
             android/gradle.properties
             android/gradle/wrapper/gradle-wrapper.*
-            scripts/ci/resolve-all.init.gradle
+            scripts/ci/prefetch-gradle-deps.sh
             pnpm-lock.yaml
 
       - name: Set up Android SDK
