@@ -216,6 +216,9 @@ jobs:
       - name: Build Android debug APK
         run: pnpm build:android:debug
 
+      - name: Resolve Android test dependencies with retry (Maven Central 429 guard)
+        run: scripts/ci/prefetch-gradle-deps.sh
+
       - name: Prove browser dev-mode shims are absent from the built APK (issue #3022)
         run: python3 scripts/check-no-dev-shims.py --dist dist --apk android/app/build/outputs/apk/debug/app-debug.apk
 

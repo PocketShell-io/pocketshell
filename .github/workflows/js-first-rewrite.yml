@@ -105,6 +105,7 @@ jobs:
             android/**/*.gradle*
             android/gradle.properties
             android/gradle/wrapper/gradle-wrapper.*
+            scripts/ci/prefetch-gradle-deps.sh
             pnpm-lock.yaml
 
       - name: Set up Android SDK
@@ -238,6 +239,9 @@ jobs:
 
       - name: Build Android debug APK
         run: pnpm build:android:debug
+
+      - name: Resolve Android test dependencies with retry (Maven Central 429 guard)
+        run: scripts/ci/prefetch-gradle-deps.sh
 
       - name: Prove browser dev-mode shims are absent from the built APK (issue #3022)
         run: python3 scripts/check-no-dev-shims.py --dist dist --apk android/app/build/outputs/apk/debug/app-debug.apk
@@ -429,6 +433,7 @@ jobs:
             android/**/*.gradle*
             android/gradle.properties
             android/gradle/wrapper/gradle-wrapper.*
+            scripts/ci/prefetch-gradle-deps.sh
             pnpm-lock.yaml
 
       - name: Set up Android SDK
@@ -447,6 +452,9 @@ jobs:
 
       - name: Build Android debug APK
         run: pnpm build:android:debug
+
+      - name: Resolve Android test dependencies with retry (Maven Central 429 guard)
+        run: scripts/ci/prefetch-gradle-deps.sh
 
       - name: Prepare packaged JS smoke APKs
         run: |
