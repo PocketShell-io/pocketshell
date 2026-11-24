@@ -26,6 +26,9 @@ REQUIRED_METHODS = frozenset({
     "rememberOnThisDeviceUnlocksSilentlyNextLaunchAndSignOutForgets",
 })
 HOST_PHASES = ("type", "remember", "pending")
+# Hub intake f93181cd: the runner keeps the phone's clock at least this far
+# ahead of the gateway's for the whole journey (scripts/lib/gateway-phone-clock.sh).
+PHONE_CLOCK_MIN_LEAD_MS = 2_000
 SCREENSHOTS = {
     "vault-unlock-on-launch.png",
     "vault-unlock-wrong-passphrase.png",
@@ -196,6 +199,31 @@ def check_host(host_dir: Path) -> None:
     text = (host_dir / "gateway.log").read_text() if (host_dir / "gateway.log").is_file() else ""
     if text.count(f"client session open device={hello['deviceId']} ") < len(HOST_PHASES):
         raise CheckFailure("gateway did not observe all vault logins")
+    # The gateway checks a routing token's iat/nbf against its own clock with no
+    # leeway, and this journey's fake broker (GatewayDockerJourneyTest's) shares
+    # the emulator, not that clock. The runner keeps the emulator's clock ahead
+    # of the gateway's, so that only passes while the broker stamps tokens from
+    # the gateway host's clock. Nothing in this journey offers a token the
+    # gateway should refuse.
+    clock_path = host_dir / "phone-clock.jsonl"
+    if not clock_path.is_file():
+        raise CheckFailure("the phone clock evidence is missing: the lane never set the phone's clock ahead of the gateway's")
+    readings = {}
+    for line in clock_path.read_text().splitlines():
+        if not line.strip():
+            continue
+        try:
+            row = json.loads(line)
+            readings[row["phase"]] = row
+        except (ValueError, KeyError, TypeError) as exc:
+            raise CheckFailure(f"unreadable phone clock reading: {line.strip()[:200]} ({exc})") from exc
+    for phase in ("before", "after"):
+        lead = (readings.get(phase) or {}).get("leadMs")
+        if type(lead) is not int or lead < PHONE_CLOCK_MIN_LEAD_MS:
+            raise CheckFailure(f"the phone's clock was not at least {PHONE_CLOCK_MIN_LEAD_MS} ms ahead of the gateway's {phase} the journey: {readings.get(phase)}")
+    refused = sorted(set(re.findall(r"token rejected: (.+)", text)))
+    if refused:
+        raise CheckFailure(f"the gateway refused routing tokens the journey needed ({refused}); a time-claim refusal means the fake broker stamped a token from a clock the gateway does not share")
 
 
 def host_self_test() -> None:
@@ -206,6 +234,9 @@ def host_self_test() -> None:
         (root / "host-key.pub").write_text(hello["hostKeyLine"])
         (root / "pinned-key.json").write_text(json.dumps(hello))
         (root / "gateway.log").write_text("client session open device=vault-test account=x\n" * len(HOST_PHASES))
+        clock = root / "phone-clock.jsonl"
+        clock.write_text("".join(json.dumps({"phase": phase, "leadMs": 2990, "deviceMs": 1, "hostBeforeMs": 1, "hostAfterMs": 1}) + "\n"
+                               for phase in ("before", "after")))
         entries = []
         for phase in HOST_PHASES:
             for op, suffix, reply in [("authorize","authorize",{"fingerprint":"SHA256:fixture"}),
@@ -225,6 +256,26 @@ def host_self_test() -> None:
             try: check_host(root)
             except CheckFailure: pass
             else: raise AssertionError(f"corrupted host oracle {field} was accepted")
+        # The clock state the journey only passes through (Hub intake f93181cd).
+        kept = clock.read_text()
+        for label, evidence in (
+            ("missing phone clock evidence", None),
+            ("a phone clock that did not lead", json.dumps({"phase": "before", "leadMs": 1999, "deviceMs": 1, "hostBeforeMs": 1, "hostAfterMs": 1}) + "\n"),
+            ("no reading after the journey", json.dumps({"phase": "before", "leadMs": 2990, "deviceMs": 1, "hostBeforeMs": 1, "hostAfterMs": 1}) + "\n"),
+        ):
+            if evidence is None:
+                clock.unlink()
+            else:
+                clock.write_text(evidence)
+            try: check_host(root)
+            except CheckFailure: pass
+            else: raise AssertionError(f"{label} was accepted")
+            clock.write_text(kept)
+        (root / "gateway.log").write_text("client session open device=vault-test account=x\n" * len(HOST_PHASES)
+                                          + "broker: routingauth: token rejected: iat missing or in the future\n")
+        try: check_host(root)
+        except CheckFailure: pass
+        else: raise AssertionError("a token the gateway refused was accepted")
 
 
 def self_test() -> None:
