@@ -172,6 +172,22 @@ gateway-docker --suffix i3086gwlane --gateway-src DIR`), run by
   fake sync backend (installed through `GoogleSyncEnvironment`, like the
   account lanes) answers `POST /gateway/token` with a token signed by that
   key. No Google token is used anywhere.
+  - The token's time claims come from the gateway HOST's clock, read from
+    the controller (`clock`) at every mint — never the emulator's. The
+    gateway checks `iat`/`nbf` against its own clock with no leeway, and the
+    real broker shares that clock; an emulator's leads or trails its host by
+    an uncontrolled fraction of a second. Main run 45261502924 read "Your
+    sign-in expired" at the pin-mismatch dial because a phone-clock token
+    was refused as "iat missing or in the future".
+  - Both gateway lanes run with the phone's clock set 3 s AHEAD of the
+    gateway's on purpose (`scripts/lib/gateway-phone-clock.sh`; restored by
+    `pocketshell_release_all`). The lead is measured before and after the
+    journey into `host/phone-clock.jsonl`, every mint logs its time claims
+    (`GATEWAY_MINT`, integers only), and the result checkers require: the
+    lead at both readings; every `iat` equal to the gateway clock second it
+    was stamped in; and exactly one refused token in the gateway's log — the
+    journey's deliberate wrong key. Any other refusal, on the tunnel or the
+    device-list path, fails the lane.
 - TLS: `gwfixture certs` makes a per-prepare test CA (its private key is never
   written) and a `localhost` server certificate; `gwfixture tlsfront`
   terminates TLS in front of the gateway on 127.0.0.1:3287, which `adb

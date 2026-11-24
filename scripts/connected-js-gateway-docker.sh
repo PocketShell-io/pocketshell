@@ -109,6 +109,7 @@ source "$ROOT_DIR/scripts/lib/avd-lock.sh"
 source "$ROOT_DIR/scripts/lib/docker-test-hygiene.sh"
 source "$ROOT_DIR/scripts/lib/android-input-preflight.sh"
 source "$ROOT_DIR/scripts/lib/agents-fixture-version.sh"
+source "$ROOT_DIR/scripts/lib/gateway-phone-clock.sh"
 
 pocketshell_disk_preflight "$ROOT_DIR/android" 'connected-js-gateway-docker.sh' || exit $?
 pocketshell_acquire_gradle_output_lock "$ROOT_DIR/android" '' "connected-js-gateway-docker.sh suffix=$SUFFIX run=$RUN_ID"
@@ -340,6 +341,12 @@ rm -rf -- "$vault_dir"
 
 pocketshell_android_input_preflight "$ADB" "$ANDROID_SERIAL" "$ARTIFACTS_DIR/input-preflight.txt" \
   || { pocketshell_android_capture_input_diagnostics "$ADB" "$ANDROID_SERIAL" "$ARTIFACTS_DIR/failure-diagnostics"; fail "Android input preflight failed on $ANDROID_SERIAL; see $ARTIFACTS_DIR/input-preflight.txt"; }
+# The phone's clock leads the gateway's for the whole journey, and the journey's
+# fake broker stamps its routing tokens from the gateway host's clock instead
+# (scripts/lib/gateway-phone-clock.sh). Without this a phone-clock broker only
+# fails when the emulator happens to lead its host.
+pocketshell_gateway_phone_clock_ahead "$ADB" "$ANDROID_SERIAL" "$ARTIFACTS_DIR/host/phone-clock.jsonl" \
+  || fail "could not set the clock of $ANDROID_SERIAL ahead of the gateway's; the journey never runs on an uncontrolled phone clock"
 # Nine journeys: the default 256 KiB ring drops the early receipts (#3189).
 pocketshell_run_without_avd_lock_fd "$ADB" -s "$ANDROID_SERIAL" logcat -G 16M >/dev/null 2>&1 || true
 pocketshell_run_without_avd_lock_fd "$ADB" -s "$ANDROID_SERIAL" logcat -c >/dev/null 2>&1 || true
@@ -365,6 +372,9 @@ junit_files=("$RESULTS_DIR"/TEST-*.xml)
 shopt -u nullglob
 (( ${#junit_files[@]} > 0 )) && cp -a -- "${junit_files[@]}" "$ARTIFACTS_DIR/instrumentation-results/"
 pocketshell_run_without_avd_lock_fd "$ADB" -s "$ANDROID_SERIAL" logcat -d -v threadtime > "$ARTIFACTS_DIR/logcat.txt" 2>&1 || true
+pocketshell_gateway_phone_clock_record after \
+  || printf 'FAIL: the clock of %s did not stay ahead of the gateway clock through the journey; see %s\n' \
+    "$ANDROID_SERIAL" "$ARTIFACTS_DIR/host/phone-clock.jsonl" >&2
 pocketshell_run_without_avd_lock_fd "$ADB" -s "$ANDROID_SERIAL" exec-out screencap -p > "$ARTIFACTS_DIR/final-screen.png" 2>/dev/null || true
 mkdir -p "$ARTIFACTS_DIR/screenshots"
 for shot in me-stalled-terminal account-direct-picker account-direct-trust account-direct-terminal account-direct-resumed-terminal account-direct-gateway-terminal account-direct-returned-terminal pin-mismatch device-offline terminal-io vault-unlocked-gateway-hosts vault-gateway-connected after-reconnect trusted-vault-servers trusted-vault-terminal trusted-vault-tampered trusted-vault-foreign authloss-initial-terminal authloss-login-required authloss-unlock-cancelled authloss-recovered-terminal onboarding-before-google onboarding-account-unavailable onboarding-wrong-phrase onboarding-existing-terminal onboarding-create-first-vault onboarding-create-unavailable onboarding-created-empty-servers onboarding-created-vault-reopened; do

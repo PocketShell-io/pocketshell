@@ -15,6 +15,10 @@ Operations:
   hello          the run's device id, gateway origin, the pinned host-key
                  line (from the enrolled agent's own `show`), a wrong pin, an
                  unenrolled device id and the SSH user
+  clock          this host's clock in epoch milliseconds: the clock the
+                 gateway container runs on, for the time claims of the
+                 routing tokens the journey's fake broker mints (it runs on
+                 the emulator, whose own clock is no gateway's)
   authorize      append the phone's public key line to the host user's
                  authorized_keys (what the user does on the host); returns its
                  SHA256 fingerprint
@@ -191,6 +195,10 @@ class Fixture:
         op = request.get("op")
         if op == "hello":
             return dict(self.hello)
+        if op == "clock":
+            # Stamped last, right before the reply is written, so a caller that
+            # uses it as "now" is never ahead of the gateway's own clock.
+            return {"hostTimeMs": int(time.time() * 1000)}
         if op == "authorize":
             line = str(request.get("publicKey", "")).strip()
             fp = fingerprint(line)
@@ -279,6 +287,16 @@ def self_test() -> int:
         except (ValueError, Exception):
             continue
         raise AssertionError(f"accepted {bad!r}")
+    # The fake broker's clock: the host's own, in whole milliseconds, never
+    # ahead of the clock it was read on, and nothing else in the reply.
+    fixture = Fixture.__new__(Fixture)
+    before = time.time()
+    clock = fixture.handle({"op": "clock"})
+    after = time.time()
+    assert set(clock) == {"hostTimeMs"} and type(clock["hostTimeMs"]) is int, clock
+    assert before * 1000 - 1 <= clock["hostTimeMs"] <= after * 1000, clock
+    assert clock["hostTimeMs"] // 1000 <= int(after), clock
+    print("PASS: gateway controller answers the host clock")
     show = "server: ws://gateway:8080\ndevice id:       dev-1\npinned ssh host key: " + line + "\n"
     assert pinned_key(show) == (line, "dev-1")
     try:

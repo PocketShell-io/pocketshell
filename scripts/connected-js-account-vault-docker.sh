@@ -123,6 +123,7 @@ source "$ROOT_DIR/scripts/lib/avd-lock.sh"
 source "$ROOT_DIR/scripts/lib/docker-test-hygiene.sh"
 source "$ROOT_DIR/scripts/lib/android-input-preflight.sh"
 source "$ROOT_DIR/scripts/lib/agents-fixture-version.sh"
+source "$ROOT_DIR/scripts/lib/gateway-phone-clock.sh"
 
 pocketshell_disk_preflight "$ROOT_DIR/android" 'connected-js-account-vault-docker.sh' || exit $?
 pocketshell_acquire_gradle_output_lock "$ROOT_DIR/android" '' "connected-js-account-vault-docker.sh suffix=$SUFFIX run=$RUN_ID"
@@ -362,6 +363,11 @@ rm -rf -- "$vault_dir"
 
 pocketshell_android_apply_lane_settings "$ADB" "$ANDROID_SERIAL" "$ARTIFACTS_DIR/lane-settings.txt" \
   || fail "could not apply the lane input settings on $ANDROID_SERIAL"
+# The phone's clock leads the gateway's for the whole journey, and the journey's
+# fake broker (GatewayDockerJourneyTest's) stamps its routing tokens from the
+# gateway host's clock instead (scripts/lib/gateway-phone-clock.sh).
+pocketshell_gateway_phone_clock_ahead "$ADB" "$ANDROID_SERIAL" "$ARTIFACTS_DIR/host/phone-clock.jsonl" \
+  || fail "could not set the clock of $ANDROID_SERIAL ahead of the gateway's; the journey never runs on an uncontrolled phone clock"
 pocketshell_run_without_avd_lock_fd "$ADB" -s "$ANDROID_SERIAL" logcat -c >/dev/null 2>&1 || true
 
 printf 'Running packaged gateway journey on %s (API %s), suffix %s, run %s, gateway %s\n' \
@@ -416,6 +422,9 @@ if (( test_status == 0 )); then
 fi
 
 # Credential-bearing lines never reach the artifact (they would also fail the checker).
+pocketshell_gateway_phone_clock_record after \
+  || printf 'FAIL: the clock of %s did not stay ahead of the gateway clock through the journey; see %s\n' \
+    "$ANDROID_SERIAL" "$ARTIFACTS_DIR/host/phone-clock.jsonl" >&2
 pocketshell_run_without_avd_lock_fd "$ADB" -s "$ANDROID_SERIAL" logcat -d -v threadtime 2>&1 \
   | python3 -c '
 import re, sys
